@@ -6,6 +6,26 @@ export interface HAState {
   last_updated: string;
 }
 
+export interface HAServiceField {
+  description?: string;
+  example?: unknown;
+  required?: boolean;
+  advanced?: boolean;
+  default?: unknown;
+  selector?: Record<string, unknown>;
+}
+
+export interface HAServiceDef {
+  name?: string;
+  description?: string;
+  fields?: Record<string, HAServiceField>;
+  target?: Record<string, unknown>;
+  response?: { optional?: boolean };
+}
+
+/** Result of `get_services`: { domain: { service: HAServiceDef } } */
+export type HAServices = Record<string, Record<string, HAServiceDef>>;
+
 type Pending = { resolve: (v: unknown) => void; reject: (e: unknown) => void };
 
 export class HAClient {
@@ -162,6 +182,27 @@ export class HAClient {
       console.warn("[ha] failed to fetch areas:", (err as Error).message);
       return new Map();
     }
+  }
+
+  private servicesCache: HAServices | null = null;
+
+  /** Fetch the full service registry from HA (cached after first call). */
+  async getServices(forceRefresh = false): Promise<HAServices> {
+    if (this.servicesCache && !forceRefresh) return this.servicesCache;
+    try {
+      const result = await this.call<HAServices>({ type: "get_services" });
+      this.servicesCache = result || {};
+      return this.servicesCache;
+    } catch (err) {
+      console.warn("[ha] failed to fetch services:", (err as Error).message);
+      this.servicesCache = {};
+      return this.servicesCache;
+    }
+  }
+
+  /** Lookup a single service definition. Returns undefined if unknown. */
+  getServiceDef(domain: string, service: string): HAServiceDef | undefined {
+    return this.servicesCache?.[domain]?.[service];
   }
 
   async getHouseInfo(): Promise<{ name: string; timezone: string; unit_system: string; location: string }> {

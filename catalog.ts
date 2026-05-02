@@ -1,4 +1,4 @@
-import type { HAState } from "./ha-client.ts";
+import type { HAServices, HAState } from "./ha-client.ts";
 
 // Domains to skip — they add noise without useful controllability
 const SKIP_DOMAINS = new Set([
@@ -101,10 +101,68 @@ export function formatStates(states: HAState[], exposed?: Set<string>): string {
     .join("\n");
 }
 
-export function buildAgentsMd(catalog: string, houseInfo?: { name: string; timezone: string; unit_system: string; location: string }): string {
-  const info: Partial<{ name: string; timezone: string; unit_system: string; location: string }> = houseInfo ?? {};
+/** Domains we never advertise services for in the system prompt. */
+const SERVICE_BLOCKLIST_DOMAINS = new Set([
+  "persistent_notification", "logger", "system_log", "recorder",
+  "homeassistant", // huge & rarely needed; keep prompt small
+]);
+
+/** Build a compact one-line-per-service index, scoped to domains present in the entity list. */
+export function buildServicesMd(services: HAServices, presentDomains: Set<string>): string {
+  const lines: string[] = [];
+  // Always include a few utility domains the agent commonly uses regardless of entity presence.
+  const includeAlways = new Set(["script", "scene", "automation", "input_boolean", "notify"]);
+  const targetDomains = new Set([...presentDomains, ...includeAlways]);
+
+  for (const domain of [...targetDomains].sort()) {
+    if (SERVICE_BLOCKLIST_DOMAINS.has(domain)) continue;
+    const domainServices = services[domain];
+    if (!domainServices) continue;
+    const serviceLines: string[] = [];
+    for (const [svcName, def] of Object.entries(domainServices).sort((a, b) => a[0].localeCompare(b[0]))) {
+      const fields = def.fields ?? {};
+      const fieldNames = Object.entries(fields)
+        .map(([name, f]) => f?.required ? `${name}!` : `${name}?`)
+        .join(", ");
+      const responseHint = def.response ? " → response (set return_response=true)" : "";
+      const desc = def.description ? ` — ${def.description.split("\n")[0].slice(0, 80)}` : "";
+      serviceLines.push(`- ${svcName}(${fieldNames})${responseHint}${desc}`);
+    }
+    if (serviceLines.length === 0) continue;
+    lines.push(`### ${domain}`);
+    lines.push(...serviceLines);
+    lines.push("");
+  }
+  return lines.length === 0 ? "" : lines.join("\n");
+}
+
+export function extractDomains(states: HAState[]): Set<string> {
+  const out = new Set<string>();
+  for (const s of states) {
+    const i = s.entity_id.indexOf(".");
+    if (i > 0) out.add(s.entity_id.slice(0, i));
+  }
+  return out;
+}
+
+interface BuildAgentsMdOptions {
+  houseInfo?: { name: string; timezone: string; unit_system: string; location: string };
+  servicesMd?: string;
+}
+
+export function buildAgentsMd(catalog: string, opts: BuildAgentsMdOptions | BuildAgentsMdOptions["houseInfo"] = {}): string {
+  // Backwards-compat: callers passed houseInfo positionally before.
+  const o: BuildAgentsMdOptions = (opts && "houseInfo" in (opts as object))
+    ? (opts as BuildAgentsMdOptions)
+    : { houseInfo: opts as BuildAgentsMdOptions["houseInfo"] };
+
+  const info: Partial<{ name: string; timezone: string; unit_system: string; location: string }> = o.houseInfo ?? {};
   const us = typeof info.unit_system === "string" ? JSON.parse(info.unit_system) : info.unit_system;
   const tempUnit = (us?.temperature as string)?.toUpperCase() || "°C";
+
+  const servicesSection = o.servicesMd
+    ? `\n## Services available\n${'`!` = required, `?` = optional. Field types/defaults can be inferred from name; ask via ha_get_entity if unsure.'}\n\n${o.servicesMd}`
+    : "";
 
   return `# hai — Home Assistant Agent
 
@@ -118,11 +176,13 @@ You control a smart home. Be brief. Confirm actions with one sentence.
 
 ## Available entities
 ${catalog}
+${servicesSection}
 
 ## Tool guidance
 - Answering state questions: use "Current home state" provided in the user message. No tool needed.
-- Controlling devices: ha_call_service.
-- Sensor trends/history: ha_get_history (returns aggregated stats, not raw datapoints).
+- Controlling devices: ha_call_service. Use service_data for parameters; set return_response=true for services that return data (weather.get_forecasts, calendar.get_events, etc).
+- Inspecting entity capabilities (color modes, hvac modes, current attributes): ha_get_entity.
+- Sensor trends/history: ha_get_history (returns aggregated stats with min/max per bucket).
 - State not in snapshot or stale: ha_get_states.
 
 ## Rules

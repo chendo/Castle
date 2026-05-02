@@ -221,6 +221,31 @@ export function buildTools(ha: HAClient) {
         _onUpdate: unknown,
         _ctx: unknown,
       ): Promise<ToolResult> {
+        // Validate against the service registry. Block on unknown domain/service; warn on unknown args.
+        const services = await ha.getServices();
+        const domainServices = services[params.domain];
+        if (!domainServices) {
+          return ok(`Unknown domain "${params.domain}". Available domains: ${Object.keys(services).slice(0, 30).join(", ")}${Object.keys(services).length > 30 ? "…" : ""}`);
+        }
+        const def = domainServices[params.service];
+        if (!def) {
+          const known = Object.keys(domainServices).join(", ");
+          return ok(`Unknown service "${params.domain}.${params.service}". Known ${params.domain} services: ${known}`);
+        }
+
+        const warnings: string[] = [];
+        if (params.service_data && def.fields) {
+          const known = new Set(Object.keys(def.fields));
+          // entity_id is implicit via target; not always in fields. Don't warn on it.
+          known.add("entity_id");
+          for (const k of Object.keys(params.service_data)) {
+            if (!known.has(k)) warnings.push(`unknown field "${k}" for ${params.domain}.${params.service}`);
+          }
+        }
+        if (params.return_response && !def.response) {
+          warnings.push(`${params.domain}.${params.service} does not return a response — return_response will error in HA`);
+        }
+
         const result = await ha.callService(
           params.domain,
           params.service,
@@ -230,10 +255,11 @@ export function buildTools(ha: HAClient) {
         );
         const target = params.entity_id ? ` on ${params.entity_id}` : "";
         const head = `Called ${params.domain}.${params.service}${target}`;
+        const warningSuffix = warnings.length ? `\n\nWarnings:\n- ${warnings.join("\n- ")}` : "";
         if (params.return_response && result?.response !== undefined && result.response !== null) {
-          return ok(`${head}\n\nResponse:\n${JSON.stringify(result.response, null, 2)}`);
+          return ok(`${head}${warningSuffix}\n\nResponse:\n${JSON.stringify(result.response, null, 2)}`);
         }
-        return ok(head);
+        return ok(head + warningSuffix);
       },
     },
 

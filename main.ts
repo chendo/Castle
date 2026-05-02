@@ -1,6 +1,6 @@
 import type { AgentEvent } from "npm:@mariozechner/pi-agent-core";
 import { HAClient } from "./ha-client.ts";
-import { buildCatalog, buildAgentsMd } from "./catalog.ts";
+import { buildAgentsMd, buildCatalog, buildServicesMd, extractDomains } from "./catalog.ts";
 import { getAgentSession, submitPrompt } from "./agent.ts";
 
 const HA_URL = Deno.env.get("HA_URL") ?? "http://homeassistant.local:8123/";
@@ -42,10 +42,16 @@ async function regenerateCatalog(): Promise<void> {
     const exposed = exposedList ? new Set(exposedList) : undefined;
     const areas = await ha.getAreas();
     const houseInfo = await ha.getHouseInfo();
-    const agentsMd = buildAgentsMd(buildCatalog(ha.getAllStates(), exposed, areas), houseInfo);
+    const services = await ha.getServices();
+    const states = ha.getAllStates();
+    const exposedStates = exposed ? states.filter((s) => exposed.has(s.entity_id)) : states;
+    const presentDomains = extractDomains(exposedStates);
+    const servicesMd = buildServicesMd(services, presentDomains);
+    const catalogMd = buildCatalog(states, exposed, areas);
+    const agentsMd = buildAgentsMd(catalogMd, { houseInfo, servicesMd });
     const agentDir = new URL(".pi-agent/", import.meta.url).pathname.replace(/\/$/, "");
     await Deno.writeTextFile(`${agentDir}/AGENTS.md`, agentsMd);
-    console.log(`[hai] catalog refreshed (${exposed ? exposed.size : 'all'} entities)`);
+    console.log(`[hai] catalog refreshed (${exposed ? exposed.size : 'all'} entities, ${Object.keys(services).length} service domains)`);
   } catch (err) {
     console.error(`[hai] catalog refresh failed:`, (err as Error).message);
   }
