@@ -386,9 +386,9 @@ export function buildTools(ha: HAClient) {
     },
 
     {
-      name: "render_chart",
+      name: "ha_render_chart",
       label: "Render Chart",
-      description: "Render a line chart in the chat for one or more entities over a time range. The browser fetches the raw history and draws the chart. Use when the user asks to graph/plot/visualize sensor history. Pass either `hours` (relative to now) OR start_time+end_time (ISO 8601). Don't combine with ha_get_history — pick one based on whether the user wants to see (chart) or hear about (history) the data.",
+      description: "Render a line chart in the chat for one or more Home Assistant entities over a time range. The browser fetches the raw history and draws the chart. Use when the user asks to graph/plot/visualize sensor history. Pass either `hours` (relative to now) OR start_time+end_time (ISO 8601). Don't combine with ha_get_history — pick one based on whether the user wants to see (chart) or hear about (history) the data.",
       parameters: Type.Object({
         entity_ids: Type.Array(Type.String(), { description: "One or more entity IDs to plot together" }),
         title: Type.Optional(Type.String({ description: "Optional chart title" })),

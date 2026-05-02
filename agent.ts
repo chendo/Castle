@@ -48,7 +48,7 @@ export function getAgentSession(ha: HAClient): Promise<AgentSession> {
         tools: [
           "ha_call_service", "ha_fire_event", "ha_set_state",
           "ha_get_states", "ha_get_entity", "ha_get_history",
-          "render_chart",
+          "ha_render_chart",
         ],
         customTools: buildTools(ha),
         sessionManager: SessionManager.inMemory(),

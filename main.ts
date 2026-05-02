@@ -151,6 +151,27 @@ async function handler(req: Request): Promise<Response> {
     })));
   }
 
+  if ((url.pathname.startsWith("/camera/") || url.pathname.startsWith("/camera_stream/")) && req.method === "GET") {
+    const isStream = url.pathname.startsWith("/camera_stream/");
+    const prefix = isStream ? "/camera_stream/" : "/camera/";
+    const entityId = decodeURIComponent(url.pathname.slice(prefix.length));
+    if (!entityId.startsWith("camera.")) return new Response("Not a camera entity", { status: 400 });
+    const haPath = isStream
+      ? `/api/camera_proxy_stream/${encodeURIComponent(entityId)}`
+      : `/api/camera_proxy/${encodeURIComponent(entityId)}`;
+    try {
+      const haRes = await ha.restCall(haPath);
+      if (!haRes.ok) return new Response(`HA returned ${haRes.status}`, { status: haRes.status });
+      const headers = new Headers();
+      const ct = haRes.headers.get("content-type");
+      if (ct) headers.set("Content-Type", ct);
+      headers.set("Cache-Control", "no-store");
+      return new Response(haRes.body, { headers });
+    } catch (err) {
+      return new Response(`Camera fetch failed: ${(err as Error).message}`, { status: 502 });
+    }
+  }
+
   if (url.pathname === "/history" && req.method === "GET") {
     const entityIds = url.searchParams.getAll("entity_id");
     const startParam = url.searchParams.get("start");

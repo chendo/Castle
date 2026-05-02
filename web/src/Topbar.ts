@@ -21,9 +21,10 @@ export function buildTopbar(agent: WebSocketRemoteAgent, onToggleSidebar?: () =>
   root.style.cssText = `
     display: flex; align-items: center; justify-content: space-between;
     padding: 0 14px; height: 44px; flex-shrink: 0;
-    border-bottom: 1px solid rgb(var(--border, 39 39 42));
-    font-size: 13px; background: rgb(var(--background, 9 9 11));
-    color: rgb(var(--muted-foreground, 161 161 170));
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    background: var(--card, var(--background));
+    color: var(--muted-foreground);
     font-family: ui-sans-serif, system-ui, sans-serif;
   `;
 
@@ -47,7 +48,7 @@ export function buildTopbar(agent: WebSocketRemoteAgent, onToggleSidebar?: () =>
 
   const logo = document.createElement("span");
   logo.textContent = "hai";
-  logo.style.cssText = "font-weight: 700; color: #58a6ff;";
+  logo.style.cssText = "font-weight: 700; color: var(--primary, #58a6ff);";
 
   const status = document.createElement("span");
   status.textContent = "connecting…";
@@ -62,8 +63,8 @@ export function buildTopbar(agent: WebSocketRemoteAgent, onToggleSidebar?: () =>
   resetBtn.textContent = "⟲ New chat";
   resetBtn.style.cssText = `
     padding: 4px 10px; font-size: 12px; cursor: pointer;
-    background: transparent; color: inherit;
-    border: 1px solid rgb(var(--border, 39 39 42)); border-radius: 6px;
+    background: transparent; color: var(--foreground);
+    border: 1px solid var(--border); border-radius: 6px;
   `;
   resetBtn.onclick = () => {
     if (confirm("Start a new chat? Current conversation will be cleared.")) {

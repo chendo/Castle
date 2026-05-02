@@ -3,6 +3,21 @@ import { type ToolRenderer, type ToolRenderResult, registerToolRenderer, renderH
 import { html } from "lit";
 import { createRef, ref } from "lit/directives/ref.js";
 import { LineChart } from "lucide";
+import {
+  Chart,
+  type ChartConfiguration,
+  Filler,
+  Legend,
+  LinearScale,
+  LineController,
+  LineElement,
+  PointElement,
+  TimeScale,
+  Tooltip,
+} from "chart.js";
+import "chartjs-adapter-date-fns";
+
+Chart.register(LineController, LineElement, PointElement, LinearScale, TimeScale, Filler, Legend, Tooltip);
 
 interface ChartArgs {
   entity_ids: string[];
@@ -14,7 +29,10 @@ interface ChartArgs {
 
 interface HistoryPoint { t: string; v: number }
 
-const PALETTE = ["#58a6ff", "#3fb950", "#f78166", "#d29922", "#bc8cff", "#39c5cf", "#ff7b72", "#a371f7"];
+const PALETTE = [
+  "#58a6ff", "#3fb950", "#f78166", "#d29922",
+  "#bc8cff", "#39c5cf", "#ff7b72", "#a371f7",
+];
 
 function parseArgs(raw: unknown): ChartArgs | null {
   let parsed: any = raw;
@@ -48,125 +66,79 @@ async function fetchSeries(args: ChartArgs): Promise<Record<string, HistoryPoint
   return await res.json();
 }
 
-function renderSvgChart(
-  series: Record<string, HistoryPoint[]>,
-  args: ChartArgs,
-  width = 600,
-  height = 240,
-): SVGSVGElement {
-  const margin = { top: 14, right: 14, bottom: 24, left: 44 };
-  const w = width - margin.left - margin.right;
-  const h = height - margin.top - margin.bottom;
+function isDarkMode(): boolean {
+  return document.documentElement.classList.contains("dark") ||
+    window.matchMedia?.("(prefers-color-scheme: dark)").matches;
+}
 
-  const all = Object.values(series).flat();
-  if (all.length === 0) {
-    const empty = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    empty.setAttribute("width", String(width));
-    empty.setAttribute("height", "60");
-    empty.innerHTML = `<text x="10" y="35" fill="rgb(161,161,170)" font-size="13">No data in range</text>`;
-    return empty;
-  }
+function buildConfig(series: Record<string, HistoryPoint[]>, args: ChartArgs): ChartConfiguration<"line"> {
+  const dark = isDarkMode();
+  const grid = dark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.06)";
+  const tick = dark ? "rgba(230,237,243,0.7)" : "rgba(60,60,60,0.85)";
+  const legend = dark ? "rgba(230,237,243,0.85)" : "rgba(40,40,40,0.85)";
+
+  const datasets = Object.entries(series).map(([id, pts], i) => {
+    const color = PALETTE[i % PALETTE.length];
+    return {
+      label: id,
+      data: pts.map((p) => ({ x: new Date(p.t).getTime(), y: p.v })),
+      borderColor: color,
+      backgroundColor: color + "22",
+      fill: Object.keys(series).length === 1, // only fill when single series, otherwise it gets messy
+      pointRadius: 0,
+      pointHoverRadius: 4,
+      borderWidth: 1.8,
+      tension: 0.2,
+      spanGaps: true,
+    };
+  });
 
   const { start, end } = resolveRange(args);
-  const xMin = start.getTime();
-  const xMax = end.getTime();
-  let yMin = Math.min(...all.map((p) => p.v));
-  let yMax = Math.max(...all.map((p) => p.v));
-  if (yMin === yMax) { yMin -= 1; yMax += 1; }
-  const yPad = (yMax - yMin) * 0.05;
-  yMin -= yPad; yMax += yPad;
+  const durationMs = end.getTime() - start.getTime();
+  const timeUnit = durationMs > 7 * 86_400_000 ? "day" : durationMs > 24 * 3_600_000 ? "hour" : "minute";
 
-  const sx = (t: number) => margin.left + ((t - xMin) / (xMax - xMin)) * w;
-  const sy = (v: number) => margin.top + h - ((v - yMin) / (yMax - yMin)) * h;
-
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("width", "100%");
-  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
-  svg.setAttribute("preserveAspectRatio", "none");
-  svg.style.cssText = "display: block; max-width: 100%; height: auto;";
-
-  // Y gridlines + labels (5)
-  const yTicks = 5;
-  for (let i = 0; i <= yTicks; i++) {
-    const v = yMin + (yMax - yMin) * (i / yTicks);
-    const y = sy(v);
-    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-    line.setAttribute("x1", String(margin.left));
-    line.setAttribute("x2", String(margin.left + w));
-    line.setAttribute("y1", String(y));
-    line.setAttribute("y2", String(y));
-    line.setAttribute("stroke", "rgb(39,39,42)");
-    line.setAttribute("stroke-width", "1");
-    svg.appendChild(line);
-    const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
-    label.setAttribute("x", String(margin.left - 6));
-    label.setAttribute("y", String(y + 4));
-    label.setAttribute("text-anchor", "end");
-    label.setAttribute("font-size", "10");
-    label.setAttribute("fill", "rgb(115,115,115)");
-    label.textContent = formatNumber(v);
-    svg.appendChild(label);
-  }
-
-  // X axis labels (start, mid, end)
-  for (const frac of [0, 0.5, 1]) {
-    const t = xMin + (xMax - xMin) * frac;
-    const x = sx(t);
-    const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
-    label.setAttribute("x", String(x));
-    label.setAttribute("y", String(margin.top + h + 16));
-    label.setAttribute("text-anchor", frac === 0 ? "start" : frac === 1 ? "end" : "middle");
-    label.setAttribute("font-size", "10");
-    label.setAttribute("fill", "rgb(115,115,115)");
-    label.textContent = formatTime(new Date(t), xMax - xMin);
-    svg.appendChild(label);
-  }
-
-  // Series
-  const entries = Object.entries(series);
-  for (let i = 0; i < entries.length; i++) {
-    const [, points] = entries[i];
-    if (points.length === 0) continue;
-    const sorted = [...points].sort((a, b) => new Date(a.t).getTime() - new Date(b.t).getTime());
-    const d = sorted.map((p, idx) => `${idx === 0 ? "M" : "L"} ${sx(new Date(p.t).getTime())} ${sy(p.v)}`).join(" ");
-    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    path.setAttribute("d", d);
-    path.setAttribute("fill", "none");
-    path.setAttribute("stroke", PALETTE[i % PALETTE.length]);
-    path.setAttribute("stroke-width", "1.6");
-    path.setAttribute("stroke-linecap", "round");
-    path.setAttribute("stroke-linejoin", "round");
-    svg.appendChild(path);
-  }
-
-  return svg;
-}
-
-function formatNumber(v: number): string {
-  if (Math.abs(v) >= 1000) return v.toFixed(0);
-  if (Math.abs(v) >= 10) return v.toFixed(1);
-  return v.toFixed(2);
-}
-
-function formatTime(d: Date, durationMs: number): string {
-  if (durationMs > 24 * 3_600_000) {
-    return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", hour12: false });
-  }
-  return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
-}
-
-function renderLegend(series: Record<string, HistoryPoint[]>): HTMLElement {
-  const legend = document.createElement("div");
-  legend.style.cssText = "display: flex; flex-wrap: wrap; gap: 12px; margin-top: 6px; font-size: 12px;";
-  let i = 0;
-  for (const id of Object.keys(series)) {
-    const item = document.createElement("span");
-    item.style.cssText = "display: inline-flex; align-items: center; gap: 4px; color: rgb(161,161,170);";
-    item.innerHTML = `<span style="display:inline-block;width:10px;height:2px;background:${PALETTE[i % PALETTE.length]};"></span><span>${id}</span>`;
-    legend.appendChild(item);
-    i++;
-  }
-  return legend;
+  return {
+    type: "line",
+    data: { datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: { duration: 250 },
+      interaction: { intersect: false, mode: "index" },
+      plugins: {
+        legend: {
+          display: datasets.length > 1,
+          position: "bottom",
+          labels: { color: legend, boxWidth: 12, boxHeight: 2, font: { size: 11 } },
+        },
+        tooltip: {
+          backgroundColor: dark ? "rgba(13,17,23,0.95)" : "rgba(255,255,255,0.97)",
+          titleColor: dark ? "#e6edf3" : "#222",
+          bodyColor: dark ? "#e6edf3" : "#222",
+          borderColor: dark ? "#30363d" : "#e1e4e8",
+          borderWidth: 1,
+          cornerRadius: 6,
+          padding: 8,
+          titleFont: { size: 12 },
+          bodyFont: { size: 12 },
+        },
+      },
+      scales: {
+        x: {
+          type: "time",
+          min: start.getTime(),
+          max: end.getTime(),
+          time: { unit: timeUnit, tooltipFormat: "PPpp" },
+          grid: { color: grid },
+          ticks: { color: tick, font: { size: 11 }, maxRotation: 0, autoSkipPadding: 12 },
+        },
+        y: {
+          grid: { color: grid },
+          ticks: { color: tick, font: { size: 11 } },
+        },
+      },
+    },
+  };
 }
 
 class ChartToolRenderer implements ToolRenderer {
@@ -178,30 +150,42 @@ class ChartToolRenderer implements ToolRenderer {
 
     const summary = args
       ? `Chart: ${args.entity_ids.join(", ")} (${args.start_time ? `${args.start_time} → ${args.end_time ?? "now"}` : `${args.hours ?? 24}h`})`
-      : "render_chart";
+      : "ha_render_chart";
 
     const container = createRef<HTMLDivElement>();
 
-    // Kick off fetch + draw once we have args and the result is back (or while streaming once args are present).
     if (args && (result || !isStreaming)) {
       queueMicrotask(async () => {
         const el = container.value;
         if (!el || el.dataset.rendered === "1") return;
         el.dataset.rendered = "1";
-        el.innerHTML = `<div style="font-size:12px;color:rgb(115,115,115);padding:8px 0;">Loading data…</div>`;
+        el.innerHTML = `<div style="font-size:12px;color:var(--muted-foreground);padding:8px 0;">Loading data…</div>`;
         try {
           const series = await fetchSeries(args);
           el.innerHTML = "";
+
           if (args.title) {
             const titleEl = document.createElement("div");
-            titleEl.style.cssText = "font-size: 13px; font-weight: 500; margin-bottom: 6px;";
+            titleEl.style.cssText = "font-size: 13px; font-weight: 500; margin-bottom: 8px; color: var(--foreground);";
             titleEl.textContent = args.title;
             el.appendChild(titleEl);
           }
-          el.appendChild(renderSvgChart(series, args));
-          el.appendChild(renderLegend(series));
+
+          const total = Object.values(series).reduce((n, arr) => n + arr.length, 0);
+          if (total === 0) {
+            el.innerHTML += `<div style="font-size:12px;color:var(--muted-foreground);padding:8px 0;">No data in range.</div>`;
+            return;
+          }
+
+          const wrap = document.createElement("div");
+          wrap.style.cssText = "position: relative; height: 280px; width: 100%;";
+          const canvas = document.createElement("canvas");
+          wrap.appendChild(canvas);
+          el.appendChild(wrap);
+
+          new Chart(canvas, buildConfig(series, args));
         } catch (err) {
-          el.innerHTML = `<div style="font-size:12px;color:#f87171;padding:8px 0;">Chart error: ${(err as Error).message}</div>`;
+          el.innerHTML = `<div style="font-size:12px;color:var(--destructive);padding:8px 0;">Chart error: ${(err as Error).message}</div>`;
         }
       });
     }
@@ -219,5 +203,5 @@ class ChartToolRenderer implements ToolRenderer {
 }
 
 export function registerChartRenderer(): void {
-  registerToolRenderer("render_chart", new ChartToolRenderer());
+  registerToolRenderer("ha_render_chart", new ChartToolRenderer());
 }
