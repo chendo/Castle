@@ -7,7 +7,7 @@ import {
 } from "@mariozechner/pi-web-ui";
 import { html } from "lit";
 import { createRef, ref } from "lit/directives/ref.js";
-import { Activity, History, Wrench } from "lucide";
+import { Activity, Bell, FileText, History, LayoutDashboard, Wrench, Zap } from "lucide";
 
 type Icon = typeof Wrench;
 
@@ -46,6 +46,30 @@ const CONFIGS: Record<string, RendererConfig> = {
       const hrs = p.hours ?? 24;
       return `ha_get_history ${p.entity_id} (${hrs}h)`;
     },
+  },
+  ha_fire_event: {
+    icon: Zap,
+    summarize: (p) => p?.event_type ? `ha_fire_event ${p.event_type}` : "ha_fire_event",
+  },
+  ha_set_state: {
+    icon: Wrench,
+    summarize: (p) => p?.entity_id ? `ha_set_state ${p.entity_id} = ${p.state}` : "ha_set_state",
+  },
+  ha_get_logs: {
+    icon: FileText,
+    summarize: (p) => `ha_get_logs (${p?.type ?? "?"}${p?.filter ? ` filter="${p.filter}"` : ""})`,
+  },
+  ha_get_notifications: {
+    icon: Bell,
+    summarize: () => "ha_get_notifications",
+  },
+  ha_get_dashboard: {
+    icon: LayoutDashboard,
+    summarize: (p) => p?.name ? `ha_get_dashboard ${p.name}` : "ha_get_dashboard (list all)",
+  },
+  ha_modify_dashboard: {
+    icon: LayoutDashboard,
+    summarize: (p) => `ha_modify_dashboard ${p?.name ?? "?"} (replace full config)`,
   },
 };
 

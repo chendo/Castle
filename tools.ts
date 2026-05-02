@@ -1,7 +1,9 @@
 import { Type } from "npm:@sinclair/typebox";
+import { encodeBase64 } from "jsr:@std/encoding@1/base64";
 import type { HAClient } from "./ha-client.ts";
 
-type ToolResult = { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> };
+type ToolContent = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
+type ToolResult = { content: ToolContent[]; details: Record<string, unknown> };
 
 function ok(text: string, details: Record<string, unknown> = {}): ToolResult {
   return { content: [{ type: "text", text: text.slice(0, 3000) }], details };
@@ -386,6 +388,38 @@ export function buildTools(ha: HAClient) {
     },
 
     {
+      name: "ha_get_camera_snapshot",
+      label: "Camera Snapshot (image input)",
+      description: "Capture a snapshot of a camera as an inline image so you (the model) can see what the camera shows. Use this when you need to actually look at the scene to answer the user's question. For showing the user a camera, use ha_show_camera instead.",
+      parameters: Type.Object({
+        entity_id: Type.String({ description: "Camera entity ID (must start with camera.)" }),
+      }),
+      async execute(
+        _id: string,
+        params: { entity_id: string },
+      ): Promise<ToolResult> {
+        if (!params.entity_id.startsWith("camera.")) {
+          return ok(`Not a camera entity: ${params.entity_id}`);
+        }
+        try {
+          const res = await ha.restCall(`/api/camera_proxy/${encodeURIComponent(params.entity_id)}`);
+          if (!res.ok) return ok(`Camera snapshot failed: ${res.status}`);
+          const buf = new Uint8Array(await res.arrayBuffer());
+          const mimeType = res.headers.get("content-type") ?? "image/jpeg";
+          return {
+            content: [
+              { type: "text", text: `Snapshot of ${params.entity_id} (${(buf.length / 1024).toFixed(1)} KB)` },
+              { type: "image", data: encodeBase64(buf), mimeType },
+            ],
+            details: { entity_id: params.entity_id, bytes: buf.length },
+          };
+        } catch (err) {
+          return ok(`Camera snapshot error: ${(err as Error).message}`);
+        }
+      },
+    },
+
+    {
       name: "ha_show_camera",
       label: "Show Camera",
       description: "Render a camera entity inline in the chat. live=false (default) shows a single snapshot; live=true shows a continuous MJPEG feed (the browser pauses it when it's offscreen). Use when the user asks to see a camera.",
@@ -428,6 +462,140 @@ export function buildTools(ha: HAClient) {
         return Promise.resolve(ok(
           `Chart${title} prepared for [${params.entity_ids.join(", ")}] over ${range}. The chart renders inline in the chat.`,
         ));
+      },
+    },
+
+    {
+      name: "ha_get_logs",
+      label: "Get Logs",
+      description: "Recent Home Assistant log entries (up to 100 lines). type='error' returns the plaintext error log (warnings + errors from the current session); type='system' returns structured system_log entries. Optional filter substring-matches case-insensitively.",
+      parameters: Type.Object({
+        type: Type.Union([Type.Literal("error"), Type.Literal("system")], { description: "error | system" }),
+        filter: Type.Optional(Type.String({ description: "Case-insensitive substring filter" })),
+      }),
+      async execute(
+        _id: string,
+        params: { type: "error" | "system"; filter?: string },
+      ): Promise<ToolResult> {
+        const f = params.filter?.toLowerCase();
+        if (params.type === "error") {
+          try {
+            const res = await ha.restCall("/api/error_log");
+            if (!res.ok) return ok(`error_log failed: ${res.status}`);
+            const text = await res.text();
+            const lines = text.split("\n").filter((l) => l.trim());
+            const filtered = f ? lines.filter((l) => l.toLowerCase().includes(f)) : lines;
+            const slice = filtered.slice(-100);
+            return ok(slice.length === 0 ? "(no matching log lines)" : slice.join("\n"));
+          } catch (err) {
+            return ok(`error_log fetch failed: ${(err as Error).message}`);
+          }
+        }
+        try {
+          const result = await ha.call<Array<Record<string, unknown>>>({ type: "system_log/list" });
+          const items = Array.isArray(result) ? result : [];
+          const formatted = items.map((e) => {
+            const ts = typeof e.timestamp === "number"
+              ? new Date(e.timestamp * 1000).toISOString()
+              : String(e.timestamp ?? "");
+            return `[${e.level ?? "?"}] ${ts} ${e.name ?? ""}: ${e.message ?? ""}`;
+          });
+          const filtered = f ? formatted.filter((l) => l.toLowerCase().includes(f)) : formatted;
+          const slice = filtered.slice(0, 100);
+          return ok(slice.length === 0 ? "(no matching entries)" : slice.join("\n"));
+        } catch (err) {
+          return ok(`system_log unavailable: ${(err as Error).message}`);
+        }
+      },
+    },
+
+    {
+      name: "ha_get_notifications",
+      label: "Get Notifications",
+      description: "List active persistent notifications (the bell-icon ones in HA's UI). Returns id, title, message, created_at for each.",
+      parameters: Type.Object({}),
+      async execute(): Promise<ToolResult> {
+        try {
+          const result = await ha.call<Array<{ notification_id?: string; title?: string; message?: string; created_at?: string }>>({
+            type: "persistent_notification/get",
+          });
+          const items = Array.isArray(result) ? result : [];
+          if (items.length === 0) return ok("No active notifications.");
+          const lines = items.map((n) => {
+            const head = `[${n.notification_id ?? "?"}] ${n.title ?? "(no title)"}`;
+            const body = n.message ? `\n  ${n.message.replace(/\n/g, "\n  ")}` : "";
+            const when = n.created_at ? `\n  (created ${n.created_at})` : "";
+            return head + body + when;
+          });
+          return ok(lines.join("\n\n"));
+        } catch (err) {
+          return ok(`Failed to fetch notifications: ${(err as Error).message}`);
+        }
+      },
+    },
+
+    {
+      name: "ha_get_dashboard",
+      label: "Get Dashboard",
+      description: "List Lovelace dashboards (when name is omitted) or fetch a single dashboard's full config (when name is given). Use the url_path field as the name. Pass `(default)` to target the default dashboard.",
+      parameters: Type.Object({
+        name: Type.Optional(Type.String({ description: "Dashboard url_path. Omit to list all. Use '(default)' for the main dashboard." })),
+      }),
+      async execute(
+        _id: string,
+        params: { name?: string },
+      ): Promise<ToolResult> {
+        if (!params.name) {
+          try {
+            const list = await ha.call<Array<Record<string, unknown>>>({ type: "lovelace/dashboards/list" });
+            const entries = Array.isArray(list) ? list : [];
+            const lines = entries.map((d) => {
+              const path = d.url_path ?? "(default)";
+              const title = d.title ?? "(no title)";
+              const mode = d.mode ? ` [${d.mode}]` : "";
+              return `${path} — ${title}${mode}`;
+            });
+            if (!entries.find((d) => !d.url_path)) lines.unshift("(default) — main dashboard");
+            return ok(lines.join("\n"));
+          } catch (err) {
+            return ok(`Failed to list dashboards: ${(err as Error).message}`);
+          }
+        }
+        try {
+          const config = await ha.call<unknown>({
+            type: "lovelace/config",
+            url_path: params.name === "(default)" ? null : params.name,
+          });
+          const text = JSON.stringify(config, null, 2);
+          return ok(text.length > 8000 ? text.slice(0, 8000) + "\n…(truncated)" : text);
+        } catch (err) {
+          return ok(`Failed to fetch dashboard "${params.name}": ${(err as Error).message}`);
+        }
+      },
+    },
+
+    {
+      name: "ha_modify_dashboard",
+      label: "Modify Dashboard",
+      description: "Replace a Lovelace dashboard's full config. Destructive — overwrites the entire dashboard. Workflow: call ha_get_dashboard to fetch the current config, modify it, then call this with the complete new config. Use '(default)' for the main dashboard.",
+      parameters: Type.Object({
+        name: Type.String({ description: "Dashboard url_path. Use '(default)' for the main dashboard." }),
+        config: Type.Record(Type.String(), Type.Unknown(), { description: "Complete new dashboard config (views, cards, etc)" }),
+      }),
+      async execute(
+        _id: string,
+        params: { name: string; config: Record<string, unknown> },
+      ): Promise<ToolResult> {
+        try {
+          await ha.call({
+            type: "lovelace/config/save",
+            url_path: params.name === "(default)" ? null : params.name,
+            config: params.config,
+          });
+          return ok(`Dashboard "${params.name}" updated.`);
+        } catch (err) {
+          return ok(`Failed to update "${params.name}": ${(err as Error).message}`);
+        }
       },
     },
 
