@@ -1,0 +1,30 @@
+services:
+  hai:
+    build: .
+    container_name: hai
+    volumes:
+      - .:/workspace
+      - deno-cache:/root/.cache/deno
+    environment:
+      - HA_URL=${HA_URL:-http://homeassistant.local:8123/}
+      - HA_TOKEN=${HA_TOKEN}
+      - LM_STUDIO_URL=${LM_STUDIO_URL:-http://host.docker.internal:1234/v1}
+      - LM_STUDIO_API_KEY=${LM_STUDIO_API_KEY}
+    extra_hosts:
+      - "host.docker.internal:host.docker.internal"
+    ports:
+      - "127.0.0.1:${HAI_PORT:-7091}:7090"
+    restart: unless-stopped
+
+  # One-shot build service: `docker compose run --rm web-build`
+  # Writes web/dist/ on the host (via the workspace mount); hai serves from there.
+  web-build:
+    image: node:20-alpine
+    working_dir: /workspace/web
+    volumes:
+      - .:/workspace
+    command: sh -c "npm install --no-audit --no-fund && npm run build"
+    profiles: ["build"]
+
+volumes:
+  deno-cache:
