@@ -386,6 +386,31 @@ export function buildTools(ha: HAClient) {
     },
 
     {
+      name: "render_chart",
+      label: "Render Chart",
+      description: "Render a line chart in the chat for one or more entities over a time range. The browser fetches the raw history and draws the chart. Use when the user asks to graph/plot/visualize sensor history. Pass either `hours` (relative to now) OR start_time+end_time (ISO 8601). Don't combine with ha_get_history — pick one based on whether the user wants to see (chart) or hear about (history) the data.",
+      parameters: Type.Object({
+        entity_ids: Type.Array(Type.String(), { description: "One or more entity IDs to plot together" }),
+        title: Type.Optional(Type.String({ description: "Optional chart title" })),
+        hours: Type.Optional(Type.Number({ description: "Hours of history ending now. Ignored if start_time/end_time set. Default 24." })),
+        start_time: Type.Optional(Type.String({ description: "ISO 8601 start" })),
+        end_time: Type.Optional(Type.String({ description: "ISO 8601 end" })),
+      }),
+      execute(
+        _id: string,
+        params: { entity_ids: string[]; title?: string; hours?: number; start_time?: string; end_time?: string },
+      ): Promise<ToolResult> {
+        const range = params.start_time
+          ? `${params.start_time} → ${params.end_time ?? "now"}`
+          : `${params.hours ?? 24}h`;
+        const title = params.title ? ` "${params.title}"` : "";
+        return Promise.resolve(ok(
+          `Chart${title} prepared for [${params.entity_ids.join(", ")}] over ${range}. The chart renders inline in the chat.`,
+        ));
+      },
+    },
+
+    {
       name: "ha_get_history",
       label: "Get History",
       description: "Sensor history bucketed at a chosen granularity. Each bucket reports min/max (single value if stable, _ if empty). Returns Stats line + per-bucket lines like '14:05=20.3/20.7'. Use a smaller interval_minutes for short windows (e.g. 5min over the last hour) and a larger one for multi-day windows. Pass either `hours` (relative to now) OR start_time+end_time (ISO 8601).",

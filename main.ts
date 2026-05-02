@@ -2,6 +2,7 @@ import type { AgentEvent } from "npm:@mariozechner/pi-agent-core";
 import { HAClient } from "./ha-client.ts";
 import { buildAgentsMd, buildCatalog, buildServicesMd, extractDomains } from "./catalog.ts";
 import { getAgentSession, resetAgentSession, submitPrompt } from "./agent.ts";
+import { parseHistoryPoints } from "./tools.ts";
 
 const HA_URL = Deno.env.get("HA_URL") ?? "http://homeassistant.local:8123/";
 const HA_TOKEN = Deno.env.get("HA_TOKEN") ?? "";
@@ -148,6 +149,29 @@ async function handler(req: Request): Promise<Response> {
       attributes: s.attributes,
       domain: s.entity_id.split(".")[0],
     })));
+  }
+
+  if (url.pathname === "/history" && req.method === "GET") {
+    const entityIds = url.searchParams.getAll("entity_id");
+    const startParam = url.searchParams.get("start");
+    const endParam = url.searchParams.get("end");
+    if (entityIds.length === 0) return new Response("entity_id required", { status: 400 });
+    const end = endParam ? new Date(endParam) : new Date();
+    const start = startParam ? new Date(startParam) : new Date(end.getTime() - 24 * 3_600_000);
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) return new Response("Invalid start/end", { status: 400 });
+
+    const out: Record<string, Array<{ t: string; v: number }>> = {};
+    await Promise.all(entityIds.map(async (id) => {
+      try {
+        const raw = await ha.getHistory(id, start, end);
+        const pts = parseHistoryPoints(raw) ?? [];
+        out[id] = pts.map((p) => ({ t: p.rawIso, v: p.value }));
+      } catch (err) {
+        console.warn(`[history] ${id}:`, (err as Error).message);
+        out[id] = [];
+      }
+    }));
+    return Response.json(out);
   }
 
   if (req.method === "GET") {

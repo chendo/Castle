@@ -45,7 +45,11 @@ export function getAgentSession(ha: HAClient): Promise<AgentSession> {
         authStorage,
         model: getQwenModel(),
         noTools: "builtin",
-        tools: ["ha_call_service", "ha_fire_event", "ha_set_state", "ha_get_states", "ha_get_entity", "ha_get_history"],
+        tools: [
+          "ha_call_service", "ha_fire_event", "ha_set_state",
+          "ha_get_states", "ha_get_entity", "ha_get_history",
+          "render_chart",
+        ],
         customTools: buildTools(ha),
         sessionManager: SessionManager.inMemory(),
         settingsManager: SettingsManager.inMemory({

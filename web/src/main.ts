@@ -11,9 +11,11 @@ import {
 } from "@mariozechner/pi-web-ui";
 import { WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
 import { registerHAToolRenderers } from "./HAToolRenderer";
+import { registerChartRenderer } from "./ChartRenderer";
 import { buildTopbar } from "./Topbar";
 
 registerHAToolRenderers();
+registerChartRenderer();
 
 const settings = new SettingsStore();
 const providerKeys = new ProviderKeysStore();
