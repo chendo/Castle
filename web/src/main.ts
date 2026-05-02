@@ -15,6 +15,7 @@ import { registerChartRenderer } from "./ChartRenderer";
 import { registerCameraRenderer } from "./CameraRenderer";
 import { buildTopbar } from "./Topbar";
 import { buildSidebar } from "./Sidebar";
+import { createVoiceController } from "./VoiceController";
 
 registerHAToolRenderers();
 registerChartRenderer();
@@ -62,8 +63,9 @@ app.style.flexDirection = "column";
 app.style.height = "100vh";
 
 const sidebar = buildSidebar();
+const voice = createVoiceController(agent, chatPanel);
 
-const topbar = buildTopbar(agent, sidebar.toggle);
+const topbar = buildTopbar(agent, sidebar.toggle, voice);
 app.appendChild(topbar);
 
 const layout = document.createElement("div");
