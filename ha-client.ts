@@ -115,9 +115,7 @@ export class HAClient {
     });
   }
 
-  async getHistory(entityId: string, hours = 24): Promise<unknown> {
-    const end = new Date();
-    const start = new Date(end.getTime() - hours * 3_600_000);
+  async getHistory(entityId: string, start: Date, end: Date): Promise<unknown> {
     return this.call({
       type: "history/history_during_period",
       start_time: start.toISOString(),

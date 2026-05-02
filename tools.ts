@@ -37,8 +37,30 @@ function formatTimestamp(iso: string, tz: string): string {
   return d.toLocaleString("en-US", { timeZone: tz, month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
-function formatHourlyBucket(date: Date, tz: string): string {
-  return date.toLocaleString("en-US", { timeZone: tz, month: "short", day: "numeric", hour: "2-digit", hour12: false });
+function formatBucketTime(date: Date, tz: string, includeDate: boolean): string {
+  if (includeDate) {
+    return date.toLocaleString("en-US", {
+      timeZone: tz, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
+    }).replace(/,\s*/g, " ");
+  }
+  return date.toLocaleString("en-US", {
+    timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false,
+  });
+}
+
+const ALLOWED_INTERVALS = [1, 5, 10, 15, 30, 60];
+
+function pickAutoInterval(durationMs: number): number {
+  const hours = durationMs / 3_600_000;
+  if (hours <= 2) return 5;
+  if (hours <= 6) return 10;
+  if (hours <= 12) return 15;
+  if (hours <= 36) return 30;
+  return 60;
+}
+
+function round1(n: number): number {
+  return Math.round(n * 10) / 10;
 }
 
 interface HistoryPoint { value: number; timestamp: Date; rawIso: string }
@@ -112,53 +134,68 @@ function computeStats(points: HistoryPoint[]): {
   return { min, max, avg: Math.round(avg * 10) / 10, last, count: points.length, minAt: minPt.rawIso, maxAt: maxPt.rawIso, trendDir, trendDelta: Math.round(trendDelta * 10) / 10 };
 }
 
-function buildHourlyBuckets(points: HistoryPoint[], hours: number, tz: string): string[] {
-  if (points.length === 0) return [];
-  const sorted = [...points].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-  const start = sorted[0].timestamp;
-  const buckets: string[] = [];
+interface Bucket {
+  start: Date;
+  values: number[];
+}
 
-  for (let i = 0; i < hours; i++) {
-    const bucketStart = new Date(start.getTime() + i * 3_600_000);
-    const bucketEnd = new Date(bucketStart.getTime() + 3_599_999);
-    const inBucket = sorted.filter(p => p.timestamp >= bucketStart && p.timestamp <= bucketEnd);
-    if (inBucket.length > 0) {
-      const avg = inBucket.reduce((s, p) => s + p.value, 0) / inBucket.length;
-      buckets.push(Math.round(avg * 10) / 10);
-    } else {
-      buckets.push(null as unknown as number);
+function buildBuckets(points: HistoryPoint[], rangeStart: Date, rangeEnd: Date, intervalMs: number): Bucket[] {
+  const buckets: Bucket[] = [];
+  // Anchor the first bucket to rangeStart and step forward by intervalMs.
+  for (let t = rangeStart.getTime(); t < rangeEnd.getTime(); t += intervalMs) {
+    buckets.push({ start: new Date(t), values: [] });
+  }
+  if (buckets.length === 0) return buckets;
+
+  for (const p of points) {
+    const offset = p.timestamp.getTime() - rangeStart.getTime();
+    if (offset < 0) continue;
+    const idx = Math.floor(offset / intervalMs);
+    if (idx >= 0 && idx < buckets.length) {
+      buckets[idx].values.push(p.value);
     }
   }
   return buckets;
 }
 
-function formatHistorySummary(entityId: string, points: HistoryPoint[], hours: number, tz: string): string {
-  const sorted = [...points].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+function formatHistorySummary(
+  entityId: string,
+  points: HistoryPoint[],
+  rangeStart: Date,
+  rangeEnd: Date,
+  intervalMin: number,
+  tz: string,
+): string {
+  const durationMs = rangeEnd.getTime() - rangeStart.getTime();
+  const intervalMs = intervalMin * 60_000;
+  const buckets = buildBuckets(points, rangeStart, rangeEnd, intervalMs);
+
   const stats = computeStats(points);
-  const unit = sorted[0]?.value > 100 ? "" : ""; // heuristic — no unit in raw data
+  const lines: string[] = [];
+  const includeDate = durationMs > 24 * 3_600_000;
 
-  let lines: string[] = [];
-  lines.push(`Entity: ${entityId}`);
-  lines.push(`${formatTimestamp(sorted[0].rawIso, tz)} → ${formatTimestamp(sorted[sorted.length - 1].rawIso, tz)} (${hours}h)`);
-  lines.push(`Samples: ${stats.count}`);
+  const dur = durationMs / 3_600_000;
+  const durLabel = dur < 1
+    ? `${Math.round(durationMs / 60_000)}min`
+    : Number.isInteger(dur) ? `${dur}h` : `${dur.toFixed(1)}h`;
+
+  lines.push(`${entityId}`);
+  lines.push(`${formatBucketTime(rangeStart, tz, true)} → ${formatBucketTime(rangeEnd, tz, true)} (${durLabel} @ ${intervalMin}min, ${buckets.length} buckets, ${stats.count} samples)`);
   lines.push("");
-  lines.push("Statistics:");
-  lines.push(`  Min:   ${stats.min}${unit} at ${formatTimestamp(stats.minAt, tz)}`);
-  lines.push(`  Max:   ${stats.max}${unit} at ${formatTimestamp(stats.maxAt, tz)}`);
-  lines.push(`  Avg:   ${stats.avg}${unit}`);
-  lines.push(`  Last:  ${stats.last}${unit}`);
+  lines.push(`Stats: min=${stats.min} max=${stats.max} avg=${stats.avg} last=${stats.last} ${stats.trendDelta >= 0 ? "+" : ""}${stats.trendDelta} (${stats.trendDir})`);
   lines.push("");
 
-  const sign = stats.trendDelta > 0 ? "+" : "";
-  lines.push(`Trend: ${stats.trendDir} (${sign}${stats.trendDelta}${unit} over period)`);
-
-  if (hours > 12) {
-    const buckets = buildHourlyBuckets(points, hours, tz);
-    const bucketLabels = buckets.map((_, i) => formatHourlyBucket(new Date(sorted[0].timestamp.getTime() + i * 3_600_000), tz));
-    lines.push("");
-    lines.push("Hourly: " + buckets.join(", "));
+  // Per-bucket lines: "HH:MM=v" if stable, "HH:MM=min/max" if varying, "HH:MM=_" if empty.
+  for (const b of buckets) {
+    const time = formatBucketTime(b.start, tz, includeDate);
+    if (b.values.length === 0) {
+      lines.push(`${time}=_`);
+    } else {
+      const min = round1(Math.min(...b.values));
+      const max = round1(Math.max(...b.values));
+      lines.push(`${time}=${min === max ? min : `${min}/${max}`}`);
+    }
   }
-
   return lines.join("\n");
 }
 
@@ -268,26 +305,53 @@ export function buildTools(ha: HAClient) {
     {
       name: "ha_get_history",
       label: "Get History",
-      description: "Get aggregated history stats for a sensor — returns min/max/avg/trend instead of raw datapoints to save context",
+      description: "Sensor history bucketed at a chosen granularity. Each bucket reports min/max (single value if stable, _ if empty). Returns Stats line + per-bucket lines like '14:05=20.3/20.7'. Use a smaller interval_minutes for short windows (e.g. 5min over the last hour) and a larger one for multi-day windows. Pass either `hours` (relative to now) OR start_time+end_time (ISO 8601).",
       parameters: Type.Object({
         entity_id: Type.String({ description: "Entity to get history for" }),
-        hours: Type.Number({ description: "Hours of history (default 24)", default: 24 }),
+        hours: Type.Optional(Type.Number({ description: "Hours of history ending now. Ignored if start_time/end_time are set. Default 24." })),
+        start_time: Type.Optional(Type.String({ description: "Window start, ISO 8601 (e.g. 2026-05-02T08:00:00+10:00)." })),
+        end_time: Type.Optional(Type.String({ description: "Window end, ISO 8601. Defaults to now if omitted but start_time given." })),
+        interval_minutes: Type.Optional(Type.Number({
+          description: "Bucket size in minutes. Allowed: 1, 5, 10, 15, 30, 60. If omitted, picked based on window length (≤2h→5, ≤6h→10, ≤12h→15, ≤36h→30, else 60).",
+        })),
       }),
       async execute(
         _id: string,
-        params: { entity_id: string; hours: number },
+        params: { entity_id: string; hours?: number; start_time?: string; end_time?: string; interval_minutes?: number },
         _signal: AbortSignal | undefined,
         _onUpdate: unknown,
         _ctx: unknown,
       ): Promise<ToolResult> {
-        const raw = await ha.getHistory(params.entity_id, params.hours ?? 24);
+        // Resolve window
+        let start: Date;
+        let end: Date;
+        if (params.start_time) {
+          start = new Date(params.start_time);
+          end = params.end_time ? new Date(params.end_time) : new Date();
+          if (isNaN(start.getTime())) return ok(`Invalid start_time: ${params.start_time}`);
+          if (isNaN(end.getTime())) return ok(`Invalid end_time: ${params.end_time}`);
+        } else {
+          const hours = params.hours ?? 24;
+          end = new Date();
+          start = new Date(end.getTime() - hours * 3_600_000);
+        }
+        if (end.getTime() <= start.getTime()) return ok(`end_time must be after start_time`);
+
+        // Resolve interval
+        const durationMs = end.getTime() - start.getTime();
+        const intervalMin = params.interval_minutes ?? pickAutoInterval(durationMs);
+        if (!ALLOWED_INTERVALS.includes(intervalMin)) {
+          return ok(`Invalid interval_minutes ${intervalMin}. Allowed: ${ALLOWED_INTERVALS.join(", ")}`);
+        }
+
+        const raw = await ha.getHistory(params.entity_id, start, end);
         const tz = await getHATimezone(ha);
         const points = parseHistoryPoints(raw);
         if (!points || points.length === 0) {
           console.log(`[tool] ha_get_history raw for ${params.entity_id}:`, JSON.stringify(raw).slice(0, 500));
           return ok(`No history data for ${params.entity_id}`);
         }
-        return ok(formatHistorySummary(params.entity_id, points, params.hours ?? 24, tz));
+        return ok(formatHistorySummary(params.entity_id, points, start, end, intervalMin, tz));
       },
     },
   ];
