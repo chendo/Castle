@@ -11,6 +11,7 @@ import {
 } from "@mariozechner/pi-web-ui";
 import { WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
 import { registerHAToolRenderers } from "./HAToolRenderer";
+import { buildTopbar } from "./Topbar";
 
 registerHAToolRenderers();
 
@@ -51,4 +52,14 @@ await chatPanel.setAgent(agent as any, {
 });
 
 const app = document.getElementById("app")!;
-app.appendChild(chatPanel);
+app.style.display = "flex";
+app.style.flexDirection = "column";
+app.style.height = "100vh";
+
+const topbar = buildTopbar(agent);
+app.appendChild(topbar);
+
+const chatWrap = document.createElement("div");
+chatWrap.style.cssText = "flex: 1; min-height: 0;";
+chatWrap.appendChild(chatPanel);
+app.appendChild(chatWrap);

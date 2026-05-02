@@ -47,6 +47,11 @@ export class WebSocketRemoteAgent extends RemoteAgent {
     this.ws?.close();
   }
 
+  /** Ask the server to reset the conversation. The server will broadcast a fresh snapshot. */
+  reset(): void {
+    this.send({ type: "reset" });
+  }
+
   private send(frame: any): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(frame));
