@@ -9,6 +9,7 @@ import {
 import type { HAClient } from "./ha-client.ts";
 import { buildTools } from "./tools.ts";
 import { formatStates } from "./catalog.ts";
+import { loadSettings } from "./settings.ts";
 
 const AGENT_DIR = new URL(".pi-agent/", import.meta.url).pathname.replace(/\/$/, "");
 const CWD = new URL(".", import.meta.url).pathname.replace(/\/$/, "");
@@ -39,20 +40,20 @@ async function buildHomeStateText(ha: HAClient): Promise<string> {
 export function getAgentSession(ha: HAClient): Promise<AgentSession> {
   if (!sessionPromise) {
     sessionPromise = (async () => {
+      const settings = await loadSettings();
+      const model = getQwenModel();
+      const isMultimodal = Array.isArray(model.input) && model.input.includes("image");
+      if (!isMultimodal) {
+        console.log("[agent] model is text-only — ha_get_camera_snapshot will fall back to text descriptions");
+      }
       const result = await createAgentSession({
         cwd: CWD,
         agentDir: AGENT_DIR,
         authStorage,
-        model: getQwenModel(),
+        model,
         noTools: "builtin",
-        tools: [
-          "ha_call_service", "ha_fire_event", "ha_set_state",
-          "ha_get_states", "ha_get_entity", "ha_get_history",
-          "ha_get_camera_snapshot", "ha_get_logs", "ha_get_notifications",
-          "ha_get_dashboard", "ha_modify_dashboard",
-          "ha_render_chart", "ha_show_camera",
-        ],
-        customTools: buildTools(ha),
+        tools: settings.enabledTools.slice(),
+        customTools: buildTools(ha, { multimodal: isMultimodal }),
         sessionManager: SessionManager.inMemory(),
         settingsManager: SettingsManager.inMemory({
           compaction: {

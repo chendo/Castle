@@ -15,9 +15,14 @@ const PLACEHOLDER_MODEL: Model<any> = {
   maxTokens: 4096,
 };
 
+export interface ServerSettings {
+  enabledTools: string[];
+}
+
 type Frame =
   | { type: "snapshot"; state: any }
   | { type: "event"; event: AgentEvent }
+  | { type: "settings"; settings: ServerSettings; all_tools: string[] }
   | { type: "error"; message: string };
 
 /**
@@ -33,6 +38,7 @@ export class WebSocketRemoteAgent extends RemoteAgent {
   private closed = false;
   public onConnectionChange?: (connected: boolean) => void;
   public onError?: (message: string) => void;
+  public onSettings?: (settings: ServerSettings, allTools: string[]) => void;
 
   constructor(url: string) {
     super({ model: PLACEHOLDER_MODEL });
@@ -50,6 +56,11 @@ export class WebSocketRemoteAgent extends RemoteAgent {
   /** Ask the server to reset the conversation. The server will broadcast a fresh snapshot. */
   reset(): void {
     this.send({ type: "reset" });
+  }
+
+  /** Send any custom frame (used by SettingsDialog and friends). */
+  sendRaw(frame: any): void {
+    this.send(frame);
   }
 
   private send(frame: any): void {
@@ -79,6 +90,8 @@ export class WebSocketRemoteAgent extends RemoteAgent {
         this.applySnapshot(frame.state);
       } else if (frame.type === "event") {
         await this.ingestEvent(frame.event);
+      } else if (frame.type === "settings") {
+        this.onSettings?.(frame.settings, frame.all_tools);
       } else if (frame.type === "error") {
         console.error("[ws] server error:", frame.message);
         this.onError?.(frame.message);

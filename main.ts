@@ -3,6 +3,7 @@ import { HAClient } from "./ha-client.ts";
 import { buildAgentsMd, buildCatalog, buildServicesMd, extractDomains } from "./catalog.ts";
 import { getAgentSession, resetAgentSession, submitPrompt } from "./agent.ts";
 import { parseHistoryPoints } from "./tools.ts";
+import { ALL_TOOL_NAMES, loadSettings, saveSettings, type ToolName } from "./settings.ts";
 
 const HA_URL = Deno.env.get("HA_URL") ?? "http://homeassistant.local:8123/";
 const HA_TOKEN = Deno.env.get("HA_TOKEN") ?? "";
@@ -31,6 +32,8 @@ function writeModelsJson(): void {
             contextWindow: 32768,
             maxTokens: 4096,
             reasoning: false,
+            // Qwen3 is text-only. Update this when running a multimodal model.
+            input: ["text"],
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
           },
         ],
@@ -310,6 +313,34 @@ async function handleSocket(socket: WebSocket): Promise<void> {
       } catch (err) {
         console.error("[ws] abort failed:", err);
       }
+      return;
+    }
+
+    if (msg.type === "get_settings") {
+      const settings = await loadSettings();
+      socket.send(JSON.stringify({
+        type: "settings",
+        settings,
+        all_tools: ALL_TOOL_NAMES,
+      }));
+      return;
+    }
+
+    if (msg.type === "set_settings") {
+      const incoming = (msg as unknown as { settings: { enabledTools: ToolName[] } }).settings;
+      const saved = await saveSettings(incoming);
+      // Tool changes only take effect on a fresh session — reset and broadcast.
+      await resetAgentSession();
+      const session = await getAgentSession(ha);
+      const snapshotFrame = JSON.stringify({ type: "snapshot", state: serializeSnapshot(session) });
+      const settingsFrame = JSON.stringify({ type: "settings", settings: saved, all_tools: ALL_TOOL_NAMES });
+      for (const ws of sockets) {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(snapshotFrame);
+          ws.send(settingsFrame);
+        }
+      }
+      console.log(`[settings] enabled tools: ${saved.enabledTools.join(", ")}`);
       return;
     }
 

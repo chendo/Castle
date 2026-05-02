@@ -1,5 +1,6 @@
 import type { WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
 import type { VoiceController } from "./VoiceController";
+import { openSettingsDialog } from "./SettingsDialog";
 
 interface HealthSnapshot {
   ok: boolean;
@@ -113,6 +114,17 @@ export function buildTopbar(agent: WebSocketRemoteAgent, onToggleSidebar?: () =>
     renderTts();
     right.append(tts);
   }
+
+  const settingsBtn = document.createElement("button");
+  settingsBtn.title = "Settings";
+  settingsBtn.innerHTML = "⚙";
+  settingsBtn.style.cssText = `
+    padding: 4px 10px; font-size: 16px; cursor: pointer;
+    background: transparent; color: var(--foreground);
+    border: 1px solid var(--border); border-radius: 6px; line-height: 1;
+  `;
+  settingsBtn.onclick = () => openSettingsDialog(agent);
+  right.append(settingsBtn);
 
   const resetBtn = document.createElement("button");
   resetBtn.textContent = "⟲ New chat";

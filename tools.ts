@@ -201,7 +201,8 @@ function formatHistorySummary(
   return lines.join("\n");
 }
 
-export function buildTools(ha: HAClient) {
+export function buildTools(ha: HAClient, opts: { multimodal?: boolean } = {}) {
+  const isMultimodal = opts.multimodal === true;
   return [
     {
       name: "ha_call_service",
@@ -390,7 +391,7 @@ export function buildTools(ha: HAClient) {
     {
       name: "ha_get_camera_snapshot",
       label: "Camera Snapshot (image input)",
-      description: "Capture a snapshot of a camera as an inline image so you (the model) can see what the camera shows. Use this when you need to actually look at the scene to answer the user's question. For showing the user a camera, use ha_show_camera instead.",
+      description: "Capture a snapshot of a camera. With a multimodal model, the image is returned inline so the model can see it. With a text-only model, only a confirmation is returned (the user can still view the camera via ha_show_camera).",
       parameters: Type.Object({
         entity_id: Type.String({ description: "Camera entity ID (must start with camera.)" }),
       }),
@@ -406,12 +407,22 @@ export function buildTools(ha: HAClient) {
           if (!res.ok) return ok(`Camera snapshot failed: ${res.status}`);
           const buf = new Uint8Array(await res.arrayBuffer());
           const mimeType = res.headers.get("content-type") ?? "image/jpeg";
+          const sizeText = `${(buf.length / 1024).toFixed(1)} KB`;
+
+          if (!isMultimodal) {
+            return ok(
+              `Snapshot captured for ${params.entity_id} (${sizeText}, ${mimeType}). ` +
+              `The current model is text-only and can't see the image. ` +
+              `Use ha_show_camera to display it to the user, or configure a multimodal model to enable visual reasoning.`,
+            );
+          }
+
           return {
             content: [
-              { type: "text", text: `Snapshot of ${params.entity_id} (${(buf.length / 1024).toFixed(1)} KB)` },
+              { type: "text", text: `Snapshot of ${params.entity_id} (${sizeText})` },
               { type: "image", data: encodeBase64(buf), mimeType },
             ],
-            details: { entity_id: params.entity_id, bytes: buf.length },
+            details: { entity_id: params.entity_id, bytes: buf.length, multimodal: true },
           };
         } catch (err) {
           return ok(`Camera snapshot error: ${(err as Error).message}`);

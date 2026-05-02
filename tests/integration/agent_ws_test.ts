@@ -1,21 +1,17 @@
-// Integration test: connects to a running hai server, asks the LLM about a
-// weather entity, and asserts the response is sane and read-only.
+// Integration tests: connect to a running hai server, drive the agent over /ws,
+// assert read-only behavior. Skips gracefully if the server or HA isn't reachable.
 //
-// Requires:
-//   - hai server reachable at $HAI_URL (default ws://localhost:7090/ws inside container, ws://localhost:7091/ws from host)
-//   - LM Studio reachable from the server
-//   - HA exposing weather.forecast_home (or set $HAI_TEST_WEATHER_ENTITY)
+// Required: hai listening at $HAI_WS_URL (default ws://localhost:7090/ws), HA up,
+// LM Studio reachable from the server.
 //
-// Skip behavior: if $HAI_URL or the server is unreachable, the test skips
-// rather than failing — pre-commit shouldn't block when LM Studio is offline.
-//
-// Run: deno task test:integration  (defined in deno.json)
+// Run: deno task test:integration
 
 import { assert, assertEquals } from "jsr:@std/assert@1";
 
 const WS_URL = Deno.env.get("HAI_WS_URL") ?? "ws://localhost:7090/ws";
+const STATES_URL = Deno.env.get("HAI_STATES_URL") ?? "http://localhost:7090/states";
 const WEATHER_ENTITY = Deno.env.get("HAI_TEST_WEATHER_ENTITY") ?? "weather.forecast_home";
-const TIMEOUT_MS = Number(Deno.env.get("HAI_TEST_TIMEOUT_MS") ?? 60_000);
+const TIMEOUT_MS = Number(Deno.env.get("HAI_TEST_TIMEOUT_MS") ?? 90_000);
 
 interface AgentEvent {
   type: string;
@@ -31,59 +27,83 @@ async function reachable(): Promise<boolean> {
       ws.onopen = () => { clearTimeout(t); resolve(true); };
       ws.onerror = () => { clearTimeout(t); resolve(false); };
     });
-    if (ok) ws.close();
+    if (ok) {
+      const closed = new Promise<void>((r) => { ws.onclose = () => r(); });
+      ws.close();
+      await closed;
+    }
     return ok;
   } catch {
     return false;
   }
 }
 
+async function findCameraEntity(): Promise<string | null> {
+  const explicit = Deno.env.get("HAI_TEST_CAMERA_ENTITY");
+  if (explicit) return explicit;
+  try {
+    const res = await fetch(STATES_URL);
+    if (!res.ok) return null;
+    const states = await res.json() as Array<{ entity_id: string }>;
+    return states.find((s) => s.entity_id.startsWith("camera."))?.entity_id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Open /ws, hello → snapshot → prompt → drain events until agent_end, then close cleanly. */
+async function runConversation(prompt: string, timeoutMs = TIMEOUT_MS): Promise<AgentEvent[]> {
+  const events: AgentEvent[] = [];
+  const ws = new WebSocket(WS_URL);
+  const done = Promise.withResolvers<AgentEvent[]>();
+  let agentEnded = false;
+  let errorMessage: string | null = null;
+  const timeout = setTimeout(() => {
+    try { ws.close(); } catch { /* */ }
+    done.reject(new Error(`timed out after ${timeoutMs}ms`));
+  }, timeoutMs);
+
+  ws.onopen = () => ws.send(JSON.stringify({ type: "hello" }));
+  ws.onmessage = (ev) => {
+    const frame = JSON.parse(typeof ev.data === "string" ? ev.data : "");
+    if (frame.type === "snapshot") {
+      ws.send(JSON.stringify({ type: "prompt", text: prompt }));
+    } else if (frame.type === "event") {
+      events.push(frame.event);
+      if (frame.event.type === "agent_end") {
+        agentEnded = true;
+        ws.close();
+      }
+    } else if (frame.type === "error") {
+      errorMessage = frame.message;
+      ws.close();
+    }
+  };
+  ws.onclose = () => {
+    clearTimeout(timeout);
+    if (errorMessage) done.reject(new Error(`server error: ${errorMessage}`));
+    else if (!agentEnded) done.reject(new Error("ws closed before agent_end"));
+    else done.resolve(events);
+  };
+  ws.onerror = () => {
+    clearTimeout(timeout);
+    done.reject(new Error("websocket error"));
+  };
+
+  return await done.promise;
+}
+
+const serverUp = await reachable();
+const cameraEntity = serverUp ? await findCameraEntity() : null;
+
 Deno.test({
   name: "agent answers weather question via ha_get_entity (no mutating tool calls)",
-  ignore: !await reachable(),
+  ignore: !serverUp,
   fn: async () => {
-    const ws = new WebSocket(WS_URL);
-    const events: AgentEvent[] = [];
-    let snapshotReceived = false;
-    const done = Promise.withResolvers<void>();
-    const timeout = setTimeout(() => done.reject(new Error(`timed out after ${TIMEOUT_MS}ms`)), TIMEOUT_MS);
+    const events = await runConversation(
+      `What does ${WEATHER_ENTITY} report? Use ha_get_entity to inspect it. Answer in one sentence.`,
+    );
 
-    ws.onopen = () => {
-      ws.send(JSON.stringify({ type: "hello" }));
-    };
-
-    ws.onmessage = (ev) => {
-      const frame = JSON.parse(typeof ev.data === "string" ? ev.data : "");
-      if (frame.type === "snapshot") {
-        snapshotReceived = true;
-        ws.send(JSON.stringify({
-          type: "prompt",
-          text: `What does ${WEATHER_ENTITY} report? Use ha_get_entity to inspect it. Answer in one sentence.`,
-        }));
-      } else if (frame.type === "event") {
-        events.push(frame.event);
-        if (frame.event.type === "agent_end") {
-          clearTimeout(timeout);
-          ws.close();
-          done.resolve();
-        }
-      } else if (frame.type === "error") {
-        clearTimeout(timeout);
-        ws.close();
-        done.reject(new Error(`server error: ${frame.message}`));
-      }
-    };
-
-    ws.onerror = () => {
-      clearTimeout(timeout);
-      done.reject(new Error("websocket error"));
-    };
-
-    await done.promise;
-
-    assert(snapshotReceived, "expected snapshot from /ws hello handshake");
-
-    // Tool calls — must include at least one ha_get_entity, must NOT include any mutators.
     const toolStarts = events.filter((e) => e.type === "tool_execution_start");
     const toolNames = toolStarts.map((e) => e.toolName);
     assert(toolStarts.length > 0, `expected at least one tool call, got: ${JSON.stringify(toolNames)}`);
@@ -91,19 +111,16 @@ Deno.test({
     assertEquals(toolNames.filter((n) => n === "ha_call_service" || n === "ha_set_state").length, 0,
       `mutating tool call seen: ${JSON.stringify(toolNames)}`);
 
-    // ha_get_entity targeted the right entity.
     const entityCall = toolStarts.find((e) => e.toolName === "ha_get_entity");
     assert(entityCall, "expected ha_get_entity tool_execution_start");
     assertEquals(entityCall.args?.entity_id, WEATHER_ENTITY);
 
-    // Tool succeeded.
     const entityEnd = events.find((e) =>
       e.type === "tool_execution_end" && e.toolCallId === entityCall.toolCallId
     );
     assert(entityEnd, "expected tool_execution_end for ha_get_entity");
     assertEquals(entityEnd.isError, false, `ha_get_entity returned an error: ${JSON.stringify(entityEnd.result)}`);
 
-    // Final assistant message contains text.
     const lastAssistantEnd = [...events].reverse().find((e) =>
       e.type === "message_end" && e.message?.role === "assistant"
     );
@@ -113,5 +130,37 @@ Deno.test({
       .map((c: { text: string }) => c.text)
       .join("");
     assert(textBlocks.length > 0, "assistant message had no text content");
+  },
+});
+
+Deno.test({
+  name: "agent can capture a camera snapshot via ha_get_camera_snapshot",
+  ignore: !serverUp || !cameraEntity,
+  fn: async () => {
+    const events = await runConversation(
+      `Use ha_get_camera_snapshot to capture ${cameraEntity}. Briefly confirm whether the capture succeeded.`,
+    );
+
+    const toolNames = events.filter((e) => e.type === "tool_execution_start").map((e) => e.toolName);
+    const snapStart = events.find((e) =>
+      e.type === "tool_execution_start" && e.toolName === "ha_get_camera_snapshot"
+    );
+    assert(snapStart, `ha_get_camera_snapshot was not called. Tools: ${JSON.stringify(toolNames)}`);
+    assertEquals(snapStart.args?.entity_id, cameraEntity);
+
+    const snapEnd = events.find((e) =>
+      e.type === "tool_execution_end" && e.toolCallId === snapStart.toolCallId
+    );
+    assert(snapEnd, "expected tool_execution_end for ha_get_camera_snapshot");
+    assertEquals(snapEnd.isError, false, `snapshot tool returned error: ${JSON.stringify(snapEnd.result)}`);
+
+    const resultStr = typeof snapEnd.result === "string" ? snapEnd.result : JSON.stringify(snapEnd.result);
+    assert(
+      resultStr.includes("Snapshot") || resultStr.includes("captured") || resultStr.includes("KB"),
+      `unexpected tool result shape: ${resultStr.slice(0, 200)}`,
+    );
+
+    assertEquals(toolNames.filter((n) => n === "ha_call_service" || n === "ha_set_state").length, 0,
+      `mutating tool call seen: ${JSON.stringify(toolNames)}`);
   },
 });
