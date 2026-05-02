@@ -386,6 +386,27 @@ export function buildTools(ha: HAClient) {
     },
 
     {
+      name: "ha_show_camera",
+      label: "Show Camera",
+      description: "Render a camera entity inline in the chat. live=false (default) shows a single snapshot; live=true shows a continuous MJPEG feed (the browser pauses it when it's offscreen). Use when the user asks to see a camera.",
+      parameters: Type.Object({
+        entity_id: Type.String({ description: "Camera entity ID (must start with camera.)" }),
+        live: Type.Optional(Type.Boolean({ description: "true for continuous feed, false for one-shot snapshot. Default false." })),
+        title: Type.Optional(Type.String({ description: "Optional caption" })),
+      }),
+      execute(
+        _id: string,
+        params: { entity_id: string; live?: boolean; title?: string },
+      ): Promise<ToolResult> {
+        if (!params.entity_id.startsWith("camera.")) {
+          return Promise.resolve(ok(`Not a camera entity: ${params.entity_id}`));
+        }
+        const mode = params.live ? "live feed" : "snapshot";
+        return Promise.resolve(ok(`Showing ${params.entity_id} ${mode} inline.`));
+      },
+    },
+
+    {
       name: "ha_render_chart",
       label: "Render Chart",
       description: "Render a line chart in the chat for one or more Home Assistant entities over a time range. The browser fetches the raw history and draws the chart. Use when the user asks to graph/plot/visualize sensor history. Pass either `hours` (relative to now) OR start_time+end_time (ISO 8601). Don't combine with ha_get_history — pick one based on whether the user wants to see (chart) or hear about (history) the data.",

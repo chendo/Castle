@@ -12,11 +12,13 @@ import {
 import { WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
 import { registerHAToolRenderers } from "./HAToolRenderer";
 import { registerChartRenderer } from "./ChartRenderer";
+import { registerCameraRenderer } from "./CameraRenderer";
 import { buildTopbar } from "./Topbar";
 import { buildSidebar } from "./Sidebar";
 
 registerHAToolRenderers();
 registerChartRenderer();
+registerCameraRenderer();
 
 const settings = new SettingsStore();
 const providerKeys = new ProviderKeysStore();
