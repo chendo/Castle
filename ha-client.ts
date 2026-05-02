@@ -102,6 +102,15 @@ export class HAClient {
     else p.reject(new Error(JSON.stringify(msg.error)));
   }
 
+  /** Call an HA REST endpoint with the bearer token (modern HA has no WS set_state). */
+  async restCall(path: string, init: RequestInit = {}): Promise<Response> {
+    const base = this.url.replace(/\/$/, "");
+    const headers = new Headers(init.headers);
+    headers.set("Authorization", `Bearer ${this.token}`);
+    if (!headers.has("Content-Type") && init.body) headers.set("Content-Type", "application/json");
+    return await fetch(`${base}${path.startsWith("/") ? path : `/${path}`}`, { ...init, headers });
+  }
+
   call<T>(payload: Record<string, unknown>): Promise<T> {
     const id = this.msgId++;
     return new Promise<T>((resolve, reject) => {

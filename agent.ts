@@ -45,7 +45,7 @@ export function getAgentSession(ha: HAClient): Promise<AgentSession> {
         authStorage,
         model: getQwenModel(),
         noTools: "builtin",
-        tools: ["ha_call_service", "ha_get_states", "ha_get_entity", "ha_get_history"],
+        tools: ["ha_call_service", "ha_fire_event", "ha_set_state", "ha_get_states", "ha_get_entity", "ha_get_history"],
         customTools: buildTools(ha),
         sessionManager: SessionManager.inMemory(),
         settingsManager: SettingsManager.inMemory({
@@ -127,6 +127,23 @@ async function drainQueue(): Promise<void> {
     }
   }
   running = false;
+}
+
+/**
+ * Clear the current conversation. Aborts any in-flight turn and drops the
+ * session so the next prompt starts fresh — including a re-injection of
+ * "Current home state" on the new first turn.
+ */
+export async function resetAgentSession(): Promise<void> {
+  if (!sessionPromise) return;
+  try {
+    const session = await sessionPromise;
+    session.agent.abort();
+    session.agent.reset();
+  } catch (err) {
+    console.warn("[agent] reset error:", (err as Error).message);
+  }
+  sessionPromise = null;
 }
 
 export function submitPrompt(text: string, ha: HAClient): void {

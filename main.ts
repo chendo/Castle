@@ -1,13 +1,17 @@
 import type { AgentEvent } from "npm:@mariozechner/pi-agent-core";
 import { HAClient } from "./ha-client.ts";
 import { buildAgentsMd, buildCatalog, buildServicesMd, extractDomains } from "./catalog.ts";
-import { getAgentSession, submitPrompt } from "./agent.ts";
+import { getAgentSession, resetAgentSession, submitPrompt } from "./agent.ts";
 
 const HA_URL = Deno.env.get("HA_URL") ?? "http://homeassistant.local:8123/";
 const HA_TOKEN = Deno.env.get("HA_TOKEN") ?? "";
 const PORT = Number(Deno.env.get("PORT") ?? "7090");
+const AUTH_TOKEN = Deno.env.get("HAI_AUTH_TOKEN") ?? "";
 
 const ha = new HAClient(HA_URL, HA_TOKEN);
+
+let lastQueryAt: number | null = null;
+let queryCount = 0;
 
 function writeModelsJson(): void {
   const key = Deno.env.get("LM_STUDIO_API_KEY") ?? "lm-studio";
@@ -129,6 +133,10 @@ async function handler(req: Request): Promise<Response> {
     return Response.json({
       ok: ha.isConnected,
       entities: ha.getAllStates().length,
+      ws_clients: sockets.size,
+      query_count: queryCount,
+      last_query_at: lastQueryAt ? new Date(lastQueryAt).toISOString() : null,
+      auth_required: AUTH_TOKEN !== "",
     });
   }
 
@@ -150,6 +158,16 @@ async function handler(req: Request): Promise<Response> {
   if (url.pathname === "/ws") {
     if (req.headers.get("upgrade")?.toLowerCase() !== "websocket") {
       return new Response("Expected websocket upgrade", { status: 400 });
+    }
+    if (AUTH_TOKEN) {
+      // Browser WebSocket can't set Authorization headers, so token comes via ?token=...
+      // or the Sec-WebSocket-Protocol subprotocol "bearer.<token>".
+      const queryToken = url.searchParams.get("token") ?? "";
+      const subproto = req.headers.get("sec-websocket-protocol") ?? "";
+      const protoToken = subproto.split(",").map((s) => s.trim()).find((p) => p.startsWith("bearer."))?.slice(7) ?? "";
+      if (queryToken !== AUTH_TOKEN && protoToken !== AUTH_TOKEN) {
+        return new Response("Unauthorized", { status: 401 });
+      }
     }
     const { socket, response } = Deno.upgradeWebSocket(req);
     handleSocket(socket).catch((err) => console.error("[ws] handler error:", err));
@@ -234,6 +252,8 @@ async function handleSocket(socket: WebSocket): Promise<void> {
         return;
       }
       console.log(`[query] ${text}`);
+      lastQueryAt = Date.now();
+      queryCount++;
       submitPrompt(text, ha);
       return;
     }
@@ -244,6 +264,22 @@ async function handleSocket(socket: WebSocket): Promise<void> {
         session.agent.abort();
       } catch (err) {
         console.error("[ws] abort failed:", err);
+      }
+      return;
+    }
+
+    if (msg.type === "reset") {
+      try {
+        await resetAgentSession();
+        // Broadcast a fresh snapshot to ALL connected clients so every browser sees the cleared state.
+        const session = await getAgentSession(ha);
+        const snapshot = JSON.stringify({ type: "snapshot", state: serializeSnapshot(session) });
+        for (const ws of sockets) {
+          if (ws.readyState === WebSocket.OPEN) ws.send(snapshot);
+        }
+        console.log("[ws] session reset");
+      } catch (err) {
+        socket.send(JSON.stringify({ type: "error", message: `reset failed: ${(err as Error).message}` }));
       }
       return;
     }

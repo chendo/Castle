@@ -292,6 +292,63 @@ export function buildTools(ha: HAClient) {
     },
 
     {
+      name: "ha_fire_event",
+      label: "Fire Event",
+      description: "Fire a Home Assistant event with optional event_data. Use for triggering automations that listen on a specific event_type, or signaling other integrations.",
+      parameters: Type.Object({
+        event_type: Type.String({ description: "Event type, e.g. mydomain_event" }),
+        event_data: Type.Optional(Type.Record(Type.String(), Type.Unknown(), {
+          description: "Optional event payload",
+        })),
+      }),
+      async execute(
+        _id: string,
+        params: { event_type: string; event_data?: Record<string, unknown> },
+        _signal: AbortSignal | undefined,
+        _onUpdate: unknown,
+        _ctx: unknown,
+      ): Promise<ToolResult> {
+        await ha.call({
+          type: "fire_event",
+          event_type: params.event_type,
+          event_data: params.event_data ?? {},
+        });
+        return ok(`Fired event ${params.event_type}`);
+      },
+    },
+
+    {
+      name: "ha_set_state",
+      label: "Set State",
+      description: "Set the state (and optionally attributes) of an entity in HA. NOTE: this updates HA's internal state only — it does NOT communicate with the underlying device. Use ha_call_service for device control. Useful for input_text, input_number, helpers, and template sensors.",
+      parameters: Type.Object({
+        entity_id: Type.String({ description: "Entity to update, e.g. input_text.note" }),
+        state: Type.String({ description: "New state value" }),
+        attributes: Type.Optional(Type.Record(Type.String(), Type.Unknown(), {
+          description: "Optional attribute overrides",
+        })),
+      }),
+      async execute(
+        _id: string,
+        params: { entity_id: string; state: string; attributes?: Record<string, unknown> },
+        _signal: AbortSignal | undefined,
+        _onUpdate: unknown,
+        _ctx: unknown,
+      ): Promise<ToolResult> {
+        // No WS command for set_state in modern HA; use the REST endpoint.
+        const res = await ha.restCall(`/api/states/${encodeURIComponent(params.entity_id)}`, {
+          method: "POST",
+          body: JSON.stringify({ state: params.state, attributes: params.attributes ?? {} }),
+        });
+        if (!res.ok) {
+          const text = await res.text();
+          return ok(`Failed to set ${params.entity_id}: ${res.status} ${text.slice(0, 300)}`);
+        }
+        return ok(`Set ${params.entity_id} = ${params.state}`);
+      },
+    },
+
+    {
       name: "ha_get_entity",
       label: "Get Entity",
       description: "Get full detail for a single entity: state, every attribute, last_changed, last_updated. Use this to inspect an entity's capabilities (e.g. supported_color_modes for a light, hvac_modes for a climate). Does not include history.",
