@@ -1,11 +1,25 @@
 {
   "version": "5",
   "specifiers": {
-    "npm:@mariozechner/pi-coding-agent@*": "0.70.6_zod@4.4.1",
+    "jsr:@std/assert@1": "1.0.19",
+    "jsr:@std/internal@^1.0.12": "1.0.13",
+    "npm:@mariozechner/pi-agent-core@*": "0.70.6_zod@4.4.2",
+    "npm:@mariozechner/pi-coding-agent@*": "0.70.6_zod@4.4.2",
     "npm:@sinclair/typebox@*": "0.34.49"
   },
+  "jsr": {
+    "@std/assert@1.0.19": {
+      "integrity": "eaada96ee120cb980bc47e040f82814d786fe8162ecc53c91d8df60b8755991e",
+      "dependencies": [
+        "jsr:@std/internal"
+      ]
+    },
+    "@std/internal@1.0.13": {
+      "integrity": "2f9546691d4ac2d32859c82dff284aaeac980ddeca38430d07941e7e288725c0"
+    }
+  },
   "npm": {
-    "@anthropic-ai/sdk@0.90.0_zod@4.4.1": {
+    "@anthropic-ai/sdk@0.90.0_zod@4.4.2": {
       "integrity": "sha512-MzZtPabJF1b0FTDl6Z6H5ljphPwACLGP13lu8MTiB8jXaW/YXlpOp+Po2cVou3MPM5+f5toyLnul9whKCy7fBg==",
       "dependencies": [
         "json-schema-to-ts",
@@ -568,14 +582,14 @@
       ],
       "bin": true
     },
-    "@mariozechner/pi-agent-core@0.70.6_zod@4.4.1": {
+    "@mariozechner/pi-agent-core@0.70.6_zod@4.4.2": {
       "integrity": "sha512-PovJZJqhY4ajgTJRUcLzfWKnlQuJHxHW3T030CafR9LYeLmOHi/HGS8DbCdRgSJNbnoIG+kl67/7++9DKZ2+sg==",
       "dependencies": [
         "@mariozechner/pi-ai",
         "typebox"
       ]
     },
-    "@mariozechner/pi-ai@0.70.6_zod@4.4.1": {
+    "@mariozechner/pi-ai@0.70.6_zod@4.4.2": {
       "integrity": "sha512-LVAadu0Y+hb7Bj7EDiLsx6AuGxHlxDq0euLzyqX698i9qt0BW6a+oQSUIZQz4rJwExF18OvyL7ygJ5781ojrIQ==",
       "dependencies": [
         "@anthropic-ai/sdk",
@@ -592,7 +606,7 @@
       ],
       "bin": true
     },
-    "@mariozechner/pi-coding-agent@0.70.6_zod@4.4.1": {
+    "@mariozechner/pi-coding-agent@0.70.6_zod@4.4.2": {
       "integrity": "sha512-S4hUZghBeHPqsL6+DNg/TbGLziSh5+/mEHPVlYq5y6ImirWXhISLdLCnyZUW83OblKWihmG7unhJXiHQTH82mQ==",
       "dependencies": [
         "@mariozechner/jiti",
@@ -1039,7 +1053,8 @@
         "@smithy/service-error-classification",
         "@smithy/types",
         "tslib"
-      ]
+      ],
+      "deprecated": true
     },
     "@smithy/util-stream@4.5.25": {
       "integrity": "sha512-/PFpG4k8Ze8Ei+mMKj3oiPICYekthuzePZMgZbCqMiXIHHf4n2aZ4Ps0aSRShycFTGuj/J6XldmC0x0DwednIA==",
@@ -1520,7 +1535,7 @@
         "wrappy"
       ]
     },
-    "openai@6.26.0_zod@4.4.1": {
+    "openai@6.26.0_zod@4.4.2": {
       "integrity": "sha512-zd23dbWTjiJ6sSAX6s0HrCZi41JwTA1bQVs0wLQPZ2/5o2gxOJA5wh7yOAUgwYybfhDXyhwlpeQf7Mlgx8EOCA==",
       "dependencies": [
         "zod"
@@ -1799,14 +1814,14 @@
     "yoctocolors@2.1.2": {
       "integrity": "sha512-CzhO+pFNo8ajLM2d2IW/R93ipy99LWjtwblvC1RsoSUMZgyLbYFr221TnSNT7GjGdYui6P459mw9JH/g/zW2ug=="
     },
-    "zod-to-json-schema@3.25.2_zod@4.4.1": {
+    "zod-to-json-schema@3.25.2_zod@4.4.2": {
       "integrity": "sha512-O/PgfnpT1xKSDeQYSCfRI5Gy3hPf91mKVDuYLUHZJMiDFptvP41MSnWofm8dnCm0256ZNfZIM7DSzuSMAFnjHA==",
       "dependencies": [
         "zod"
       ]
     },
-    "zod@4.4.1": {
-      "integrity": "sha512-a6ENMBBGZBsnlSebQ/eKCguSBeGKSf4O7BPnqVPmYGtpBYI7VSqoVqw+QcB7kPRjbqPwhYTpFbVj/RqNz/CT0Q=="
+    "zod@4.4.2": {
+      "integrity": "sha512-IynmDyxsEsb9RKzO3J9+4SxXnl2FTFSzNBaKKaMV6tsSk0rw9gYw9gs+JFCq/qk2LCZ78KDwyj+Z289TijSkUw=="
     }
   }
 }

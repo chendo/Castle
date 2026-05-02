@@ -82,7 +82,7 @@ export class HAClient {
     else p.reject(new Error(JSON.stringify(msg.error)));
   }
 
-  private call<T>(payload: Record<string, unknown>): Promise<T> {
+  call<T>(payload: Record<string, unknown>): Promise<T> {
     const id = this.msgId++;
     return new Promise<T>((resolve, reject) => {
       this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
@@ -167,12 +167,14 @@ export class HAClient {
   async getHouseInfo(): Promise<{ name: string; timezone: string; unit_system: string; location: string }> {
     try {
       const ha = await this.call<HAState>({ type: "get_states", target: { entity_id: "homeassistant" } });
-      const attrs = (ha as HAState)?.attributes ?? {};
+      const attrs = ((ha as HAState)?.attributes ?? {}) as Record<string, unknown>;
+      const lat = typeof attrs.latitude === "number" ? attrs.latitude.toFixed(4) : "";
+      const lon = typeof attrs.longitude === "number" ? attrs.longitude.toFixed(4) : "";
       return {
         name: (attrs.friendly_name as string) || "Home",
         timezone: (attrs.time_zone as string) || "UTC",
-        unit_system: JSON.stringify(attrs.unit_system || {}),
-        location: `${attrs.latitude?.toFixed(4)}, ${attrs.longitude?.toFixed(4)}`.replace(/, NaN, NaN$/, ""),
+        unit_system: JSON.stringify(attrs.unit_system ?? {}),
+        location: lat && lon ? `${lat}, ${lon}` : "",
       };
     } catch {
       return { name: "Home", timezone: "UTC", unit_system: "{}", location: "" };

@@ -6,7 +6,7 @@ const SKIP_DOMAINS = new Set([
   "conversation", "tts", "stt", "wake_word",
 ]);
 
-interface AreaInfo { name: string; entities: Map<string, HAState> }
+interface AreaInfo { name: string; entities: Set<string> }
 
 export function buildCatalog(states: HAState[], exposed?: Set<string>, areas?: Map<string, AreaInfo>): string {
   const filtered = states.filter(s => {
@@ -18,7 +18,7 @@ export function buildCatalog(states: HAState[], exposed?: Set<string>, areas?: M
   // Group by area if available
   if (areas && areas.size > 0) {
     const lines: string[] = [];
-    for (const [areaId, area] of [...areas.entries()].sort((a, b) => a[1].name.localeCompare(b[1].name))) {
+    for (const [, area] of [...areas.entries()].sort((a, b) => a[1].name.localeCompare(b[1].name))) {
       const areaEntities = filtered.filter(s => area.entities.has(s.entity_id));
       if (areaEntities.length === 0) continue;
 
@@ -102,7 +102,7 @@ export function formatStates(states: HAState[], exposed?: Set<string>): string {
 }
 
 export function buildAgentsMd(catalog: string, houseInfo?: { name: string; timezone: string; unit_system: string; location: string }): string {
-  const info = houseInfo || {};
+  const info: Partial<{ name: string; timezone: string; unit_system: string; location: string }> = houseInfo ?? {};
   const us = typeof info.unit_system === "string" ? JSON.parse(info.unit_system) : info.unit_system;
   const tempUnit = (us?.temperature as string)?.toUpperCase() || "°C";
 
@@ -111,9 +111,9 @@ export function buildAgentsMd(catalog: string, houseInfo?: { name: string; timez
 You control a smart home. Be brief. Confirm actions with one sentence.
 
 ## House
-- **Name:** ${info.name || "Home"}
-- **Timezone:** ${info.timezone || "UTC"}
-- **Location:** ${info.location || "Unknown"}
+- **Name:** ${info.name ?? "Home"}
+- **Timezone:** ${info.timezone ?? "UTC"}
+- **Location:** ${info.location ?? "Unknown"}
 - **Unit system:** ${us?.length ? `${us.length}m` : ""}${us?.weight ? `${us.weight}kg` : ""}${tempUnit ? ` · Temperature: ${tempUnit}` : ""}
 
 ## Available entities

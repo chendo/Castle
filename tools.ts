@@ -19,7 +19,7 @@ async function getHATimezone(ha: HAClient): Promise<string> {
       cachedTimezone = haEntity.attributes.time_zone as string;
       return cachedTimezone;
     }
-  } catch {}
+  } catch { /* fall through to config API */ }
   // Fallback: try config API
   try {
     const tz = await ha.call<{ time_zone: string }>({ type: "config/core/get" });
@@ -27,7 +27,7 @@ async function getHATimezone(ha: HAClient): Promise<string> {
       cachedTimezone = tz.time_zone;
       return cachedTimezone;
     }
-  } catch {}
+  } catch { /* fall through to system tz */ }
   cachedTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   return cachedTimezone;
 }
@@ -50,7 +50,7 @@ function formatBucketTime(date: Date, tz: string, includeDate: boolean): string 
 
 const ALLOWED_INTERVALS = [1, 5, 10, 15, 30, 60];
 
-function pickAutoInterval(durationMs: number): number {
+export function pickAutoInterval(durationMs: number): number {
   const hours = durationMs / 3_600_000;
   if (hours <= 2) return 5;
   if (hours <= 6) return 10;
@@ -63,9 +63,9 @@ function round1(n: number): number {
   return Math.round(n * 10) / 10;
 }
 
-interface HistoryPoint { value: number; timestamp: Date; rawIso: string }
+export interface HistoryPoint { value: number; timestamp: Date; rawIso: string }
 
-function parseHistoryPoints(raw: unknown): HistoryPoint[] | null {
+export function parseHistoryPoints(raw: unknown): HistoryPoint[] | null {
   if (!raw || typeof raw !== "object") return null;
 
   // Modern HA WS `history/history_during_period`: { "<entity_id>": [{ s, lu, lc, a }, ...] }
@@ -105,7 +105,7 @@ function parseHistoryPoints(raw: unknown): HistoryPoint[] | null {
   return points.length > 0 ? points : null;
 }
 
-function computeStats(points: HistoryPoint[]): {
+export function computeStats(points: HistoryPoint[]): {
   min: number; max: number; avg: number; last: number; count: number;
   minAt: string; maxAt: string; trendDir: "rising" | "falling" | "stable"; trendDelta: number;
 } {
@@ -134,12 +134,12 @@ function computeStats(points: HistoryPoint[]): {
   return { min, max, avg: Math.round(avg * 10) / 10, last, count: points.length, minAt: minPt.rawIso, maxAt: maxPt.rawIso, trendDir, trendDelta: Math.round(trendDelta * 10) / 10 };
 }
 
-interface Bucket {
+export interface Bucket {
   start: Date;
   values: number[];
 }
 
-function buildBuckets(points: HistoryPoint[], rangeStart: Date, rangeEnd: Date, intervalMs: number): Bucket[] {
+export function buildBuckets(points: HistoryPoint[], rangeStart: Date, rangeEnd: Date, intervalMs: number): Bucket[] {
   const buckets: Bucket[] = [];
   // Anchor the first bucket to rangeStart and step forward by intervalMs.
   for (let t = rangeStart.getTime(); t < rangeEnd.getTime(); t += intervalMs) {

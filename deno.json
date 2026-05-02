@@ -1,5 +1,21 @@
 {
   "tasks": {
-    "start": "deno run --allow-all --unstable-node-globals main.ts"
+    "start": "deno run --allow-all --unstable-node-globals main.ts",
+    "test": "deno test --allow-all tests/",
+    "test:unit": "deno test --allow-all tests/ --ignore=tests/integration/",
+    "test:integration": "deno test --allow-all tests/integration/",
+    "check": "deno check main.ts agent.ts catalog.ts ha-client.ts tools.ts && deno lint",
+    "lint": "deno lint"
+  },
+  "lint": {
+    "include": ["main.ts", "agent.ts", "catalog.ts", "ha-client.ts", "tools.ts", "tests/**/*.ts"],
+    "rules": {
+      "exclude": [
+        "no-import-prefix",
+        "no-unversioned-import",
+        "no-explicit-any",
+        "require-await"
+      ]
+    }
   }
 }

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Pre-commit hook — runs full checks. Bypass with `git commit --no-verify` if needed.
+set -e
+exec ./scripts/check.sh

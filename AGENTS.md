@@ -28,6 +28,25 @@ docker compose logs -f hai                                     # view logs
 docker compose exec hai sh                                     # shell into container
 ```
 
+## Development
+
+After cloning, wire the pre-commit hook (it lives at `scripts/git-hooks/`):
+
+```bash
+git config core.hooksPath scripts/git-hooks
+```
+
+Run all checks manually:
+
+```bash
+./scripts/check.sh                           # deno check + lint + unit tests + web tsc
+docker compose exec hai deno task test       # both unit and integration
+docker compose exec hai deno task test:unit  # unit only (no LLM/HA needed)
+docker compose exec hai deno task test:integration  # WS round-trip via LM Studio
+```
+
+The integration test asks the LLM about a weather entity via `/ws` and asserts only read-only tools are called. Override the entity with `HAI_TEST_WEATHER_ENTITY` if `weather.forecast_home` doesn't exist on your HA instance.
+
 ## Architecture
 
 - **main.ts** — HTTP server (Deno.serve). Routes: `GET /` (UI), `GET /health`, `GET /states`, `POST /query` (SSE stream)
