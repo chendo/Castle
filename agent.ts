@@ -10,6 +10,7 @@ import type { HAClient } from "./ha-client.ts";
 import { buildTools } from "./tools.ts";
 import { formatStates } from "./catalog.ts";
 import { loadSettings } from "./settings.ts";
+import { logMessageEnd, resetConversationFile } from "./persistence.ts";
 
 const AGENT_DIR = new URL(".pi-agent/", import.meta.url).pathname.replace(/\/$/, "");
 const CWD = new URL(".", import.meta.url).pathname.replace(/\/$/, "");
@@ -63,6 +64,15 @@ export function getAgentSession(ha: HAClient): Promise<AgentSession> {
           },
         }),
         thinkingLevel: "low",
+      });
+
+      // Persist every completed message to the markdown conversation file.
+      // Errors here must never break the agent loop, so we swallow them.
+      result.session.agent.subscribe((event) => {
+        if (event.type === "message_end") {
+          // deno-lint-ignore no-explicit-any
+          void logMessageEnd((event as any).message);
+        }
       });
 
       // Append metadata to the latest user message at LLM-call time only:
@@ -142,6 +152,7 @@ async function drainQueue(): Promise<void> {
  * "Current home state" on the new first turn.
  */
 export async function resetAgentSession(): Promise<void> {
+  resetConversationFile();
   if (!sessionPromise) return;
   try {
     const session = await sessionPromise;
