@@ -16,7 +16,7 @@ interface HealthSnapshot {
  * - HA-side connectivity / entity count comes from /health, polled every 5s.
  * - Model name comes from the snapshot the agent received from the server.
  */
-export function buildTopbar(agent: WebSocketRemoteAgent): HTMLElement {
+export function buildTopbar(agent: WebSocketRemoteAgent, onToggleSidebar?: () => void): HTMLElement {
   const root = document.createElement("div");
   root.style.cssText = `
     display: flex; align-items: center; justify-content: space-between;
@@ -29,6 +29,18 @@ export function buildTopbar(agent: WebSocketRemoteAgent): HTMLElement {
 
   const left = document.createElement("div");
   left.style.cssText = "display: flex; align-items: center; gap: 10px; min-width: 0;";
+
+  if (onToggleSidebar) {
+    const toggle = document.createElement("button");
+    toggle.innerHTML = "&#9776;";
+    toggle.title = "Toggle entity sidebar";
+    toggle.style.cssText = `
+      background: transparent; border: none; color: inherit; cursor: pointer;
+      font-size: 16px; padding: 4px 8px; line-height: 1;
+    `;
+    toggle.onclick = onToggleSidebar;
+    left.appendChild(toggle);
+  }
 
   const dot = document.createElement("span");
   dot.style.cssText = "width: 8px; height: 8px; border-radius: 50%; background: #ef4444; transition: background 200ms; flex-shrink: 0;";

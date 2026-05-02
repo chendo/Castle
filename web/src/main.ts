@@ -13,6 +13,7 @@ import { WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
 import { registerHAToolRenderers } from "./HAToolRenderer";
 import { registerChartRenderer } from "./ChartRenderer";
 import { buildTopbar } from "./Topbar";
+import { buildSidebar } from "./Sidebar";
 
 registerHAToolRenderers();
 registerChartRenderer();
@@ -58,10 +59,18 @@ app.style.display = "flex";
 app.style.flexDirection = "column";
 app.style.height = "100vh";
 
-const topbar = buildTopbar(agent);
+const sidebar = buildSidebar();
+
+const topbar = buildTopbar(agent, sidebar.toggle);
 app.appendChild(topbar);
 
+const layout = document.createElement("div");
+layout.style.cssText = "flex: 1; min-height: 0; display: flex; overflow: hidden;";
+layout.appendChild(sidebar.root);
+
 const chatWrap = document.createElement("div");
-chatWrap.style.cssText = "flex: 1; min-height: 0;";
+chatWrap.style.cssText = "flex: 1; min-width: 0; min-height: 0;";
 chatWrap.appendChild(chatPanel);
-app.appendChild(chatWrap);
+layout.appendChild(chatWrap);
+
+app.appendChild(layout);
