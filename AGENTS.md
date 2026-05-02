@@ -36,6 +36,8 @@ After cloning, wire the pre-commit hook (it lives at `scripts/git-hooks/`):
 git config core.hooksPath scripts/git-hooks
 ```
 
+Frontend iteration: `docker compose --profile dev up -d web-watch` keeps `web/dist/` continuously rebuilt; refresh the browser after each save. Edit `*.ts` (Deno) → `docker compose restart hai`.
+
 Run all checks manually:
 
 ```bash

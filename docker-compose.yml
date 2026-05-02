@@ -26,5 +26,19 @@ services:
     command: sh -c "npm install --no-audit --no-fund && npm run build"
     profiles: ["build"]
 
+  # Continuous rebuild during frontend iteration.
+  # Start with: `docker compose --profile dev up -d web-watch`
+  # Stop with:  `docker compose --profile dev stop web-watch`
+  # hai keeps serving web/dist/ — refresh the browser after each rebuild.
+  web-watch:
+    image: node:20-alpine
+    container_name: hai-web-watch
+    working_dir: /workspace/web
+    volumes:
+      - .:/workspace
+    command: sh -c "npm install --no-audit --no-fund && npx vite build --watch --logLevel warn"
+    profiles: ["dev"]
+    restart: unless-stopped
+
 volumes:
   deno-cache:

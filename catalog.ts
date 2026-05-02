@@ -18,7 +18,16 @@ export function buildCatalog(states: HAState[], exposed?: Set<string>, areas?: M
   // Group by area if available
   if (areas && areas.size > 0) {
     const lines: string[] = [];
-    for (const [, area] of [...areas.entries()].sort((a, b) => a[1].name.localeCompare(b[1].name))) {
+    const sortedAreas = [...areas.entries()].sort((a, b) => a[1].name.localeCompare(b[1].name));
+    const areaNamesWithEntities = sortedAreas
+      .filter(([, area]) => filtered.some((s) => area.entities.has(s.entity_id)))
+      .map(([, area]) => area.name);
+    if (areaNamesWithEntities.length > 0) {
+      lines.push(`**Areas:** ${areaNamesWithEntities.join(", ")}`);
+      lines.push("");
+    }
+
+    for (const [, area] of sortedAreas) {
       const areaEntities = filtered.filter(s => area.entities.has(s.entity_id));
       if (areaEntities.length === 0) continue;
 
