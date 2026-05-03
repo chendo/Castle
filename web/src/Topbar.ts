@@ -60,6 +60,19 @@ export function buildTopbar(agent: WebSocketRemoteAgent, onToggleSidebar?: () =>
   const right = document.createElement("div");
   right.style.cssText = "display: flex; align-items: center; gap: 8px;";
 
+  const promptBtn = document.createElement("a");
+  promptBtn.href = "/agents.md";
+  promptBtn.target = "_blank";
+  promptBtn.rel = "noopener";
+  promptBtn.title = "View the rendered system prompt (AGENTS.md) the agent sees";
+  promptBtn.textContent = "📄 prompt";
+  promptBtn.style.cssText = `
+    padding: 4px 10px; font-size: 12px; cursor: pointer; text-decoration: none;
+    background: transparent; color: var(--foreground);
+    border: 1px solid var(--border); border-radius: 6px;
+  `;
+  right.append(promptBtn);
+
   // <theme-toggle> is registered by importing @mariozechner/mini-lit/dist/ThemeToggle.js
   // in main.ts. includeSystem=true cycles light → dark → system; default is system.
   const themeToggle = document.createElement("theme-toggle") as HTMLElement & { includeSystem?: boolean };

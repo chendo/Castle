@@ -217,6 +217,26 @@ async function handler(req: Request): Promise<Response> {
     }
   }
 
+  if (url.pathname === "/agents.md" && req.method === "GET") {
+    // Serve the rendered system prompt so the user can inspect what the agent
+    // actually sees. text/plain so the browser displays inline; ?download=1
+    // forces a save dialog.
+    try {
+      const path = `${new URL(".pi-agent/AGENTS.md", import.meta.url).pathname}`;
+      const text = await Deno.readTextFile(path);
+      const headers = new Headers({
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-store",
+      });
+      if (url.searchParams.get("download") === "1") {
+        headers.set("Content-Disposition", `attachment; filename="AGENTS.md"`);
+      }
+      return new Response(text, { headers });
+    } catch (err) {
+      return new Response(`AGENTS.md unavailable: ${(err as Error).message}`, { status: 503 });
+    }
+  }
+
   if (url.pathname === "/history" && req.method === "GET") {
     const entityIds = url.searchParams.getAll("entity_id");
     const startParam = url.searchParams.get("start");
