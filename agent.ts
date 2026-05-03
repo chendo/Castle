@@ -31,6 +31,16 @@ function getLocalModel(): any {
 
 let sessionPromise: Promise<AgentSession> | null = null;
 
+// Stable JSON serializer so identical arg objects fingerprint the same even
+// when their keys arrive in different orders. Used for loop detection.
+function stableJsonStringify(v: unknown): string {
+  if (v === null || typeof v !== "object") return JSON.stringify(v);
+  if (Array.isArray(v)) return "[" + v.map(stableJsonStringify).join(",") + "]";
+  const obj = v as Record<string, unknown>;
+  const keys = Object.keys(obj).sort();
+  return "{" + keys.map((k) => JSON.stringify(k) + ":" + stableJsonStringify(obj[k])).join(",") + "}";
+}
+
 export function getAgentSession(ha: HAClient): Promise<AgentSession> {
   if (!sessionPromise) {
     sessionPromise = (async () => {
@@ -73,18 +83,67 @@ export function getAgentSession(ha: HAClient): Promise<AgentSession> {
         thinkingLevel: "low",
       });
 
+      // Per-turn guardrails: stop the agent if it goes berserk with tool calls.
+      // - Cap of 50 calls per turn (anything beyond that is almost certainly a runaway).
+      // - Identical (toolName + args) called 5 times in a single turn → loop, abort.
+      // Both states reset on agent_start.
+      const MAX_TOOL_CALLS_PER_TURN = 50;
+      const MAX_IDENTICAL_CALLS = 5;
+      let perTurnToolCalls = 0;
+      const callFingerprintCounts = new Map<string, number>();
+
       // Persist every completed message to the markdown conversation file.
       // Errors here must never break the agent loop, so we swallow them.
       // Also evict the dashboard cache once the turn ends — it's a within-turn
       // optimization; carrying stale config across turns isn't worth the risk.
       result.session.agent.subscribe((event) => {
-        if (event.type === "message_end") {
+        if (event.type === "agent_start") {
+          perTurnToolCalls = 0;
+          callFingerprintCounts.clear();
+        } else if (event.type === "message_end") {
           // deno-lint-ignore no-explicit-any
           void logMessageEnd((event as any).message);
         } else if (event.type === "agent_end") {
           dashboardCache.clear();
         }
       });
+
+      // Wrap (don't replace) the beforeToolCall hook pi-coding-agent already
+      // installs for extension routing — defer to it first, then run our caps.
+      const previousBefore = result.session.agent.beforeToolCall;
+      result.session.agent.beforeToolCall = async (ctx, signal) => {
+        if (previousBefore) {
+          const r = await previousBefore(ctx, signal);
+          if (r?.block) return r;
+        }
+        perTurnToolCalls++;
+        if (perTurnToolCalls > MAX_TOOL_CALLS_PER_TURN) {
+          console.warn(`[agent] tool-call cap of ${MAX_TOOL_CALLS_PER_TURN} exceeded — aborting turn`);
+          // Abort asynchronously so the in-flight emission can settle. The
+          // block reason is what the LLM sees in place of the tool result.
+          queueMicrotask(() => result.session.agent.abort());
+          return {
+            block: true,
+            reason: `Tool-call limit reached (${MAX_TOOL_CALLS_PER_TURN} per turn). Stopping to prevent runaway. If you genuinely needed more, the user can split the request.`,
+          };
+        }
+        // deno-lint-ignore no-explicit-any
+        const toolName = (ctx as any).toolCall?.name ?? "(unknown)";
+        // deno-lint-ignore no-explicit-any
+        const args = (ctx as any).args;
+        const key = `${toolName}:${stableJsonStringify(args)}`;
+        const count = (callFingerprintCounts.get(key) ?? 0) + 1;
+        callFingerprintCounts.set(key, count);
+        if (count >= MAX_IDENTICAL_CALLS) {
+          console.warn(`[agent] tool ${toolName} called ${count}× with identical args — aborting`);
+          queueMicrotask(() => result.session.agent.abort());
+          return {
+            block: true,
+            reason: `Loop detected: tool "${toolName}" was called ${MAX_IDENTICAL_CALLS} times with identical arguments. Stopping. Try a different approach (different filter, different tool, or stop and ask the user for clarification).`,
+          };
+        }
+        return undefined;
+      };
 
       // Append the current wall-clock time to the latest user message at
       // LLM-call time. Home-state used to be injected here too, but it's a
