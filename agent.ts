@@ -18,14 +18,14 @@ const CWD = new URL(".", import.meta.url).pathname.replace(/\/$/, "");
 const authStorage = AuthStorage.create(`${AGENT_DIR}/auth.json`);
 
 // deno-lint-ignore no-explicit-any
-function getQwenModel(): any {
+function getLocalModel(): any {
   const registry = ModelRegistry.create(authStorage, `${AGENT_DIR}/models.json`);
   const err = registry.getError();
   if (err) throw new Error(`models.json error: ${err}`);
   // deno-lint-ignore no-explicit-any
   const models = (registry as any).models as Array<{ provider: string; id: string }>;
-  const model = models.find((m) => m.provider === "lmstudio");
-  if (!model) throw new Error("lmstudio model not found — check .pi-agent/models.json");
+  const model = models.find((m) => m.provider === "local");
+  if (!model) throw new Error("local model not found — check .pi-agent/models.json");
   console.log(`[agent] using model: ${model.provider}/${model.id}`);
   return model;
 }
@@ -42,7 +42,7 @@ export function getAgentSession(ha: HAClient): Promise<AgentSession> {
   if (!sessionPromise) {
     sessionPromise = (async () => {
       const settings = await loadSettings();
-      const model = getQwenModel();
+      const model = getLocalModel();
       const isMultimodal = Array.isArray(model.input) && model.input.includes("image");
       if (!isMultimodal) {
         console.log("[agent] model is text-only — ha_get_camera_snapshot will fall back to text descriptions");

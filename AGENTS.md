@@ -77,17 +77,18 @@ The HA token must have **write permission** for this API endpoint. If the call f
 | Variable | Default | Purpose |
 |---|---|---|
 | `HA_URL` | `http://homeassistant.local:8123` | Home Assistant URL |
-| `HA_TOKEN` | *(required)* | Long-lived access token |
-| `LM_STUDIO_URL` | `http://host.docker.internal:1234/v1` (in Docker) / `http://localhost:1234/v1` (host) | LM Studio OpenAI-compatible API |
-| `LM_STUDIO_API_KEY` | `lm-studio` | API key for LM Studio |
-| `HAI_AUTH_TOKEN` | *(empty)* | Optional bearer token for the WS/HTTP server |
+| `HA_TOKEN` | *(required)* | HA long-lived access token |
+| `OPENAI_URL` | `http://host.docker.internal:1234/v1` (in Docker) / `http://localhost:1234/v1` (host) | OpenAI-compatible API base URL (LM Studio, vLLM, llama.cpp, OpenRouter, real OpenAI, etc.) |
+| `OPENAI_API_KEY` | *(empty)* | API key for the OpenAI-compatible endpoint |
+| `MODEL_NAME` | *(required)* | Model id passed in chat completions (e.g. `qwen/qwen3-vl-30b`, `gpt-4o-mini`) |
+| `HAI_AUTH_TOKEN` | *(empty)* | Optional bearer token guarding hai's own WS/HTTP server |
 | `PORT` | `7090` | Server listen port (mapped to 7091 externally) |
 
-Put real values in a local `.env` (gitignored). Never hardcode network addresses or tokens in tracked files.
+Put real values in a local `.env` (gitignored). Never hardcode network addresses or tokens in tracked files. See `.env.example` for the template.
 
 ## Host networking
 
-`docker-compose.yml` uses `host.docker.internal` to reach LM Studio on the host. If your runtime resolves that differently (Lima, Podman, custom bridge), add an `extra_hosts` entry in a local `docker-compose.override.yml` (also gitignored). Verify LM Studio is bound to `0.0.0.0:1234`.
+`docker-compose.yml` uses `host.docker.internal` to reach a model server on the host. If your runtime resolves that differently (Lima, Podman, custom bridge), add an `extra_hosts` entry in a local `docker-compose.override.yml` (also gitignored). Verify the model server is bound to `0.0.0.0`.
 
 ## UI
 

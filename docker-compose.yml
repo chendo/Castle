@@ -5,12 +5,15 @@ services:
     volumes:
       - .:/workspace
       - deno-cache:/root/.cache/deno
+    # Secrets and per-deployment values come straight from .env to avoid the
+    # shell-env-shadowing trap that ${VAR} substitution suffers from. URLs keep
+    # ${VAR:-default} so a missing .env still boots with sensible Docker hosts.
+    env_file:
+      - path: .env
+        required: false
     environment:
       - HA_URL=${HA_URL:-http://homeassistant.local:8123}
-      - HA_TOKEN=${HA_TOKEN}
-      - LM_STUDIO_URL=${LM_STUDIO_URL:-http://host.docker.internal:1234/v1}
-      - LM_STUDIO_API_KEY=${LM_STUDIO_API_KEY}
-      - HAI_AUTH_TOKEN=${HAI_AUTH_TOKEN}
+      - OPENAI_URL=${OPENAI_URL:-http://host.docker.internal:1234/v1}
     # If your runtime needs a custom host alias (Lima, Podman, etc.), put it in
     # a local `docker-compose.override.yml` (gitignored) — for example:
     #   services:

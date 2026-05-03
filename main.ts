@@ -15,14 +15,13 @@ const ha = new HAClient(HA_URL, HA_TOKEN);
 let lastQueryAt: number | null = null;
 let queryCount = 0;
 
-const MODEL_ID = "unsloth/qwen3.6-35b-a3b";
-
-// LM Studio's native REST API (not the OpenAI-compat one) exposes per-model
-// capability metadata. `type: "vlm"` (or a `vision: true` flag on newer builds)
-// means the model accepts image input. Returns ["text", "image"] for VLMs and
-// ["text"] otherwise. Falls back to text-only on any error so startup never blocks.
+// Some OpenAI-compat servers (LM Studio, vLLM with --enable-vision-info) expose
+// per-model capability metadata at /api/v0/models/<id>: `type: "vlm"` or a
+// `vision: true` flag means the model accepts image input. Returns ["text",
+// "image"] when reported, ["text"] otherwise. Falls back to text-only on any
+// error so startup never blocks against a server that doesn't implement /api/v0.
 async function detectModelInput(baseUrl: string, apiKey: string, modelId: string): Promise<string[]> {
-  // baseUrl is the OpenAI-compat URL ending in /v1 — the REST API lives at /api/v0
+  // baseUrl is the OpenAI-compat URL ending in /v1 — the metadata API lives at /api/v0
   const restBase = baseUrl.replace(/\/v1\/?$/, "") + "/api/v0";
   const headers = { Authorization: `Bearer ${apiKey}` };
   try {
@@ -43,27 +42,29 @@ async function detectModelInput(baseUrl: string, apiKey: string, modelId: string
     if (found && (found.vision === true || found.type === "vlm")) return ["text", "image"];
     return ["text"];
   } catch (err) {
-    console.warn(`[hai] LM Studio capability probe failed (${(err as Error).message}); assuming text-only`);
+    console.warn(`[hai] capability probe failed (${(err as Error).message}); assuming text-only`);
     return ["text"];
   }
 }
 
 async function writeModelsJson(): Promise<void> {
-  const key = Deno.env.get("LM_STUDIO_API_KEY") ?? "lm-studio";
-  const url = Deno.env.get("LM_STUDIO_URL") ?? "http://localhost:1234/v1";
-  const input = await detectModelInput(url, key, MODEL_ID);
-  console.log(`[hai] model ${MODEL_ID} input modalities: ${input.join(", ")}`);
+  const key = Deno.env.get("OPENAI_API_KEY") ?? "";
+  const url = Deno.env.get("OPENAI_URL") ?? "http://localhost:1234/v1";
+  const modelId = Deno.env.get("MODEL_NAME");
+  if (!modelId) throw new Error("MODEL_NAME env var is required");
+  const input = await detectModelInput(url, key, modelId);
+  console.log(`[hai] model ${modelId} input modalities: ${input.join(", ")}`);
   const config = {
     providers: {
-      lmstudio: {
+      local: {
         baseUrl: url,
         api: "openai-completions",
         apiKey: key,
         compat: { supportsDeveloperRole: false, supportsReasoningEffort: false },
         models: [
           {
-            id: MODEL_ID,
-            name: "Qwen3 35B (Local)",
+            id: modelId,
+            name: modelId,
             contextWindow: 32768,
             maxTokens: 4096,
             reasoning: false,

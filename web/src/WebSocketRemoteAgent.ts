@@ -6,7 +6,7 @@ const PLACEHOLDER_MODEL: Model<any> = {
   id: "remote",
   name: "Remote",
   api: "openai-completions" as any,
-  provider: "lmstudio" as any,
+  provider: "local" as any,
   baseUrl: "",
   reasoning: false,
   input: ["text"],

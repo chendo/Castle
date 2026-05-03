@@ -47,7 +47,7 @@ setAppStorage(new AppStorage(settings, providerKeys, sessions, customProviders, 
 
 // Pre-seed dummy api key so AgentInterface.sendMessage doesn't prompt for one.
 // Real LLM calls happen on the server, not in the browser.
-await providerKeys.set("lmstudio", "remote");
+await providerKeys.set("local", "remote");
 
 const wsUrl = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
 const agent = new WebSocketRemoteAgent(wsUrl);
