@@ -1,4 +1,5 @@
 import { showEntityDetail } from "./EntityDetail";
+import type { WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
 
 interface State {
   entity_id: string;
@@ -6,6 +7,7 @@ interface State {
   // deno-lint-ignore no-explicit-any
   attributes: Record<string, any>;
   domain: string;
+  exposed?: boolean;
 }
 
 const SKIP_DOMAINS = new Set([
@@ -27,6 +29,7 @@ function stateClass(s: string): string {
 }
 
 const OPEN_DOMAINS_KEY = "hai-sidebar-open-domains";
+const HIDE_UNEXPOSED_KEY = "hai-sidebar-hide-unexposed";
 
 function loadOpenDomains(): Set<string> {
   try {
@@ -40,12 +43,21 @@ function saveOpenDomains(open: Set<string>): void {
   try { localStorage.setItem(OPEN_DOMAINS_KEY, JSON.stringify([...open])); } catch { /* ignore */ }
 }
 
+function loadHideUnexposed(): boolean {
+  try { return localStorage.getItem(HIDE_UNEXPOSED_KEY) === "1"; } catch { return false; }
+}
+
+function saveHideUnexposed(v: boolean): void {
+  try { localStorage.setItem(HIDE_UNEXPOSED_KEY, v ? "1" : "0"); } catch { /* ignore */ }
+}
+
 /**
  * Collapsible left sidebar listing entities grouped by domain.
  * Polls /states every 10s without losing search input or domain expansion state.
- * Click an entity to open a rich detail view.
+ * Click an entity to open a rich detail view; click the eye icon to flip its
+ * exposure (whether the agent can see/control it).
  */
-export function buildSidebar(): { root: HTMLElement; toggle: () => void } {
+export function buildSidebar(agent: WebSocketRemoteAgent): { root: HTMLElement; toggle: () => void } {
   const root = document.createElement("aside");
   root.style.cssText = `
     width: 320px; flex-shrink: 0;
@@ -58,9 +70,9 @@ export function buildSidebar(): { root: HTMLElement; toggle: () => void } {
   `;
   root.dataset.collapsed = "0";
 
-  // Search box
+  // Search box + hide-unexposed toggle
   const searchWrap = document.createElement("div");
-  searchWrap.style.cssText = "padding: 8px; border-bottom: 1px solid var(--border, #e5e7eb); flex-shrink: 0;";
+  searchWrap.style.cssText = "padding: 8px; border-bottom: 1px solid var(--border, #e5e7eb); flex-shrink: 0; display: flex; flex-direction: column; gap: 6px;";
   const search = document.createElement("input");
   search.type = "text";
   search.placeholder = "Search entities…";
@@ -70,7 +82,13 @@ export function buildSidebar(): { root: HTMLElement; toggle: () => void } {
     border: 1px solid var(--border); border-radius: 6px;
     font-size: 13px; outline: none;
   `;
-  searchWrap.appendChild(search);
+  const filterRow = document.createElement("label");
+  filterRow.style.cssText = "display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted-foreground); cursor: pointer; padding: 0 2px;";
+  const hideUnexposedCb = document.createElement("input");
+  hideUnexposedCb.type = "checkbox";
+  hideUnexposedCb.checked = loadHideUnexposed();
+  filterRow.append(hideUnexposedCb, document.createTextNode("Hide non-exposed"));
+  searchWrap.append(search, filterRow);
 
   // List
   const list = document.createElement("div");
@@ -80,6 +98,7 @@ export function buildSidebar(): { root: HTMLElement; toggle: () => void } {
 
   let allStates: State[] = [];
   const openDomains = loadOpenDomains();
+  let hideUnexposed = loadHideUnexposed();
 
   const render = () => {
     const q = search.value.toLowerCase().trim();
@@ -88,6 +107,7 @@ export function buildSidebar(): { root: HTMLElement; toggle: () => void } {
     const grouped = new Map<string, State[]>();
     for (const s of allStates) {
       if (SKIP_DOMAINS.has(s.domain)) continue;
+      if (hideUnexposed && s.exposed === false) continue;
       const name = (s.attributes?.friendly_name as string ?? s.entity_id.split(".").pop() ?? "").toLowerCase();
       if (q && !s.entity_id.toLowerCase().includes(q) && !name.includes(q)) continue;
       if (!grouped.has(s.domain)) grouped.set(s.domain, []);
@@ -137,18 +157,53 @@ export function buildSidebar(): { root: HTMLElement; toggle: () => void } {
 
       for (const e of entities) {
         const friendly = (e.attributes?.friendly_name as string) ?? e.entity_id.split(".").pop() ?? e.entity_id;
+        const exposed = e.exposed !== false; // treat undefined as exposed (legacy server)
         const item = document.createElement("div");
         item.style.cssText = `
-          padding: 5px 12px 5px 20px; font-size: 13px; cursor: pointer;
+          padding: 5px 12px 5px 12px; font-size: 13px;
           display: flex; justify-content: space-between; align-items: center;
           color: var(--foreground);
+          ${exposed ? "" : "opacity: 0.55;"}
         `;
+
+        const eyeBtn = document.createElement("button");
+        eyeBtn.type = "button";
+        eyeBtn.title = exposed
+          ? "Exposed to the agent — click to hide"
+          : "Not exposed — click to expose to the agent";
+        eyeBtn.style.cssText = `
+          flex-shrink: 0; width: 22px; height: 22px; padding: 0; margin-right: 6px;
+          background: transparent; border: none; cursor: pointer;
+          display: inline-flex; align-items: center; justify-content: center;
+          color: ${exposed ? "rgb(63 185 80)" : "var(--muted-foreground)"};
+          line-height: 1;
+        `;
+        // Open eye when exposed, closed eye when not. Inline SVG so no extra dep.
+        eyeBtn.innerHTML = exposed
+          ? `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>`
+          : `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 19c-6.5 0-10-7-10-7a18.46 18.46 0 0 1 4.06-5.06"/><path d="M9.9 4.24A10.94 10.94 0 0 1 12 4c6.5 0 10 7 10 7a18.4 18.4 0 0 1-2.16 3.19"/><line x1="2" y1="2" x2="22" y2="22"/></svg>`;
+        eyeBtn.onclick = (ev) => {
+          ev.stopPropagation();
+          const next = !exposed;
+          // Optimistic update — flip locally so the UI is responsive, the
+          // server poll will reconcile on the next /states refresh.
+          e.exposed = next;
+          render();
+          agent.sendRaw({ type: "set_exposure", entity_ids: [e.entity_id], expose: next });
+        };
+
+        const nameEl = document.createElement("span");
+        nameEl.style.cssText = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;margin-right:8px;";
+        nameEl.textContent = friendly;
+
         const cls = stateClass(e.state);
         const stateColor = cls === "on" ? "rgb(63 185 80)" : cls === "off" ? "var(--muted-foreground)" : "var(--muted-foreground)";
-        item.innerHTML = `
-          <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;margin-right:8px;">${escapeHtml(friendly)}</span>
-          <span style="font-size:11px;padding:1px 6px;border-radius:4px;background:var(--background);color:${stateColor};font-family:ui-monospace,monospace;flex-shrink:0;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(String(e.state))}</span>
-        `;
+        const stateEl = document.createElement("span");
+        stateEl.style.cssText = `font-size:11px;padding:1px 6px;border-radius:4px;background:var(--background);color:${stateColor};font-family:ui-monospace,monospace;flex-shrink:0;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;`;
+        stateEl.textContent = String(e.state);
+
+        item.append(eyeBtn, nameEl, stateEl);
+        item.style.cursor = "pointer";
         item.onmouseenter = () => { item.style.background = "var(--muted)"; };
         item.onmouseleave = () => { item.style.background = ""; };
         item.onclick = () => showEntityDetail(e);
@@ -161,6 +216,11 @@ export function buildSidebar(): { root: HTMLElement; toggle: () => void } {
   };
 
   search.oninput = render;
+  hideUnexposedCb.onchange = () => {
+    hideUnexposed = hideUnexposedCb.checked;
+    saveHideUnexposed(hideUnexposed);
+    render();
+  };
 
   const poll = async () => {
     try {

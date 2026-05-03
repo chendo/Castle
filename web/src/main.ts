@@ -84,7 +84,7 @@ app.style.display = "flex";
 app.style.flexDirection = "column";
 app.style.height = "100vh";
 
-const sidebar = buildSidebar();
+const sidebar = buildSidebar(agent);
 
 const topbar = buildTopbar(agent, sidebar.toggle);
 app.appendChild(topbar);

@@ -279,6 +279,30 @@ export class HAClient {
     return this.exposedEntities.has(entityId);
   }
 
+  /**
+   * Flip exposure for one or more entities for the "conversation" assistant
+   * (the namespace `homeassistant/expose_entity/list` uses). Drops the cached
+   * set so the next getExposedEntities() refetches.
+   */
+  async setExposed(entityIds: string[], shouldExpose: boolean): Promise<void> {
+    if (entityIds.length === 0) return;
+    await this.call({
+      type: "homeassistant/expose_entity",
+      assistants: ["conversation"],
+      entity_ids: entityIds,
+      should_expose: shouldExpose,
+    });
+    if (shouldExpose) {
+      if (this.exposedEntities) {
+        for (const id of entityIds) this.exposedEntities.add(id);
+      }
+    } else {
+      if (this.exposedEntities) {
+        for (const id of entityIds) this.exposedEntities.delete(id);
+      }
+    }
+  }
+
   get isConnected(): boolean {
     return this._connected;
   }

@@ -193,6 +193,7 @@ async function handler(req: Request): Promise<Response> {
       state: s.state,
       attributes: s.attributes,
       domain: s.entity_id.split(".")[0],
+      exposed: ha.isExposed(s.entity_id),
     })));
   }
 
@@ -412,6 +413,25 @@ async function handleSocket(socket: WebSocket): Promise<void> {
         }
       }
       console.log(`[settings] enabled tools: ${saved.enabledTools.join(", ")}`);
+      return;
+    }
+
+    if (msg.type === "set_exposure") {
+      const payload = msg as unknown as { entity_ids?: string[]; expose?: boolean };
+      const ids = Array.isArray(payload.entity_ids) ? payload.entity_ids.filter((s) => typeof s === "string") : [];
+      if (ids.length === 0 || typeof payload.expose !== "boolean") {
+        socket.send(JSON.stringify({ type: "error", message: "set_exposure: entity_ids[] and expose:boolean required" }));
+        return;
+      }
+      try {
+        await ha.setExposed(ids, payload.expose);
+        // Push the catalog refresh in the background so the agent's next prompt
+        // sees the new exposed list. Don't await — UI doesn't need to wait.
+        regenerateCatalog().catch((err) => console.warn("[exposure] catalog refresh failed:", err));
+        socket.send(JSON.stringify({ type: "exposure_updated", entity_ids: ids, expose: payload.expose }));
+      } catch (err) {
+        socket.send(JSON.stringify({ type: "error", message: `set_exposure failed: ${(err as Error).message}` }));
+      }
       return;
     }
 
