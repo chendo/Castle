@@ -124,7 +124,7 @@ async function getHATimezone(ha: HAClient): Promise<string> {
   } catch { /* fall through to config API */ }
   // Fallback: try config API
   try {
-    const tz = await ha.call<{ time_zone: string }>({ type: "config/core/get" });
+    const tz = await ha.call<{ time_zone: string }>({ type: "get_config" });
     if (tz?.time_zone) {
       cachedTimezone = tz.time_zone;
       return cachedTimezone;

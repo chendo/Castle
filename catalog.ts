@@ -1,4 +1,4 @@
-import type { HAServices, HAState } from "./ha-client.ts";
+import type { HAServices, HAState, HouseInfo } from "./ha-client.ts";
 
 // Domains to skip — they add noise without useful controllability
 const SKIP_DOMAINS = new Set([
@@ -155,50 +155,96 @@ export function extractDomains(states: HAState[]): Set<string> {
 }
 
 interface BuildAgentsMdOptions {
-  houseInfo?: { name: string; timezone: string; unit_system: string; location: string };
+  houseInfo?: Partial<HouseInfo>;
   servicesMd?: string;
 }
 
-export function buildAgentsMd(catalog: string, opts: BuildAgentsMdOptions | BuildAgentsMdOptions["houseInfo"] = {}): string {
-  // Backwards-compat: callers passed houseInfo positionally before.
-  const o: BuildAgentsMdOptions = (opts && "houseInfo" in (opts as object))
-    ? (opts as BuildAgentsMdOptions)
-    : { houseInfo: opts as BuildAgentsMdOptions["houseInfo"] };
+// AGENTS.md is the cached system prompt. The section order below is fixed:
+//   1. System prompt        (constant)
+//   2. House metadata       (changes only when HA config is edited)
+//   3. Services             (changes only when integrations are added/removed)
+//   4. Areas + entities     (changes whenever entities are added/exposed/renamed)
+//   5. Reminders            (constant)
+// Volatile sections sit near the end so the LM Studio / OpenAI-compat KV cache
+// stays warm across regenerations: a fresh entity invalidates only sections 4
+// and 5, while sections 1–3 keep hitting the cache.
 
-  const info: Partial<{ name: string; timezone: string; unit_system: string; location: string }> = o.houseInfo ?? {};
-  const us = typeof info.unit_system === "string" ? JSON.parse(info.unit_system) : info.unit_system;
-  const tempUnit = (us?.temperature as string)?.toUpperCase() || "°C";
+const SYSTEM_PROMPT = `# hai — Home Assistant Agent
 
-  const servicesSection = o.servicesMd
-    ? `\n## Services available\n${'`!` = required, `?` = optional. Field types/defaults can be inferred from name; ask via ha_get_entity if unsure.'}\n\n${o.servicesMd}`
-    : "";
+You control a smart home. Be brief. Confirm actions with one sentence.`;
 
-  return `# hai — Home Assistant Agent
+const REMINDERS = `## Reminders
 
-You control a smart home. Be brief. Confirm actions with one sentence.
-
-## House
-- **Name:** ${info.name ?? "Home"}
-- **Timezone:** ${info.timezone ?? "UTC"}
-- **Location:** ${info.location ?? "Unknown"}
-- **Unit system:** ${us?.length ? `${us.length}m` : ""}${us?.weight ? `${us.weight}kg` : ""}${tempUnit ? ` · Temperature: ${tempUnit}` : ""}
-
-## Available entities
-${catalog}
-${servicesSection}
-
-## Tool guidance
+Tool guidance:
 - Answering state questions: use "Current home state" provided in the user message. No tool needed.
 - Controlling devices: ha_call_service. Use service_data for parameters; set return_response=true for services that return data (weather.get_forecasts, calendar.get_events, etc).
 - Inspecting entity capabilities (color modes, hvac modes, current attributes): ha_get_entity.
-- Sensor trends/history: ha_get_history (returns aggregated stats with min/max per bucket).
+- Sensor trends/history: ha_get_history (numeric → bucketed min/max; binary/enum → state-change list).
 - State not in snapshot or stale: ha_get_states.
 
-## Rules
+Rules:
 - One-sentence answers where possible.
 - After calling a service, confirm what you did.
 - Never guess entity IDs — use only IDs listed above.
 - Use area names naturally ("turn on the kitchen lights") and map to entity IDs from the list.
-- The "Current home state" section at the end of your context changes every query. Keep your reasoning focused so LM Studio's prompt cache (which covers everything before it) stays valid.
-`;
+- The "Current home state" block appended to the user message changes every query; everything before it is cached, so keep the cached prefix stable.`;
+
+function renderHouse(info: Partial<HouseInfo>): string {
+  const us = typeof info.unit_system === "string" ? safeParse(info.unit_system) : info.unit_system;
+  const lines = [
+    "## House",
+    `- **Name:** ${info.name ?? "Home"}`,
+    `- **Timezone:** ${info.timezone ?? "UTC"}`,
+    `- **Location:** ${info.location || "Unknown"}`,
+  ];
+  if (typeof info.elevation === "number") lines.push(`- **Elevation:** ${info.elevation}m`);
+  if (info.country) lines.push(`- **Country:** ${info.country}`);
+  if (info.language) lines.push(`- **Language:** ${info.language}`);
+  if (info.currency) lines.push(`- **Currency:** ${info.currency}`);
+  const unitLine = formatUnitSystem(us);
+  if (unitLine) lines.push(`- **Units:** ${unitLine}`);
+  return lines.join("\n");
+}
+
+// deno-lint-ignore no-explicit-any
+function safeParse(s: string): any {
+  try { return JSON.parse(s); } catch { return {}; }
+}
+
+// deno-lint-ignore no-explicit-any
+function formatUnitSystem(us: any): string {
+  if (!us || typeof us !== "object") return "";
+  const parts: string[] = [];
+  if (us.temperature) parts.push(`temperature=${String(us.temperature).toUpperCase()}`);
+  if (us.length) parts.push(`length=${us.length}`);
+  if (us.mass) parts.push(`mass=${us.mass}`);
+  if (us.volume) parts.push(`volume=${us.volume}`);
+  if (us.pressure) parts.push(`pressure=${us.pressure}`);
+  if (us.wind_speed) parts.push(`wind_speed=${us.wind_speed}`);
+  return parts.join(" · ");
+}
+
+function renderServices(servicesMd: string | undefined): string {
+  if (!servicesMd) return "";
+  return [
+    "## Services available",
+    "`!` = required, `?` = optional. Field types/defaults can be inferred from name; ask via ha_get_entity if unsure.",
+    "",
+    servicesMd,
+  ].join("\n");
+}
+
+function renderEntities(catalog: string): string {
+  return ["## Areas and exposed entities", catalog].join("\n");
+}
+
+export function buildAgentsMd(catalog: string, opts: BuildAgentsMdOptions = {}): string {
+  const sections = [
+    SYSTEM_PROMPT,
+    renderHouse(opts.houseInfo ?? {}),
+    renderServices(opts.servicesMd),
+    renderEntities(catalog),
+    REMINDERS,
+  ].filter((s) => s.length > 0);
+  return sections.join("\n\n") + "\n";
 }

@@ -26,6 +26,19 @@ export interface HAServiceDef {
 /** Result of `get_services`: { domain: { service: HAServiceDef } } */
 export type HAServices = Record<string, Record<string, HAServiceDef>>;
 
+export interface HouseInfo {
+  name: string;
+  timezone: string;
+  /** JSON-encoded unit_system from HA: { length, mass, temperature, pressure, volume, wind_speed, ... } */
+  unit_system: string;
+  /** "lat, lon" or "" if HA hasn't been configured with coordinates. */
+  location: string;
+  elevation?: number;
+  country?: string;
+  language?: string;
+  currency?: string;
+}
+
 type Pending = { resolve: (v: unknown) => void; reject: (e: unknown) => void };
 
 export class HAClient {
@@ -214,20 +227,38 @@ export class HAClient {
     return this.servicesCache?.[domain]?.[service];
   }
 
-  async getHouseInfo(): Promise<{ name: string; timezone: string; unit_system: string; location: string }> {
+  async getHouseInfo(): Promise<HouseInfo> {
+    // `get_states` doesn't accept a target filter — it returns the whole list,
+    // so the previous lookup silently produced defaults. Pull from the local
+    // states map (the `zone.home` entity carries lat/lon/friendly_name) and
+    // fall back to the WS `get_config` command for the locale/units block.
+    const fallback: HouseInfo = { name: "Home", timezone: "UTC", unit_system: "{}", location: "" };
     try {
-      const ha = await this.call<HAState>({ type: "get_states", target: { entity_id: "homeassistant" } });
-      const attrs = ((ha as HAState)?.attributes ?? {}) as Record<string, unknown>;
-      const lat = typeof attrs.latitude === "number" ? attrs.latitude.toFixed(4) : "";
-      const lon = typeof attrs.longitude === "number" ? attrs.longitude.toFixed(4) : "";
+      const zone = this.states.get("zone.home");
+      const zAttrs = (zone?.attributes ?? {}) as Record<string, unknown>;
+      const lat = typeof zAttrs.latitude === "number" ? zAttrs.latitude.toFixed(4) : "";
+      const lon = typeof zAttrs.longitude === "number" ? zAttrs.longitude.toFixed(4) : "";
+      let core: Record<string, unknown> = {};
+      try {
+        core = await this.call<Record<string, unknown>>({ type: "get_config" }) ?? {};
+      } catch {
+        // Older HA / restricted token — fine, we'll fall back to whatever the zone gave us.
+      }
+      const elevation = typeof core.elevation === "number"
+        ? core.elevation
+        : (typeof zAttrs.elevation === "number" ? zAttrs.elevation : undefined);
       return {
-        name: (attrs.friendly_name as string) || "Home",
-        timezone: (attrs.time_zone as string) || "UTC",
-        unit_system: JSON.stringify(attrs.unit_system ?? {}),
+        name: (core.location_name as string) || (zAttrs.friendly_name as string) || "Home",
+        timezone: (core.time_zone as string) || "UTC",
+        unit_system: JSON.stringify(core.unit_system ?? {}),
         location: lat && lon ? `${lat}, ${lon}` : "",
+        elevation,
+        country: typeof core.country === "string" ? core.country : undefined,
+        language: typeof core.language === "string" ? core.language : undefined,
+        currency: typeof core.currency === "string" ? core.currency : undefined,
       };
     } catch {
-      return { name: "Home", timezone: "UTC", unit_system: "{}", location: "" };
+      return fallback;
     }
   }
 
