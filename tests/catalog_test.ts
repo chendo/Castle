@@ -180,6 +180,110 @@ Deno.test("buildServicesData — fields carry required flag, response detected",
   assertEquals(getForecasts.response, true);
 });
 
+// ---------------------------------------------------------------------------
+// Stability: re-ordering the inputs must not change the rendered bytes.
+// The prompt cache invalidates on the first byte that changes, so any drift
+// here translates directly into cache misses.
+// ---------------------------------------------------------------------------
+
+function shuffle<T>(xs: T[], seed: number): T[] {
+  const out = xs.slice();
+  // Deterministic Fisher-Yates with a tiny LCG so the test result itself is
+  // reproducible across runs.
+  let s = seed;
+  const rand = () => {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    return s / 0x100000000;
+  };
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
+Deno.test("AGENTS.md output is byte-stable under input shuffling", () => {
+  const states: HAState[] = [
+    state("light.kitchen_main", "Kitchen Main"),
+    state("light.kitchen_island", "Kitchen Island"),
+    state("switch.kitchen_kettle", "Kettle"),
+    state("light.bedroom_lamp", "Bedroom Lamp"),
+    state("sensor.outside_temp", "Outside Temp"),
+    state("binary_sensor.front_door", "Front Door"),
+  ];
+
+  const services: HAServices = {
+    light: {
+      turn_on: { fields: { brightness_pct: { required: false }, transition: { required: false }, kelvin: { required: false } } },
+      turn_off: { fields: {} },
+    },
+    weather: {
+      get_forecasts: { fields: { type: { required: true } }, response: { optional: false } },
+    },
+  };
+
+  // Build areas by inserting in two different orders + with shuffled entity sets.
+  const buildAreas = (order: "AB" | "BA", swap: boolean) => {
+    const kit = { name: "Kitchen", entities: new Set(swap
+      ? ["switch.kitchen_kettle", "light.kitchen_main", "light.kitchen_island"]
+      : ["light.kitchen_island", "light.kitchen_main", "switch.kitchen_kettle"]) };
+    const bed = { name: "Bedroom", entities: new Set(["light.bedroom_lamp"]) };
+    const m = new Map<string, typeof kit>();
+    if (order === "AB") { m.set("kit", kit); m.set("bed", bed); }
+    else { m.set("bed", bed); m.set("kit", kit); }
+    return m;
+  };
+
+  // Build services map with two different field-key insertion orders.
+  const reorderFields = (svcs: HAServices, seed: number): HAServices => {
+    const out: HAServices = {};
+    const domainKeys = shuffle(Object.keys(svcs), seed);
+    for (const d of domainKeys) {
+      out[d] = {};
+      const svcKeys = shuffle(Object.keys(svcs[d]), seed + 1);
+      for (const s of svcKeys) {
+        const def = svcs[d][s];
+        const fieldEntries = shuffle(Object.entries(def.fields ?? {}), seed + 2);
+        out[d][s] = { ...def, fields: Object.fromEntries(fieldEntries) };
+      }
+    }
+    return out;
+  };
+
+  const renderWith = (statesOrder: HAState[], servicesIn: HAServices, areasOrder: "AB" | "BA", swap: boolean) =>
+    buildAgentsMd({
+      houseInfo: HOUSE,
+      services: buildServicesData(servicesIn, new Set(["light", "weather"])),
+      catalog: buildCatalogData(statesOrder, undefined, buildAreas(areasOrder, swap)),
+    });
+
+  const baseline = renderWith(states, services, "AB", false);
+  const variant1 = renderWith(shuffle(states, 1), reorderFields(services, 1), "BA", true);
+  const variant2 = renderWith(shuffle(states, 7), reorderFields(services, 7), "AB", true);
+  const variant3 = renderWith(shuffle(states, 42), reorderFields(services, 42), "BA", false);
+
+  assertEquals(variant1, baseline, "shuffle 1 produced different output");
+  assertEquals(variant2, baseline, "shuffle 2 produced different output");
+  assertEquals(variant3, baseline, "shuffle 3 produced different output");
+});
+
+Deno.test("buildServicesData — fields are sorted alphabetically", () => {
+  const services: HAServices = {
+    light: {
+      turn_on: {
+        // Insertion order is intentionally non-alpha
+        fields: {
+          transition: { required: false },
+          brightness_pct: { required: false },
+          kelvin: { required: false },
+        },
+      },
+    },
+  };
+  const out = buildServicesData(services, new Set(["light"]));
+  assertEquals(out[0].services[0].fields.map((f) => f.name), ["brightness_pct", "kelvin", "transition"]);
+});
+
 Deno.test("buildServicesData — homeassistant + recorder etc are blocked", () => {
   const services: HAServices = {
     homeassistant: { restart: {} },

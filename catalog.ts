@@ -7,6 +7,14 @@ const SKIP_DOMAINS = new Set([
   "conversation", "tts", "stt", "wake_word",
 ]);
 
+// Byte-comparison (UTF-16 code units). Locale-independent and host-independent
+// — the same input always produces the same order, which the prompt cache
+// requires. Avoid Intl.Collator and String.localeCompare here: both depend on
+// the runtime's default locale and quietly drift across environments.
+function byString(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 interface AreaInfo { name: string; entities: Set<string> }
 
 // ---------------------------------------------------------------------------
@@ -62,9 +70,9 @@ function entityFromState(s: HAState): CatalogEntity {
 }
 
 function groupByDomain(entities: CatalogEntity[]): Record<string, CatalogEntity[]> {
-  const sorted = [...entities].sort((a, b) => a.entity_id.localeCompare(b.entity_id));
+  const sorted = [...entities].sort((a, b) => byString(a.entity_id, b.entity_id));
   // Build with domain-key ordering so iteration in the template is alphabetical.
-  const sortedDomains = [...new Set(sorted.map((e) => e.domain))].sort();
+  const sortedDomains = [...new Set(sorted.map((e) => e.domain))].sort(byString);
   const out: Record<string, CatalogEntity[]> = {};
   for (const d of sortedDomains) out[d] = sorted.filter((e) => e.domain === d);
   return out;
@@ -87,7 +95,7 @@ export function buildCatalogData(
   }
 
   const areaList: CatalogArea[] = [];
-  const sortedAreas = [...areas.entries()].sort((a, b) => a[1].name.localeCompare(b[1].name));
+  const sortedAreas = [...areas.entries()].sort((a, b) => byString(a[1].name, b[1].name));
   const claimed = new Set<string>();
 
   for (const [, area] of sortedAreas) {
@@ -122,15 +130,19 @@ function trimDescription(s: string | undefined): string | undefined {
 export function buildServicesData(services: HAServices, presentDomains: Set<string>): ServiceDomain[] {
   const targetDomains = new Set([...presentDomains, ...SERVICE_INCLUDE_ALWAYS]);
   const out: ServiceDomain[] = [];
-  for (const domain of [...targetDomains].sort()) {
+  for (const domain of [...targetDomains].sort(byString)) {
     if (SERVICE_BLOCKLIST_DOMAINS.has(domain)) continue;
     const domainServices = services[domain];
     if (!domainServices) continue;
     const items: ServiceItem[] = [];
-    for (const [svcName, def] of Object.entries(domainServices).sort((a, b) => a[0].localeCompare(b[0]))) {
+    for (const [svcName, def] of Object.entries(domainServices).sort((a, b) => byString(a[0], b[0]))) {
       const fields = def.fields ?? {};
+      // Sort fields alphabetically too — HA emits them in declaration order
+      // which can shift between integration versions and silently invalidate
+      // the prompt cache. Alpha is the only fully deterministic choice.
       const fieldList: ServiceField[] = Object.entries(fields)
-        .map(([name, f]) => ({ name, required: f?.required === true }));
+        .map(([name, f]) => ({ name, required: f?.required === true }))
+        .sort((a, b) => byString(a.name, b.name));
       items.push({
         name: svcName,
         fields: fieldList,
