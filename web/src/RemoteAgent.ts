@@ -98,8 +98,10 @@ export class RemoteAgent {
     // applySnapshot mutates state silently — but AgentInterface only re-renders
     // in response to subscribed events. Without this, "New chat" replaces messages
     // server-side but the old conversation stays visible in the UI. Fire a
-    // synthetic agent_end so subscribers re-render with the fresh state.
-    const synthetic = { type: "agent_end", messages: this._messages } as AgentEvent;
+    // synthetic turn_start: it triggers requestUpdate in AgentInterface but has no
+    // side effects on the streaming container (unlike agent_end, which would tear
+    // down a live stream if a snapshot ever arrived mid-turn).
+    const synthetic = { type: "turn_start" } as AgentEvent;
     const signal = new AbortController().signal;
     for (const l of this.listeners) void l(synthetic, signal);
   }
@@ -127,6 +129,23 @@ export class RemoteAgent {
     this._isStreaming = true;
     this._errorMessage = undefined;
 
+    // Optimistically add the user message + push a synthetic agent_start so the
+    // UI shows the new message and the progress pulse immediately, instead of
+    // waiting for the first event to round-trip from the server (noticeable on
+    // slow local LLMs). We tag the message with `_optimistic` so reduce() can
+    // replace it when the server echoes message_end for the same prompt.
+    const optimisticUser: AgentMessage & { _optimistic?: true } = {
+      role: "user",
+      content: text,
+      timestamp: Date.now(),
+      _optimistic: true,
+    } as any;
+    this._messages = [...this._messages, optimisticUser];
+
+    const synthetic = { type: "agent_start" } as AgentEvent;
+    const signal = new AbortController().signal;
+    for (const l of this.listeners) void l(synthetic, signal);
+
     const done = new Promise<void>((resolve) => { this.resolveActive = resolve; });
     this.sendPromptText(text);
     await done;
@@ -149,10 +168,20 @@ export class RemoteAgent {
       case "message_update":
         this._streamingMessage = event.message;
         break;
-      case "message_end":
+      case "message_end": {
         this._streamingMessage = undefined;
-        this._messages = [...this._messages, event.message];
+        // If the server is echoing back the user message we already added
+        // optimistically in prompt(), replace the optimistic entry with the
+        // server's authoritative version (correct timestamp, normalized content)
+        // instead of duplicating it.
+        const last = this._messages[this._messages.length - 1] as AgentMessage & { _optimistic?: true } | undefined;
+        if (last?._optimistic && last.role === "user" && event.message.role === "user") {
+          this._messages = [...this._messages.slice(0, -1), event.message];
+        } else {
+          this._messages = [...this._messages, event.message];
+        }
         break;
+      }
       case "tool_execution_start": {
         const next = new Set(this._pendingToolCalls);
         next.add(event.toolCallId);
