@@ -3,10 +3,110 @@ import { encodeBase64 } from "jsr:@std/encoding@1/base64";
 import type { HAClient } from "./ha-client.ts";
 
 type ToolContent = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
+export type TruncationInfo = {
+  bytes_elided: number;
+  total_bytes: number;
+  items_elided?: number;
+  total_items?: number;
+  hint?: string;
+};
 type ToolResult = { content: ToolContent[]; details: Record<string, unknown> };
 
+const BYTES_PER_KB = 1024;
+
+function utf8Bytes(s: string): number {
+  return new TextEncoder().encode(s).length;
+}
+
+function fmtKB(bytes: number): string {
+  return bytes < BYTES_PER_KB ? `${bytes}B` : `${(bytes / BYTES_PER_KB).toFixed(1)}kB`;
+}
+
+function withTruncationFooter(text: string, info: TruncationInfo): string {
+  const parts: string[] = [];
+  if (info.items_elided && info.total_items) {
+    parts.push(`${info.total_items - info.items_elided} of ${info.total_items} items shown`);
+  }
+  parts.push(`${fmtKB(info.bytes_elided)} elided of ${fmtKB(info.total_bytes)} total`);
+  if (info.hint) parts.push(info.hint);
+  return `${text}\n\n[truncated: ${parts.join(" — ")}]`;
+}
+
+/**
+ * Plain-text response. Truncates at the last newline that fits inside maxBytes,
+ * appends a footer naming the byte count cut, and surfaces the same info on
+ * `details.truncated` so the renderer can show a warning badge.
+ */
+export function okText(text: string, opts: { maxBytes?: number; details?: Record<string, unknown>; hint?: string } = {}): ToolResult {
+  const max = opts.maxBytes ?? 8 * BYTES_PER_KB;
+  const totalBytes = utf8Bytes(text);
+  if (totalBytes <= max) {
+    return { content: [{ type: "text", text }], details: opts.details ?? {} };
+  }
+  // Walk back from `max` to the previous newline so we don't cut mid-line.
+  // (Approximation: most strings here are ASCII so byte ≈ char; for multibyte
+  // we may stop slightly under max, which is fine.)
+  let cutoff = max;
+  const newlineIdx = text.lastIndexOf("\n", cutoff);
+  if (newlineIdx > max / 2) cutoff = newlineIdx;
+  const head = text.slice(0, cutoff);
+  const info: TruncationInfo = {
+    bytes_elided: totalBytes - utf8Bytes(head),
+    total_bytes: totalBytes,
+    hint: opts.hint,
+  };
+  return {
+    content: [{ type: "text", text: withTruncationFooter(head, info) }],
+    details: { ...(opts.details ?? {}), truncated: info },
+  };
+}
+
+/**
+ * List of items joined by `\n` (or custom separator). Cuts whole items, never
+ * mid-item. Reports both byte and item counts in the footer/details.
+ */
+export function okList(
+  header: string,
+  items: string[],
+  opts: { maxBytes?: number; separator?: string; details?: Record<string, unknown>; hint?: string } = {},
+): ToolResult {
+  const max = opts.maxBytes ?? 8 * BYTES_PER_KB;
+  const sep = opts.separator ?? "\n";
+  const headerBytes = utf8Bytes(header ? header + sep : "");
+
+  let used = headerBytes;
+  let kept = 0;
+  for (const item of items) {
+    const cost = utf8Bytes(item) + (kept > 0 ? sep.length : 0);
+    if (used + cost > max) break;
+    used += cost;
+    kept++;
+  }
+
+  const fullText = (header ? header + sep : "") + items.join(sep);
+  const totalBytes = utf8Bytes(fullText);
+  if (kept === items.length) {
+    return { content: [{ type: "text", text: fullText }], details: opts.details ?? {} };
+  }
+  const head = (header ? header + sep : "") + items.slice(0, kept).join(sep);
+  const info: TruncationInfo = {
+    bytes_elided: totalBytes - utf8Bytes(head),
+    total_bytes: totalBytes,
+    items_elided: items.length - kept,
+    total_items: items.length,
+    hint: opts.hint,
+  };
+  return {
+    content: [{ type: "text", text: withTruncationFooter(head, info) }],
+    details: { ...(opts.details ?? {}), truncated: info },
+  };
+}
+
+// Backwards-compatible default: existing call sites that just used `ok(text)`
+// keep working but now get a much higher cap (8kB) and a real truncation
+// footer instead of silent slice. New code should prefer okText/okList.
 function ok(text: string, details: Record<string, unknown> = {}): ToolResult {
-  return { content: [{ type: "text", text: text.slice(0, 3000) }], details };
+  return okText(text, { details });
 }
 
 // Cache HA timezone once per session
@@ -201,8 +301,71 @@ function formatHistorySummary(
   return lines.join("\n");
 }
 
-export function buildTools(ha: HAClient, opts: { multimodal?: boolean } = {}) {
+/**
+ * Walk a dot-separated path into a JSON tree. Numeric segments index arrays.
+ * Returns { value, found } so callers can distinguish "missing" from "null".
+ */
+export function walkPath(root: unknown, path: string): { value: unknown; found: boolean } {
+  if (!path) return { value: root, found: true };
+  const segments = path.split(".").filter((s) => s.length > 0);
+  let cur: unknown = root;
+  for (const seg of segments) {
+    if (cur == null || typeof cur !== "object") return { value: undefined, found: false };
+    if (Array.isArray(cur)) {
+      const idx = Number(seg);
+      if (!Number.isInteger(idx) || idx < 0 || idx >= cur.length) return { value: undefined, found: false };
+      cur = cur[idx];
+    } else {
+      const obj = cur as Record<string, unknown>;
+      if (!(seg in obj)) return { value: undefined, found: false };
+      cur = obj[seg];
+    }
+  }
+  return { value: cur, found: true };
+}
+
+/**
+ * Render a top-level dashboard config as a compact summary so the model can
+ * navigate without dragging the whole tree into context. Lists each view's
+ * title, path, and card count, plus other top-level keys.
+ */
+export function summarizeDashboard(config: unknown): string {
+  if (config == null || typeof config !== "object") return JSON.stringify(config);
+  const obj = config as Record<string, unknown>;
+  const lines: string[] = [];
+  const views = Array.isArray(obj.views) ? obj.views : null;
+  if (views) {
+    lines.push(`views (${views.length}):`);
+    views.forEach((v, i) => {
+      const view = v as Record<string, unknown>;
+      const title = view.title ?? "(untitled)";
+      const path = view.path ? ` [${view.path}]` : "";
+      const cards = Array.isArray(view.cards) ? view.cards.length : 0;
+      const badges = Array.isArray(view.badges) ? view.badges.length : 0;
+      lines.push(`  views.${i}${path}: "${title}" — ${cards} cards${badges ? `, ${badges} badges` : ""}`);
+    });
+  }
+  const topKeys = Object.keys(obj).filter((k) => k !== "views");
+  if (topKeys.length > 0) {
+    lines.push("");
+    lines.push("other top-level keys:");
+    for (const k of topKeys) {
+      const v = obj[k];
+      const sample = Array.isArray(v) ? `[${v.length} items]` : (v && typeof v === "object" ? `{${Object.keys(v).length} keys}` : JSON.stringify(v));
+      lines.push(`  ${k}: ${sample}`);
+    }
+  }
+  lines.push("");
+  lines.push("To drill in, call again with `path=views.0` (or `views.0.cards.3`, etc.).");
+  return lines.join("\n");
+}
+
+export function buildTools(
+  ha: HAClient,
+  opts: { multimodal?: boolean; dashboardCache?: Map<string, unknown> } = {},
+) {
   const isMultimodal = opts.multimodal === true;
+  const dashboardCache = opts.dashboardCache ?? new Map<string, unknown>();
   return [
     {
       name: "ha_call_service",
@@ -284,13 +447,17 @@ export function buildTools(ha: HAClient, opts: { multimodal?: boolean } = {}) {
         if (params.entity_id) {
           const s = ha.getState(params.entity_id);
           if (!s) return ok(`Unknown entity: ${params.entity_id}`);
-          return ok(`${s.entity_id}: ${s.state}\nAttributes: ${JSON.stringify(s.attributes)}`);
+          return okText(`${s.entity_id}: ${s.state}\nAttributes: ${JSON.stringify(s.attributes)}`, { maxBytes: 4 * 1024 });
         }
         const all = ha.getAllStates().filter(s =>
           !params.domain || s.entity_id.startsWith(params.domain + ".")
         );
-        const text = all.map(s => `${s.entity_id}: ${s.state}`).join("\n");
-        return ok(text || "No entities found");
+        if (all.length === 0) return ok("No entities found");
+        const lines = all.map(s => `${s.entity_id}: ${s.state}`);
+        return okList("", lines, {
+          maxBytes: 8 * 1024,
+          hint: params.domain ? "narrow with `entity_id=<id>`" : "filter with `domain=<name>` or query a specific `entity_id=<id>`",
+        });
       },
     },
 
@@ -498,8 +665,11 @@ export function buildTools(ha: HAClient, opts: { multimodal?: boolean } = {}) {
             const text = await res.text();
             const lines = text.split("\n").filter((l) => l.trim());
             const filtered = f ? lines.filter((l) => l.toLowerCase().includes(f)) : lines;
+            // error_log is reverse-chronological: newest at the bottom. Show
+            // the tail (most recent 100 lines) and let okList trim by bytes.
             const slice = filtered.slice(-100);
-            return ok(slice.length === 0 ? "(no matching log lines)" : slice.join("\n"));
+            if (slice.length === 0) return ok("(no matching log lines)");
+            return okList("", slice, { maxBytes: 12 * 1024, hint: "tighten with `filter=<substring>`" });
           } catch (err) {
             return ok(`error_log fetch failed: ${(err as Error).message}`);
           }
@@ -515,7 +685,8 @@ export function buildTools(ha: HAClient, opts: { multimodal?: boolean } = {}) {
           });
           const filtered = f ? formatted.filter((l) => l.toLowerCase().includes(f)) : formatted;
           const slice = filtered.slice(0, 100);
-          return ok(slice.length === 0 ? "(no matching entries)" : slice.join("\n"));
+          if (slice.length === 0) return ok("(no matching entries)");
+          return okList("", slice, { maxBytes: 12 * 1024, hint: "tighten with `filter=<substring>`" });
         } catch (err) {
           return ok(`system_log unavailable: ${(err as Error).message}`);
         }
@@ -540,7 +711,7 @@ export function buildTools(ha: HAClient, opts: { multimodal?: boolean } = {}) {
             const when = n.created_at ? `\n  (created ${n.created_at})` : "";
             return head + body + when;
           });
-          return ok(lines.join("\n\n"));
+          return okList("", lines, { maxBytes: 6 * 1024, separator: "\n\n" });
         } catch (err) {
           return ok(`Failed to fetch notifications: ${(err as Error).message}`);
         }
@@ -550,13 +721,14 @@ export function buildTools(ha: HAClient, opts: { multimodal?: boolean } = {}) {
     {
       name: "ha_get_dashboard",
       label: "Get Dashboard",
-      description: "List Lovelace dashboards (when name is omitted) or fetch a single dashboard's full config (when name is given). Use the url_path field as the name. Pass `(default)` to target the default dashboard.",
+      description: "List Lovelace dashboards (when name is omitted), get a dashboard's top-level summary (name only), or drill into a subtree (name + path). Path is dot-separated, numeric segments index arrays — e.g. `views.0`, `views.2.cards.3`. The full config is fetched once per agent turn and cached; drill-downs are free. Use `(default)` for the main dashboard.",
       parameters: Type.Object({
         name: Type.Optional(Type.String({ description: "Dashboard url_path. Omit to list all. Use '(default)' for the main dashboard." })),
+        path: Type.Optional(Type.String({ description: "Dot-separated path into the config (e.g. `views.0.cards.3`). Omit for top-level summary." })),
       }),
       async execute(
         _id: string,
-        params: { name?: string },
+        params: { name?: string; path?: string },
       ): Promise<ToolResult> {
         if (!params.name) {
           try {
@@ -569,18 +741,29 @@ export function buildTools(ha: HAClient, opts: { multimodal?: boolean } = {}) {
               return `${path} — ${title}${mode}`;
             });
             if (!entries.find((d) => !d.url_path)) lines.unshift("(default) — main dashboard");
-            return ok(lines.join("\n"));
+            return okList("", lines, { maxBytes: 4 * 1024 });
           } catch (err) {
             return ok(`Failed to list dashboards: ${(err as Error).message}`);
           }
         }
         try {
-          const config = await ha.call<unknown>({
-            type: "lovelace/config",
-            url_path: params.name === "(default)" ? null : params.name,
-          });
-          const text = JSON.stringify(config, null, 2);
-          return ok(text.length > 8000 ? text.slice(0, 8000) + "\n…(truncated)" : text);
+          let config = dashboardCache.get(params.name);
+          if (config === undefined) {
+            config = await ha.call<unknown>({
+              type: "lovelace/config",
+              url_path: params.name === "(default)" ? null : params.name,
+            });
+            dashboardCache.set(params.name, config);
+          }
+          if (!params.path) {
+            return okText(summarizeDashboard(config), { maxBytes: 8 * 1024 });
+          }
+          const { value, found } = walkPath(config, params.path);
+          if (!found) {
+            return ok(`Path "${params.path}" not found in dashboard "${params.name}". Call without \`path\` for the top-level summary.`);
+          }
+          const text = JSON.stringify(value, null, 2);
+          return okText(text, { maxBytes: 16 * 1024, hint: "drill deeper with a longer `path`" });
         } catch (err) {
           return ok(`Failed to fetch dashboard "${params.name}": ${(err as Error).message}`);
         }
@@ -605,6 +788,9 @@ export function buildTools(ha: HAClient, opts: { multimodal?: boolean } = {}) {
             url_path: params.name === "(default)" ? null : params.name,
             config: params.config,
           });
+          // The cached copy is now stale — drop it so a follow-up ha_get_dashboard
+          // re-fetches the freshly-saved config instead of returning what we wrote.
+          dashboardCache.delete(params.name);
           return ok(`Dashboard "${params.name}" updated.`);
         } catch (err) {
           return ok(`Failed to update "${params.name}": ${(err as Error).message}`);

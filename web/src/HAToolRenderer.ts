@@ -105,10 +105,23 @@ class HACompactRenderer implements ToolRenderer {
     const outputText = result?.content?.filter((c) => c.type === "text")
       .map((c: any) => c.text).join("\n") || "";
 
+    // Tool execute() may attach `details.truncated` when its response was cut.
+    // Show a small warning chip on the collapsed header so devs notice without
+    // expanding every tool call. Same shape across every tool.
+    const truncated = (result?.details as any)?.truncated as
+      | { bytes_elided: number; total_bytes: number; items_elided?: number; total_items?: number }
+      | undefined;
+    const truncBadge = truncated ? renderTruncationBadge(truncated) : "";
+
     return {
       content: html`
         <div>
-          ${renderCollapsibleHeader(state, this.cfg.icon, summary, contentRef, chevronRef, false)}
+          <div class="flex items-center gap-2">
+            <div class="flex-1 min-w-0">
+              ${renderCollapsibleHeader(state, this.cfg.icon, summary, contentRef, chevronRef, false)}
+            </div>
+            ${truncBadge}
+          </div>
           <div ${ref(contentRef)} class="overflow-hidden transition-all max-h-0 space-y-2">
             ${paramsJson ? html`
               <div>
@@ -128,6 +141,24 @@ class HACompactRenderer implements ToolRenderer {
       isCustom: false,
     };
   }
+}
+
+function fmtBytes(n: number): string {
+  return n < 1024 ? `${n}B` : `${(n / 1024).toFixed(1)}kB`;
+}
+
+function renderTruncationBadge(t: { bytes_elided: number; total_bytes: number; items_elided?: number; total_items?: number }): unknown {
+  const counts = t.items_elided && t.total_items
+    ? `${t.total_items - t.items_elided}/${t.total_items} items`
+    : `${fmtBytes(t.bytes_elided)} elided`;
+  const title = `Tool output was truncated: ${fmtBytes(t.bytes_elided)} of ${fmtBytes(t.total_bytes)} cut`;
+  return html`
+    <span
+      title=${title}
+      class="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded border"
+      style="background: rgba(234, 179, 8, 0.15); border-color: rgba(234, 179, 8, 0.5); color: rgb(180, 130, 0);"
+    >⚠ truncated · ${counts}</span>
+  `;
 }
 
 function safeStringify(v: unknown): string {

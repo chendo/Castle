@@ -47,6 +47,10 @@ export function getAgentSession(ha: HAClient): Promise<AgentSession> {
       if (!isMultimodal) {
         console.log("[agent] model is text-only — ha_get_camera_snapshot will fall back to text descriptions");
       }
+      // Per-turn cache for ha_get_dashboard so drill-down doesn't refetch the
+      // (potentially huge) config on every call. Cleared on agent_end below.
+      const dashboardCache = new Map<string, unknown>();
+
       const result = await createAgentSession({
         cwd: CWD,
         agentDir: AGENT_DIR,
@@ -54,7 +58,7 @@ export function getAgentSession(ha: HAClient): Promise<AgentSession> {
         model,
         noTools: "builtin",
         tools: settings.enabledTools.slice(),
-        customTools: buildTools(ha, { multimodal: isMultimodal }),
+        customTools: buildTools(ha, { multimodal: isMultimodal, dashboardCache }),
         sessionManager: SessionManager.inMemory(),
         settingsManager: SettingsManager.inMemory({
           compaction: {
@@ -68,10 +72,14 @@ export function getAgentSession(ha: HAClient): Promise<AgentSession> {
 
       // Persist every completed message to the markdown conversation file.
       // Errors here must never break the agent loop, so we swallow them.
+      // Also evict the dashboard cache once the turn ends — it's a within-turn
+      // optimization; carrying stale config across turns isn't worth the risk.
       result.session.agent.subscribe((event) => {
         if (event.type === "message_end") {
           // deno-lint-ignore no-explicit-any
           void logMessageEnd((event as any).message);
+        } else if (event.type === "agent_end") {
+          dashboardCache.clear();
         }
       });
 
