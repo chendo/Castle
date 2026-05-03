@@ -76,15 +76,18 @@ The HA token must have **write permission** for this API endpoint. If the call f
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `HA_URL` | `http://homeassistant.local:8123/` | Home Assistant URL |
+| `HA_URL` | `http://homeassistant.local:8123` | Home Assistant URL |
 | `HA_TOKEN` | *(required)* | Long-lived access token |
-| `LM_STUDIO_URL` | `http://host.docker.internal:1234/v1` | LM Studio OpenAI-compatible API |
+| `LM_STUDIO_URL` | `http://host.docker.internal:1234/v1` (in Docker) / `http://localhost:1234/v1` (host) | LM Studio OpenAI-compatible API |
 | `LM_STUDIO_API_KEY` | `lm-studio` | API key for LM Studio |
+| `HAI_AUTH_TOKEN` | *(empty)* | Optional bearer token for the WS/HTTP server |
 | `PORT` | `7090` | Server listen port (mapped to 7091 externally) |
 
-## Lima networking
+Put real values in a local `.env` (gitignored). Never hardcode network addresses or tokens in tracked files.
 
-Uses `host.docker.internal:host.docker.internal` for host access (not Docker Desktop). The `extra_hosts` entry in docker-compose.yml maps this explicitly. If LM Studio is unreachable, verify it's bound to `0.0.0.0:1234` and the Lima VM can route to the host IP.
+## Host networking
+
+`docker-compose.yml` uses `host.docker.internal` to reach LM Studio on the host. If your runtime resolves that differently (Lima, Podman, custom bridge), add an `extra_hosts` entry in a local `docker-compose.override.yml` (also gitignored). Verify LM Studio is bound to `0.0.0.0:1234`.
 
 ## UI
 

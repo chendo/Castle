@@ -5,7 +5,7 @@ import { getAgentSession, resetAgentSession, submitPrompt } from "./agent.ts";
 import { parseHistoryPoints } from "./tools.ts";
 import { ALL_TOOL_NAMES, loadSettings, saveSettings, type ToolName } from "./settings.ts";
 
-const HA_URL = Deno.env.get("HA_URL") ?? "http://homeassistant.local:8123/";
+const HA_URL = Deno.env.get("HA_URL") ?? "http://homeassistant.local:8123";
 const HA_TOKEN = Deno.env.get("HA_TOKEN") ?? "";
 const PORT = Number(Deno.env.get("PORT") ?? "7090");
 const AUTH_TOKEN = Deno.env.get("HAI_AUTH_TOKEN") ?? "";
@@ -50,7 +50,7 @@ async function detectModelInput(baseUrl: string, apiKey: string, modelId: string
 
 async function writeModelsJson(): Promise<void> {
   const key = Deno.env.get("LM_STUDIO_API_KEY") ?? "lm-studio";
-  const url = Deno.env.get("LM_STUDIO_URL") ?? "http://host.docker.internal:1234/v1";
+  const url = Deno.env.get("LM_STUDIO_URL") ?? "http://localhost:1234/v1";
   const input = await detectModelInput(url, key, MODEL_ID);
   console.log(`[hai] model ${MODEL_ID} input modalities: ${input.join(", ")}`);
   const config = {

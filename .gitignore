@@ -3,6 +3,10 @@
 .env.*
 !.env.example
 
+# Local docker overrides (host aliases, dev-only port mappings, etc.)
+docker-compose.override.yml
+docker-compose.override.yaml
+
 # pi-agent runtime artifacts (auth tokens, generated catalog, models.json with API keys)
 .pi-agent/
 

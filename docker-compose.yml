@@ -6,12 +6,17 @@ services:
       - .:/workspace
       - deno-cache:/root/.cache/deno
     environment:
-      - HA_URL=${HA_URL:-http://homeassistant.local:8123/}
+      - HA_URL=${HA_URL:-http://homeassistant.local:8123}
       - HA_TOKEN=${HA_TOKEN}
       - LM_STUDIO_URL=${LM_STUDIO_URL:-http://host.docker.internal:1234/v1}
       - LM_STUDIO_API_KEY=${LM_STUDIO_API_KEY}
-    extra_hosts:
-      - "host.docker.internal:host.docker.internal"
+      - HAI_AUTH_TOKEN=${HAI_AUTH_TOKEN}
+    # If your runtime needs a custom host alias (Lima, Podman, etc.), put it in
+    # a local `docker-compose.override.yml` (gitignored) — for example:
+    #   services:
+    #     hai:
+    #       extra_hosts:
+    #         - "host.docker.internal:192.0.2.10"
     ports:
       - "127.0.0.1:${HAI_PORT:-7091}:7090"
     restart: unless-stopped
