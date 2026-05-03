@@ -1,6 +1,6 @@
 import type { AgentEvent } from "npm:@mariozechner/pi-agent-core";
 import { HAClient } from "./ha-client.ts";
-import { buildAgentsMd, buildCatalog, buildServicesMd, extractDomains } from "./catalog.ts";
+import { buildAgentsMd, buildCatalogData, buildServicesData, extractDomains } from "./catalog.ts";
 import { getAgentSession, resetAgentSession, submitPrompt } from "./agent.ts";
 import { parseHistoryPoints } from "./tools.ts";
 import { ALL_TOOL_NAMES, loadSettings, saveSettings, type ToolName } from "./settings.ts";
@@ -96,9 +96,9 @@ async function regenerateCatalog(): Promise<void> {
     const states = ha.getAllStates();
     const exposedStates = exposed ? states.filter((s) => exposed.has(s.entity_id)) : states;
     const presentDomains = extractDomains(exposedStates);
-    const servicesMd = buildServicesMd(services, presentDomains);
-    const catalogMd = buildCatalog(states, exposed, areas);
-    const agentsMd = buildAgentsMd(catalogMd, { houseInfo, servicesMd });
+    const servicesData = buildServicesData(services, presentDomains);
+    const catalogData = buildCatalogData(states, exposed, areas);
+    const agentsMd = buildAgentsMd({ houseInfo, services: servicesData, catalog: catalogData });
     const agentDir = new URL(".pi-agent/", import.meta.url).pathname.replace(/\/$/, "");
     await Deno.writeTextFile(`${agentDir}/AGENTS.md`, agentsMd);
     console.log(`[hai] catalog refreshed (${exposed ? exposed.size : 'all'} entities, ${Object.keys(services).length} service domains)`);

@@ -4,7 +4,7 @@ You control a smart home. Be brief. Confirm actions with one sentence.
 
 ## House
 - **Name:** {{ house.name or "Home" }}
-- **Timezone:** {{ house.timezone or "Unknown" }}
+- **Timezone:** {{ house.timezone or "UTC" }}
 - **Location:** {{ house.location or "Unknown" }}
 {%- if house.elevation is number %}
 - **Elevation:** {{ house.elevation }}m
@@ -18,19 +18,59 @@ You control a smart home. Be brief. Confirm actions with one sentence.
 {%- if house.currency %}
 - **Currency:** {{ house.currency }}
 {%- endif %}
-{%- if units %}
-- **Units:** {{ units }}
+{%- set unit_keys = ["temperature", "length", "mass", "volume", "pressure", "wind_speed"] %}
+{%- set unit_pairs = [] %}
+{%- for k in unit_keys -%}
+  {%- if house.unit_system[k] -%}
+    {%- set _ = unit_pairs.push(k ~ "=" ~ (house.unit_system[k] | upper if k == "temperature" else house.unit_system[k])) -%}
+  {%- endif -%}
+{%- endfor %}
+{%- if unit_pairs | length > 0 %}
+- **Units:** {{ unit_pairs | join(" · ") }}
 {%- endif %}
-{%- if services_md %}
+
+{%- if services and services | length > 0 %}
 
 ## Services available
 `!` = required, `?` = optional. Field types/defaults can be inferred from name; ask via ha_get_entity if unsure.
-
-{{ services_md }}
+{% for domain in services %}
+### {{ domain.name }}
+{%- for svc in domain.services %}
+- {{ svc.name }}(
+  {%- for f in svc.fields -%}
+    {{ f.name }}{{ "!" if f.required else "?" }}{{ ", " if not loop.last }}
+  {%- endfor -%}
+  )
+  {%- if svc.response %} → response (set return_response=true){% endif -%}
+  {%- if svc.description %} — {{ svc.description }}{% endif %}
+{%- endfor %}
+{% endfor -%}
 {%- endif %}
 
 ## Areas and exposed entities
-{{ catalog }}
+{% if catalog.areas | length > 0 -%}
+**Areas:** {% for a in catalog.areas %}{{ a.name }}{{ ", " if not loop.last }}{% endfor %}
+
+{% endif -%}
+{%- for area in catalog.areas %}
+## {{ area.name }}
+{%- for domain, entities in area.entities_by_domain | dictsort %}
+### {{ domain }}
+{%- for e in entities %}
+  {{ e.entity_id }} — {{ e.friendly_name }}
+{%- endfor %}
+{%- endfor %}
+
+{% endfor -%}
+{%- if catalog.unassigned | length > 0 %}
+## Other
+{%- for domain, entities in catalog.unassigned | dictsort %}
+### {{ domain }}
+{%- for e in entities %}
+  {{ e.entity_id }} — {{ e.friendly_name }}
+{%- endfor %}
+{%- endfor %}
+{%- endif %}
 
 ## Reminders
 
@@ -39,7 +79,7 @@ Tool guidance:
 - Controlling devices: ha_call_service. Use service_data for parameters; set return_response=true for services that return data (weather.get_forecasts, calendar.get_events, etc).
 - Inspecting entity capabilities (color modes, hvac modes, current attributes): ha_get_entity.
 - Sensor trends/history: ha_get_history (numeric → bucketed min/max; binary/enum → state-change list).
-- State not in snapshot or stale: ha_get_states.
+- State not in snapshot or stale: ha_get_states (use `filter` for substring search before dumping all).
 
 Rules:
 - One-sentence answers where possible.

@@ -9,84 +9,139 @@ const SKIP_DOMAINS = new Set([
 
 interface AreaInfo { name: string; entities: Set<string> }
 
-export function buildCatalog(states: HAState[], exposed?: Set<string>, areas?: Map<string, AreaInfo>): string {
-  const filtered = states.filter(s => {
+// ---------------------------------------------------------------------------
+// Structured data — fed straight into the Jinja2 template so the template
+// (templates/AGENTS.md.jinja2) can choose how to format every section. The TS
+// here only filters and groups; layout decisions live in the template.
+// ---------------------------------------------------------------------------
+
+export interface CatalogEntity {
+  entity_id: string;
+  domain: string;
+  friendly_name: string;
+}
+
+export interface CatalogArea {
+  name: string;
+  /** Entities in this area, grouped by domain. Domain keys are sorted. */
+  entities_by_domain: Record<string, CatalogEntity[]>;
+}
+
+export interface CatalogData {
+  /** Sorted by area name. Areas with no exposed entities are omitted. */
+  areas: CatalogArea[];
+  /** Entities in no area, grouped by domain. Empty object if none. */
+  unassigned: Record<string, CatalogEntity[]>;
+}
+
+export interface ServiceField {
+  name: string;
+  required: boolean;
+}
+
+export interface ServiceItem {
+  name: string;
+  fields: ServiceField[];
+  /** True when the service returns a payload (forecasts, calendar events, etc). */
+  response: boolean;
+  description?: string;
+}
+
+export interface ServiceDomain {
+  name: string;
+  services: ServiceItem[];
+}
+
+function entityFromState(s: HAState): CatalogEntity {
+  const [domain] = s.entity_id.split(".");
+  return {
+    entity_id: s.entity_id,
+    domain,
+    friendly_name: (s.attributes.friendly_name as string) ?? s.entity_id,
+  };
+}
+
+function groupByDomain(entities: CatalogEntity[]): Record<string, CatalogEntity[]> {
+  const sorted = [...entities].sort((a, b) => a.entity_id.localeCompare(b.entity_id));
+  // Build with domain-key ordering so iteration in the template is alphabetical.
+  const sortedDomains = [...new Set(sorted.map((e) => e.domain))].sort();
+  const out: Record<string, CatalogEntity[]> = {};
+  for (const d of sortedDomains) out[d] = sorted.filter((e) => e.domain === d);
+  return out;
+}
+
+export function buildCatalogData(
+  states: HAState[],
+  exposed?: Set<string>,
+  areas?: Map<string, AreaInfo>,
+): CatalogData {
+  const filtered = states.filter((s) => {
     if (exposed !== undefined && !exposed.has(s.entity_id)) return false;
     const [domain] = s.entity_id.split(".");
     return !SKIP_DOMAINS.has(domain);
-  });
+  }).map(entityFromState);
 
-  // Group by area if available
-  if (areas && areas.size > 0) {
-    const lines: string[] = [];
-    const sortedAreas = [...areas.entries()].sort((a, b) => a[1].name.localeCompare(b[1].name));
-    const areaNamesWithEntities = sortedAreas
-      .filter(([, area]) => filtered.some((s) => area.entities.has(s.entity_id)))
-      .map(([, area]) => area.name);
-    if (areaNamesWithEntities.length > 0) {
-      lines.push(`**Areas:** ${areaNamesWithEntities.join(", ")}`);
-      lines.push("");
-    }
-
-    for (const [, area] of sortedAreas) {
-      const areaEntities = filtered.filter(s => area.entities.has(s.entity_id));
-      if (areaEntities.length === 0) continue;
-
-      lines.push(`## ${area.name}`);
-      // Group by domain within area
-      const byDomain = new Map<string, string[]>();
-      for (const s of areaEntities.sort((a, b) => a.entity_id.localeCompare(b.entity_id))) {
-        const [domain] = s.entity_id.split(".");
-        if (!byDomain.has(domain)) byDomain.set(domain, []);
-        const name = (s.attributes.friendly_name as string) ?? s.entity_id;
-        byDomain.get(domain)!.push(`  ${s.entity_id} — ${name}`);
-      }
-      for (const [domain, entities] of [...byDomain.entries()].sort()) {
-        lines.push(`### ${domain}`);
-        lines.push(...entities.sort());
-      }
-      lines.push("");
-    }
-
-    // Entities without an area
-    const areaEntityIds = new Set<string>();
-    for (const area of areas.values()) {
-      for (const eid of area.entities) areaEntityIds.add(eid);
-    }
-    const unassigned = filtered.filter(s => !areaEntityIds.has(s.entity_id));
-    if (unassigned.length > 0) {
-      lines.push(`## Other`);
-      const byDomain = new Map<string, string[]>();
-      for (const s of unassigned.sort((a, b) => a.entity_id.localeCompare(b.entity_id))) {
-        const [domain] = s.entity_id.split(".");
-        if (!byDomain.has(domain)) byDomain.set(domain, []);
-        const name = (s.attributes.friendly_name as string) ?? s.entity_id;
-        byDomain.get(domain)!.push(`  ${s.entity_id} — ${name}`);
-      }
-      for (const [domain, entities] of [...byDomain.entries()].sort()) {
-        lines.push(`### ${domain}`);
-        lines.push(...entities.sort());
-      }
-    }
-
-    return lines.join("\n");
+  if (!areas || areas.size === 0) {
+    // No area data — everything is unassigned, grouped by domain.
+    return { areas: [], unassigned: groupByDomain(filtered) };
   }
 
-  // Fallback: group by domain only
-  const byDomain = new Map<string, string[]>();
-  for (const s of filtered) {
-    const [domain] = s.entity_id.split(".");
-    if (!byDomain.has(domain)) byDomain.set(domain, []);
-    const name = (s.attributes.friendly_name as string) ?? s.entity_id;
-    byDomain.get(domain)!.push(`  ${s.entity_id} — ${name}`);
+  const areaList: CatalogArea[] = [];
+  const sortedAreas = [...areas.entries()].sort((a, b) => a[1].name.localeCompare(b[1].name));
+  const claimed = new Set<string>();
+
+  for (const [, area] of sortedAreas) {
+    const inArea = filtered.filter((e) => area.entities.has(e.entity_id));
+    if (inArea.length === 0) continue;
+    for (const e of inArea) claimed.add(e.entity_id);
+    areaList.push({ name: area.name, entities_by_domain: groupByDomain(inArea) });
   }
 
-  const lines: string[] = [];
-  for (const [domain, entities] of [...byDomain.entries()].sort()) {
-    lines.push(`### ${domain}`);
-    lines.push(...entities.sort());
+  const unassigned = filtered.filter((e) => !claimed.has(e.entity_id));
+  return {
+    areas: areaList,
+    unassigned: unassigned.length > 0 ? groupByDomain(unassigned) : {},
+  };
+}
+
+/** Domains we never advertise services for in the system prompt. */
+const SERVICE_BLOCKLIST_DOMAINS = new Set([
+  "persistent_notification", "logger", "system_log", "recorder",
+  "homeassistant", // huge & rarely needed; keep prompt small
+]);
+
+/** Always include these utility domains' services, even when no entities for them are exposed. */
+const SERVICE_INCLUDE_ALWAYS = new Set(["script", "scene", "automation", "input_boolean", "notify"]);
+
+/** Description fields can be paragraphs; trim to first line / 80 chars. */
+function trimDescription(s: string | undefined): string | undefined {
+  if (!s) return undefined;
+  return s.split("\n")[0].slice(0, 80);
+}
+
+export function buildServicesData(services: HAServices, presentDomains: Set<string>): ServiceDomain[] {
+  const targetDomains = new Set([...presentDomains, ...SERVICE_INCLUDE_ALWAYS]);
+  const out: ServiceDomain[] = [];
+  for (const domain of [...targetDomains].sort()) {
+    if (SERVICE_BLOCKLIST_DOMAINS.has(domain)) continue;
+    const domainServices = services[domain];
+    if (!domainServices) continue;
+    const items: ServiceItem[] = [];
+    for (const [svcName, def] of Object.entries(domainServices).sort((a, b) => a[0].localeCompare(b[0]))) {
+      const fields = def.fields ?? {};
+      const fieldList: ServiceField[] = Object.entries(fields)
+        .map(([name, f]) => ({ name, required: f?.required === true }));
+      items.push({
+        name: svcName,
+        fields: fieldList,
+        response: def.response != null,
+        description: trimDescription(def.description),
+      });
+    }
+    if (items.length === 0) continue;
+    out.push({ name: domain, services: items });
   }
-  return lines.join("\n");
+  return out;
 }
 
 export function formatStates(states: HAState[], exposed?: Set<string>): string {
@@ -111,41 +166,6 @@ export function formatStates(states: HAState[], exposed?: Set<string>): string {
     .join("\n");
 }
 
-/** Domains we never advertise services for in the system prompt. */
-const SERVICE_BLOCKLIST_DOMAINS = new Set([
-  "persistent_notification", "logger", "system_log", "recorder",
-  "homeassistant", // huge & rarely needed; keep prompt small
-]);
-
-/** Build a compact one-line-per-service index, scoped to domains present in the entity list. */
-export function buildServicesMd(services: HAServices, presentDomains: Set<string>): string {
-  const lines: string[] = [];
-  // Always include a few utility domains the agent commonly uses regardless of entity presence.
-  const includeAlways = new Set(["script", "scene", "automation", "input_boolean", "notify"]);
-  const targetDomains = new Set([...presentDomains, ...includeAlways]);
-
-  for (const domain of [...targetDomains].sort()) {
-    if (SERVICE_BLOCKLIST_DOMAINS.has(domain)) continue;
-    const domainServices = services[domain];
-    if (!domainServices) continue;
-    const serviceLines: string[] = [];
-    for (const [svcName, def] of Object.entries(domainServices).sort((a, b) => a[0].localeCompare(b[0]))) {
-      const fields = def.fields ?? {};
-      const fieldNames = Object.entries(fields)
-        .map(([name, f]) => f?.required ? `${name}!` : `${name}?`)
-        .join(", ");
-      const responseHint = def.response ? " → response (set return_response=true)" : "";
-      const desc = def.description ? ` — ${def.description.split("\n")[0].slice(0, 80)}` : "";
-      serviceLines.push(`- ${svcName}(${fieldNames})${responseHint}${desc}`);
-    }
-    if (serviceLines.length === 0) continue;
-    lines.push(`### ${domain}`);
-    lines.push(...serviceLines);
-    lines.push("");
-  }
-  return lines.length === 0 ? "" : lines.join("\n");
-}
-
 export function extractDomains(states: HAState[]): Set<string> {
   const out = new Set<string>();
   for (const s of states) {
@@ -155,27 +175,24 @@ export function extractDomains(states: HAState[]): Set<string> {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// Template renderer.
+// ---------------------------------------------------------------------------
+
 interface BuildAgentsMdOptions {
   houseInfo?: Partial<HouseInfo>;
-  servicesMd?: string;
+  services?: ServiceDomain[];
+  catalog?: CatalogData;
 }
 
 // AGENTS.md is the cached system prompt. Layout lives in
-// templates/AGENTS.md.jinja2 — section order is fixed there as:
-//   1. System prompt        (constant)
-//   2. House metadata       (changes only when HA config is edited)
-//   3. Services             (changes only when integrations are added/removed)
-//   4. Areas + entities     (changes whenever entities are added/exposed/renamed)
-//   5. Reminders            (constant)
-// Volatile sections sit near the end so the LM Studio / OpenAI-compat KV cache
-// stays warm across regenerations: a fresh entity invalidates only sections 4
-// and 5, while sections 1–3 keep hitting the cache.
+// templates/AGENTS.md.jinja2 — the template controls every formatting choice
+// (section order, area grouping, service rendering, etc). Section order should
+// stay stable→volatile so the LM Studio / OpenAI-compat KV cache stays warm.
 
 const TEMPLATE_PATH = new URL("./templates/AGENTS.md.jinja2", import.meta.url);
 const TEMPLATE_SOURCE = Deno.readTextFileSync(TEMPLATE_PATH);
 
-// nunjucks is the canonical JS port of Jinja2; we render strings (no FS loader)
-// so this works the same in Deno tests and in the live container.
 const env = new nunjucks.Environment(null, { autoescape: false, throwOnUndefined: false });
 
 // deno-lint-ignore no-explicit-any
@@ -183,30 +200,18 @@ function safeParse(s: string): any {
   try { return JSON.parse(s); } catch { return {}; }
 }
 
-// deno-lint-ignore no-explicit-any
-function formatUnitSystem(us: any): string {
-  if (!us || typeof us !== "object") return "";
-  const parts: string[] = [];
-  if (us.temperature) parts.push(`temperature=${String(us.temperature).toUpperCase()}`);
-  if (us.length) parts.push(`length=${us.length}`);
-  if (us.mass) parts.push(`mass=${us.mass}`);
-  if (us.volume) parts.push(`volume=${us.volume}`);
-  if (us.pressure) parts.push(`pressure=${us.pressure}`);
-  if (us.wind_speed) parts.push(`wind_speed=${us.wind_speed}`);
-  return parts.join(" · ");
-}
-
-export function buildAgentsMd(catalog: string, opts: BuildAgentsMdOptions = {}): string {
-  const houseInfo = opts.houseInfo ?? {};
-  const us = typeof houseInfo.unit_system === "string"
-    ? safeParse(houseInfo.unit_system)
-    : houseInfo.unit_system;
+export function buildAgentsMd(opts: BuildAgentsMdOptions = {}): string {
+  const houseRaw = opts.houseInfo ?? {};
+  const us = typeof houseRaw.unit_system === "string"
+    ? safeParse(houseRaw.unit_system)
+    : (houseRaw.unit_system ?? {});
+  // Hand the template a flat house object with unit_system as a parsed map so
+  // it can iterate / pick fields / format however it wants.
+  const house = { ...houseRaw, unit_system: us };
   const rendered = env.renderString(TEMPLATE_SOURCE, {
-    house: houseInfo,
-    units: formatUnitSystem(us),
-    services_md: opts.servicesMd ?? "",
-    catalog,
+    house,
+    services: opts.services ?? [],
+    catalog: opts.catalog ?? { areas: [], unassigned: {} },
   });
-  // nunjucks preserves the trailing newline from the template; ensure exactly one.
   return rendered.endsWith("\n") ? rendered : rendered + "\n";
 }
