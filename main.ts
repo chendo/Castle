@@ -395,7 +395,7 @@ async function handleSocket(socket: WebSocket): Promise<void> {
     }
 
     if (msg.type === "set_settings") {
-      const incoming = (msg as unknown as { settings: { enabledTools?: ToolName[]; contextWindow?: number } }).settings;
+      const incoming = (msg as unknown as { settings: { enabledTools?: ToolName[]; contextWindow?: number; allowUnexposedWrites?: boolean } }).settings;
       const saved = await saveSettings(incoming);
       // Tool changes only take effect on a fresh session — reset, re-wire the
       // broadcast onto the new agent (resetAgentSession nulls the old one), and

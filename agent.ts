@@ -71,7 +71,11 @@ export function getAgentSession(ha: HAClient): Promise<AgentSession> {
         model,
         noTools: "builtin",
         tools: settings.enabledTools.slice(),
-        customTools: buildTools(ha, { multimodal: isMultimodal, dashboardCache }),
+        customTools: buildTools(ha, {
+          multimodal: isMultimodal,
+          dashboardCache,
+          allowUnexposedWrites: settings.allowUnexposedWrites,
+        }),
         sessionManager: SessionManager.inMemory(),
         settingsManager: SettingsManager.inMemory({
           compaction: {

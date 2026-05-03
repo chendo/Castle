@@ -493,10 +493,31 @@ export function summarizeDashboard(config: unknown): string {
 
 export function buildTools(
   ha: HAClient,
-  opts: { multimodal?: boolean; dashboardCache?: Map<string, unknown> } = {},
+  opts: { multimodal?: boolean; dashboardCache?: Map<string, unknown>; allowUnexposedWrites?: boolean } = {},
 ) {
   const isMultimodal = opts.multimodal === true;
   const dashboardCache = opts.dashboardCache ?? new Map<string, unknown>();
+  const allowUnexposedWrites = opts.allowUnexposedWrites === true;
+
+  // Collect every entity_id a service call would target — top-level entity_id
+  // plus any in service_data (HA accepts string or array).
+  function collectTargets(entityId: string | undefined, serviceData: Record<string, unknown> | undefined): string[] {
+    const out: string[] = [];
+    if (entityId) out.push(entityId);
+    const sd = serviceData?.entity_id;
+    if (typeof sd === "string") out.push(sd);
+    else if (Array.isArray(sd)) {
+      for (const v of sd) if (typeof v === "string") out.push(v);
+    }
+    return out;
+  }
+
+  function blockedNonExposed(targets: string[]): string[] {
+    if (allowUnexposedWrites) return [];
+    return targets.filter((id) => !ha.isExposed(id));
+  }
+
+  const REFUSAL_HINT = `Refused: not allowed to control non-exposed entities. The user can flip "Allow agent to control non-exposed entities" in Settings if this is intentional.`;
   return [
     {
       name: "ha_call_service",
@@ -518,6 +539,11 @@ export function buildTools(
         _onUpdate: unknown,
         _ctx: unknown,
       ): Promise<ToolResult> {
+        // Refuse to call services on non-exposed entities unless the override is on.
+        const blocked = blockedNonExposed(collectTargets(params.entity_id, params.service_data));
+        if (blocked.length > 0) {
+          return ok(`${REFUSAL_HINT}\nBlocked targets: ${blocked.join(", ")}`);
+        }
         // Validate against the service registry. Block on unknown domain/service; warn on unknown args.
         const services = await ha.getServices();
         const domainServices = services[params.domain];
@@ -665,6 +691,10 @@ export function buildTools(
         _onUpdate: unknown,
         _ctx: unknown,
       ): Promise<ToolResult> {
+        const blocked = blockedNonExposed([params.entity_id]);
+        if (blocked.length > 0) {
+          return ok(`${REFUSAL_HINT}\nBlocked target: ${params.entity_id}`);
+        }
         // No WS command for set_state in modern HA; use the REST endpoint.
         const res = await ha.restCall(`/api/states/${encodeURIComponent(params.entity_id)}`, {
           method: "POST",

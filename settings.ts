@@ -25,6 +25,13 @@ export interface Settings {
   // LLM context window in tokens. Drives compaction thresholds in the agent.
   // Floored at 8k so things still work; no upper bound — user knows their backend.
   contextWindow: number;
+  /**
+   * When false (default), the agent's write tools (ha_call_service, ha_set_state)
+   * refuse to target entities that aren't in HA's "exposed to assistants" list.
+   * When true, the gate is lifted and the agent can mutate any entity it knows
+   * about. Reads (ha_get_states, ha_get_history, ha_get_entity) are never gated.
+   */
+  allowUnexposedWrites: boolean;
 }
 
 // 64k chosen per the roadmap; modern open-weights models comfortably support it.
@@ -40,6 +47,7 @@ const MIN_CONTEXT_WINDOW = 8192;
 const DEFAULTS: Settings = {
   enabledTools: [...ALL_TOOL_NAMES],
   contextWindow: DEFAULT_CONTEXT_WINDOW,
+  allowUnexposedWrites: false,
 };
 
 let cached: Settings | null = null;
@@ -51,9 +59,13 @@ function sanitize(s: Partial<Settings> | null | undefined): Settings {
   const contextWindow = Number.isFinite(cwRaw) && cwRaw >= MIN_CONTEXT_WINDOW
     ? Math.floor(cwRaw)
     : DEFAULTS.contextWindow;
+  const allowUnexposedWrites = typeof s?.allowUnexposedWrites === "boolean"
+    ? s!.allowUnexposedWrites
+    : DEFAULTS.allowUnexposedWrites;
   return {
     enabledTools: filtered.length ? filtered : [...ALL_TOOL_NAMES],
     contextWindow,
+    allowUnexposedWrites,
   };
 }
 

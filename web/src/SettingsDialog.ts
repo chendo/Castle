@@ -4,6 +4,7 @@ interface DialogState {
   allTools: string[];
   enabled: Set<string>;
   contextWindow: number;
+  allowUnexposedWrites: boolean;
   loaded: boolean;
 }
 
@@ -22,6 +23,7 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
     allTools: [],
     enabled: new Set(),
     contextWindow: 65536,
+    allowUnexposedWrites: false,
     loaded: false,
   };
 
@@ -57,6 +59,15 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
         Set to whatever your model server actually supports. Compaction thresholds scale with this value.
       </div>
 
+      <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted-foreground); margin: 18px 0 10px;">Write protection</div>
+      <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px;">
+        <input id="hai-settings-allow-unexposed" type="checkbox" />
+        <span>Allow agent to control non-exposed entities</span>
+      </label>
+      <div style="margin-top: 6px; font-size: 12px; color: var(--muted-foreground);">
+        Off (default): the agent can only call services / set state on entities exposed to assistants. Reads are unaffected.
+      </div>
+
       <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted-foreground); margin: 18px 0 10px;">Enabled tools</div>
       <div id="hai-settings-tools" style="display: flex; flex-direction: column; gap: 4px;">
         <div style="font-size: 13px; color: var(--muted-foreground);">Loading…</div>
@@ -83,6 +94,7 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
   const allBtn = panel.querySelector("#hai-settings-all") as HTMLButtonElement;
   const noneBtn = panel.querySelector("#hai-settings-none") as HTMLButtonElement;
   const contextInput = panel.querySelector("#hai-settings-context") as HTMLInputElement;
+  const allowUnexposedInput = panel.querySelector("#hai-settings-allow-unexposed") as HTMLInputElement;
 
   const renderTools = () => {
     if (!state.loaded) return;
@@ -111,8 +123,10 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
     state.allTools = allTools;
     state.enabled = new Set(settings.enabledTools);
     state.contextWindow = settings.contextWindow;
+    state.allowUnexposedWrites = settings.allowUnexposedWrites;
     state.loaded = true;
     contextInput.value = String(settings.contextWindow);
+    allowUnexposedInput.checked = settings.allowUnexposedWrites;
     applyBtn.disabled = false;
     renderTools();
   };
@@ -138,7 +152,11 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
       : state.contextWindow;
     agent.sendRaw({
       type: "set_settings",
-      settings: { enabledTools: [...state.enabled], contextWindow },
+      settings: {
+        enabledTools: [...state.enabled],
+        contextWindow,
+        allowUnexposedWrites: allowUnexposedInput.checked,
+      },
     });
     close();
   };

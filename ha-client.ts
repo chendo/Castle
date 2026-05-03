@@ -267,6 +267,18 @@ export class HAClient {
     return this.exposedEntities.size;
   }
 
+  /**
+   * Synchronous exposure check. Returns true when the entity is in the cached
+   * exposed-entities set. If the set hasn't been fetched yet (set is
+   * undefined), returns true so we don't block legitimate calls before the
+   * catalog has loaded — the UI / call_service path can re-check later if
+   * needed.
+   */
+  isExposed(entityId: string): boolean {
+    if (this.exposedEntities === undefined) return true;
+    return this.exposedEntities.has(entityId);
+  }
+
   get isConnected(): boolean {
     return this._connected;
   }
