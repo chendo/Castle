@@ -1,5 +1,4 @@
 import type { WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
-import type { VoiceController } from "./VoiceController";
 import { openSettingsDialog } from "./SettingsDialog";
 
 interface HealthSnapshot {
@@ -18,7 +17,7 @@ interface HealthSnapshot {
  * - HA-side connectivity / entity count comes from /health, polled every 5s.
  * - Model name comes from the snapshot the agent received from the server.
  */
-export function buildTopbar(agent: WebSocketRemoteAgent, onToggleSidebar?: () => void, voice?: VoiceController): HTMLElement {
+export function buildTopbar(agent: WebSocketRemoteAgent, onToggleSidebar?: () => void): HTMLElement {
   const root = document.createElement("div");
   root.style.cssText = `
     display: flex; align-items: center; justify-content: space-between;
@@ -60,60 +59,6 @@ export function buildTopbar(agent: WebSocketRemoteAgent, onToggleSidebar?: () =>
 
   const right = document.createElement("div");
   right.style.cssText = "display: flex; align-items: center; gap: 8px;";
-
-  // Voice toggles (off by default; only render if browser supports them).
-  if (voice?.isPttSupported) {
-    const mic = document.createElement("button");
-    const renderMic = () => {
-      const on = voice.pttEnabled;
-      const recording = voice.isRecording();
-      mic.title = recording ? "Stop recording" : on ? "Push-to-talk: on (click to talk, click to stop)" : "Enable push-to-talk";
-      mic.style.cssText = `
-        padding: 4px 8px; font-size: 14px; cursor: pointer;
-        background: ${recording ? "rgba(220, 38, 38, 0.85)" : "transparent"};
-        color: ${recording ? "white" : on ? "var(--foreground)" : "var(--muted-foreground)"};
-        border: 1px solid var(--border); border-radius: 6px;
-        transition: all 150ms;
-      `;
-      mic.innerHTML = recording ? "● 🎤" : "🎤";
-    };
-    mic.onclick = (e) => {
-      if (e.shiftKey || (!voice.pttEnabled)) {
-        // First click toggles the feature on; subsequent clicks record.
-        voice.setPttEnabled(!voice.pttEnabled);
-        renderMic();
-        return;
-      }
-      voice.togglePttRecording();
-    };
-    mic.oncontextmenu = (e) => {
-      e.preventDefault();
-      voice.setPttEnabled(!voice.pttEnabled);
-      renderMic();
-    };
-    voice.onRecordingChange(renderMic);
-    renderMic();
-    right.append(mic);
-  }
-
-  if (voice?.isTtsSupported) {
-    const tts = document.createElement("button");
-    const renderTts = () => {
-      const on = voice.ttsEnabled;
-      tts.title = on ? "Text-to-speech: on (right-click to disable)" : "Enable text-to-speech";
-      tts.style.cssText = `
-        padding: 4px 8px; font-size: 14px; cursor: pointer;
-        background: transparent;
-        color: ${on ? "var(--foreground)" : "var(--muted-foreground)"};
-        border: 1px solid var(--border); border-radius: 6px;
-        opacity: ${on ? "1" : "0.6"};
-      `;
-      tts.innerHTML = on ? "🔊" : "🔇";
-    };
-    tts.onclick = () => { voice.setTtsEnabled(!voice.ttsEnabled); renderTts(); };
-    renderTts();
-    right.append(tts);
-  }
 
   const settingsBtn = document.createElement("button");
   settingsBtn.title = "Settings";
