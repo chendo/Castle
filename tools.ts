@@ -563,11 +563,18 @@ export function buildTools(
     {
       name: "ha_get_states",
       label: "Get States",
-      description: "Look up entity states. Prefer the narrowest call possible: `entity_id` for one specific entity (returns full attributes), `filter` for a case-insensitive substring search across entity_id + friendly_name, `domain` to scope to one domain. Combine `filter` with `domain` to narrow further. Calling with no parameters dumps every exposed entity and is almost never what you want — always reach for `filter` first when you know roughly what you're looking for.",
+      description: "Look up entity states. Prefer the narrowest call possible: `entity_id` for one specific entity (returns full attributes), `filter` for a case-insensitive regex search across entity_id + friendly_name, `domain` to scope to one domain. Combine `filter` with `domain` to narrow further. Calling with no parameters dumps every exposed entity and is almost never what you want — always reach for `filter` first when you know roughly what you're looking for.",
       parameters: Type.Object({
         entity_id: Type.Optional(Type.String({ description: "Specific entity ID — returns state + every attribute" })),
-        filter: Type.Optional(Type.String({ description: "Case-insensitive substring matched against entity_id AND friendly_name. Examples: `kitchen`, `motion`, `temp`." })),
-        domain: Type.Optional(Type.String({ description: "Restrict to one domain (light, sensor, binary_sensor, switch, …)" })),
+        filter: Type.Optional(Type.String({
+          description:
+            "Case-insensitive JavaScript regex matched against entity_id AND friendly_name. " +
+            "A bare word like `temperature` works because plain text is also valid regex. " +
+            "Use `.*` to bridge gaps and `|` for alternation. " +
+            "Examples: `temperature` (every temp sensor), `office.*temperature` (office + temperature in either order via `|` if needed), `^light\\.kitchen` (anchored), `motion|presence`, `front_door|back_door`. " +
+            "If the regex is invalid you'll get an error back — don't escape special chars unless you mean them literally.",
+        })),
+        domain: Type.Optional(Type.String({ description: "Restrict to one domain (light, sensor, binary_sensor, switch, …). Combinable with `filter`." })),
       }),
       async execute(
         _id: string,
@@ -581,16 +588,23 @@ export function buildTools(
           if (!s) return ok(`Unknown entity: ${params.entity_id}`);
           return okText(`${s.entity_id}: ${s.state}\nAttributes: ${JSON.stringify(s.attributes)}`, { maxBytes: 4 * 1024 });
         }
-        const needle = params.filter?.trim().toLowerCase();
+        let re: RegExp | null = null;
+        if (params.filter && params.filter.trim().length > 0) {
+          try {
+            re = new RegExp(params.filter, "i");
+          } catch (err) {
+            return ok(`Invalid filter regex: ${(err as Error).message}. Filter is a JavaScript regex (e.g. \`temperature\`, \`office.*temp\`, \`^light\\.kitchen\`).`);
+          }
+        }
         const all = ha.getAllStates().filter((s) => {
           if (params.domain && !s.entity_id.startsWith(params.domain + ".")) return false;
-          if (!needle) return true;
-          if (s.entity_id.toLowerCase().includes(needle)) return true;
-          const friendly = (s.attributes.friendly_name as string | undefined)?.toLowerCase();
-          return friendly ? friendly.includes(needle) : false;
+          if (!re) return true;
+          if (re.test(s.entity_id)) return true;
+          const friendly = s.attributes.friendly_name as string | undefined;
+          return friendly ? re.test(friendly) : false;
         });
         if (all.length === 0) {
-          const scope = [params.domain && `domain=${params.domain}`, needle && `filter="${params.filter}"`].filter(Boolean).join(", ");
+          const scope = [params.domain && `domain=${params.domain}`, params.filter && `filter=/${params.filter}/i`].filter(Boolean).join(", ");
           return ok(scope ? `No entities match (${scope})` : "No entities found");
         }
         const lines = all.map((s) => {
@@ -600,10 +614,9 @@ export function buildTools(
         });
         // Pick a hint that points the agent at the next narrower step.
         let hint: string;
-        if (params.entity_id) hint = "";
-        else if (needle) hint = `narrow with \`entity_id=<id>\` once you've spotted the right entity`;
-        else if (params.domain) hint = `add \`filter=<substring>\` to search by name within this domain`;
-        else hint = `add \`filter=<substring>\` (matches entity_id + friendly_name) or \`domain=<name>\` — calling with no narrowing is almost never useful`;
+        if (re) hint = `narrow with \`entity_id=<id>\` once you've spotted the right entity`;
+        else if (params.domain) hint = `add \`filter=<regex>\` to search by name within this domain`;
+        else hint = `add \`filter=<regex>\` (case-insensitive, matches entity_id + friendly_name) or \`domain=<name>\` — calling with no narrowing is almost never useful`;
         return okList("", lines, { maxBytes: 8 * 1024, hint });
       },
     },
@@ -795,28 +808,37 @@ export function buildTools(
     {
       name: "ha_get_logs",
       label: "Get Logs",
-      description: "Recent Home Assistant log entries (up to 100 lines). type='error' returns the plaintext error log (warnings + errors from the current session); type='system' returns structured system_log entries. Optional filter substring-matches case-insensitively.",
+      description: "Recent Home Assistant log entries (up to 100 lines). type='error' returns the plaintext error log (warnings + errors from the current session); type='system' returns structured system_log entries. Optional case-insensitive regex filter.",
       parameters: Type.Object({
         type: Type.Union([Type.Literal("error"), Type.Literal("system")], { description: "error | system" }),
-        filter: Type.Optional(Type.String({ description: "Case-insensitive substring filter" })),
+        filter: Type.Optional(Type.String({
+          description: "Case-insensitive JavaScript regex matched against each line. Plain words work too (e.g. `zigbee`). Examples: `error|warn`, `\\bauth\\b`, `traceback`.",
+        })),
       }),
       async execute(
         _id: string,
         params: { type: "error" | "system"; filter?: string },
       ): Promise<ToolResult> {
-        const f = params.filter?.toLowerCase();
+        let f: RegExp | null = null;
+        if (params.filter && params.filter.trim().length > 0) {
+          try {
+            f = new RegExp(params.filter, "i");
+          } catch (err) {
+            return ok(`Invalid filter regex: ${(err as Error).message}. Filter is a JavaScript regex (e.g. \`error|warn\`, \`zigbee\`).`);
+          }
+        }
         if (params.type === "error") {
           try {
             const res = await ha.restCall("/api/error_log");
             if (!res.ok) return ok(`error_log failed: ${res.status}`);
             const text = await res.text();
             const lines = text.split("\n").filter((l) => l.trim());
-            const filtered = f ? lines.filter((l) => l.toLowerCase().includes(f)) : lines;
+            const filtered = f ? lines.filter((l) => f!.test(l)) : lines;
             // error_log is reverse-chronological: newest at the bottom. Show
             // the tail (most recent 100 lines) and let okList trim by bytes.
             const slice = filtered.slice(-100);
             if (slice.length === 0) return ok("(no matching log lines)");
-            return okList("", slice, { maxBytes: 12 * 1024, hint: "tighten with `filter=<substring>`" });
+            return okList("", slice, { maxBytes: 12 * 1024, hint: "tighten with `filter=<regex>`" });
           } catch (err) {
             return ok(`error_log fetch failed: ${(err as Error).message}`);
           }
@@ -830,10 +852,10 @@ export function buildTools(
               : String(e.timestamp ?? "");
             return `[${e.level ?? "?"}] ${ts} ${e.name ?? ""}: ${e.message ?? ""}`;
           });
-          const filtered = f ? formatted.filter((l) => l.toLowerCase().includes(f)) : formatted;
+          const filtered = f ? formatted.filter((l) => f!.test(l)) : formatted;
           const slice = filtered.slice(0, 100);
           if (slice.length === 0) return ok("(no matching entries)");
-          return okList("", slice, { maxBytes: 12 * 1024, hint: "tighten with `filter=<substring>`" });
+          return okList("", slice, { maxBytes: 12 * 1024, hint: "tighten with `filter=<regex>`" });
         } catch (err) {
           return ok(`system_log unavailable: ${(err as Error).message}`);
         }

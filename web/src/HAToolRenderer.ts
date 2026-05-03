@@ -36,16 +36,21 @@ const CONFIGS: Record<string, RendererConfig> = {
     summarize: (p) => {
       if (!p) return "ha_get_states";
       if (p.entity_id) return `ha_get_states ${p.entity_id}`;
-      if (p.domain) return `ha_get_states (domain=${p.domain})`;
-      return "ha_get_states (all)";
+      const args: string[] = [];
+      if (p.filter) args.push(`filter=${quote(p.filter)}`);
+      if (p.domain) args.push(`domain=${p.domain}`);
+      return args.length ? `ha_get_states (${args.join(", ")})` : "ha_get_states (all)";
     },
   },
   ha_get_history: {
     icon: History,
     summarize: (p) => {
       if (!p?.entity_id) return "ha_get_history";
-      const hrs = p.hours ?? 24;
-      return `ha_get_history ${p.entity_id} (${hrs}h)`;
+      const range = p.start_time
+        ? `${shortIso(p.start_time)}→${p.end_time ? shortIso(p.end_time) : "now"}`
+        : `${p.hours ?? 24}h`;
+      const interval = p.interval_minutes ? `, ${p.interval_minutes}min` : "";
+      return `ha_get_history ${p.entity_id} (${range}${interval})`;
     },
   },
   ha_fire_event: {
@@ -58,7 +63,11 @@ const CONFIGS: Record<string, RendererConfig> = {
   },
   ha_get_logs: {
     icon: FileText,
-    summarize: (p) => `ha_get_logs (${p?.type ?? "?"}${p?.filter ? ` filter="${p.filter}"` : ""})`,
+    summarize: (p) => {
+      const args: string[] = [`${p?.type ?? "?"}`];
+      if (p?.filter) args.push(`filter=/${p.filter}/i`);
+      return `ha_get_logs (${args.join(", ")})`;
+    },
   },
   ha_get_notifications: {
     icon: Bell,
@@ -66,13 +75,29 @@ const CONFIGS: Record<string, RendererConfig> = {
   },
   ha_get_dashboard: {
     icon: LayoutDashboard,
-    summarize: (p) => p?.name ? `ha_get_dashboard ${p.name}` : "ha_get_dashboard (list all)",
+    summarize: (p) => {
+      if (!p?.name) return "ha_get_dashboard (list all)";
+      const path = p.path ? ` :${p.path}` : "";
+      return `ha_get_dashboard ${p.name}${path}`;
+    },
   },
   ha_modify_dashboard: {
     icon: LayoutDashboard,
     summarize: (p) => `ha_modify_dashboard ${p?.name ?? "?"} (replace full config)`,
   },
 };
+
+function quote(s: unknown): string {
+  if (typeof s !== "string") return String(s);
+  // Wrap in /…/i so it reads as a regex literal — matches what the tool actually does.
+  return `/${s}/i`;
+}
+
+function shortIso(s: string): string {
+  // Trim full ISO timestamps to their date+HH:MM portion to keep titles short.
+  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/.exec(s);
+  return m ? `${m[1]} ${m[2]}` : s;
+}
 
 function formatValue(v: unknown): string {
   if (typeof v === "string") return v;

@@ -48,7 +48,7 @@ Deno.test("buildAgentsMd — section order is system → house → services → 
   const system = idx("# hai — Home Assistant Agent");
   const house = idx("## House");
   const services = idx("## Services available");
-  const entities = idx("## Areas and exposed entities");
+  const entities = idx("## Areas");
   const reminders = idx("## Reminders");
   assert(system >= 0, "system header missing");
   assert(house > system, `house should follow system (${system}, ${house})`);
@@ -70,8 +70,8 @@ Deno.test("buildAgentsMd — house section includes localisation + unit fields",
 Deno.test("buildAgentsMd — services section omitted when none provided", () => {
   const md = buildAgentsMd({ houseInfo: HOUSE });
   assertEquals(md.includes("## Services available"), false);
-  assert(md.indexOf("## Areas and exposed entities") > md.indexOf("## House"));
-  assert(md.indexOf("## Reminders") > md.indexOf("## Areas and exposed entities"));
+  assert(md.indexOf("## Areas") > md.indexOf("## House"));
+  assert(md.indexOf("## Reminders") > md.indexOf("## Areas"));
 });
 
 Deno.test("buildAgentsMd — services iterate per-domain with required/optional markers", () => {
