@@ -17,3 +17,6 @@ web/dist/
 # Logs / scratch
 *.log
 .DS_Store
+
+# Local dev scratch — notes, throwaway scripts that shouldn't be tracked
+workspace/
