@@ -60,6 +60,13 @@ export function buildTopbar(agent: WebSocketRemoteAgent, onToggleSidebar?: () =>
   const right = document.createElement("div");
   right.style.cssText = "display: flex; align-items: center; gap: 8px;";
 
+  // <theme-toggle> is registered by importing @mariozechner/mini-lit/dist/ThemeToggle.js
+  // in main.ts. includeSystem=true cycles light → dark → system; default is system.
+  const themeToggle = document.createElement("theme-toggle") as HTMLElement & { includeSystem?: boolean };
+  themeToggle.setAttribute("includeSystem", "");
+  themeToggle.style.color = "var(--foreground)";
+  right.append(themeToggle);
+
   const settingsBtn = document.createElement("button");
   settingsBtn.title = "Settings";
   settingsBtn.innerHTML = "⚙";

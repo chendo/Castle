@@ -17,6 +17,7 @@ const PLACEHOLDER_MODEL: Model<any> = {
 
 export interface ServerSettings {
   enabledTools: string[];
+  contextWindow: number;
 }
 
 type Frame =

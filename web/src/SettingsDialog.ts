@@ -3,8 +3,11 @@ import type { ServerSettings, WebSocketRemoteAgent } from "./WebSocketRemoteAgen
 interface DialogState {
   allTools: string[];
   enabled: Set<string>;
+  contextWindow: number;
   loaded: boolean;
 }
+
+const MIN_CONTEXT_WINDOW = 8192;
 
 /**
  * Settings dialog. Lists every available tool with a checkbox so the user can
@@ -18,6 +21,7 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
   const state: DialogState = {
     allTools: [],
     enabled: new Set(),
+    contextWindow: 65536,
     loaded: false,
   };
 
@@ -44,7 +48,16 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
       <button id="hai-settings-close" title="Close" style="background:transparent;border:none;color:var(--muted-foreground);font-size:22px;cursor:pointer;padding:0 4px;line-height:1;">×</button>
     </div>
     <div style="padding: 16px 20px; overflow-y: auto; flex: 1;">
-      <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted-foreground); margin-bottom: 10px;">Enabled tools</div>
+      <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted-foreground); margin-bottom: 10px;">Context window</div>
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <input id="hai-settings-context" type="number" min="${MIN_CONTEXT_WINDOW}" step="1024" style="width: 140px; padding: 4px 8px; font-size: 13px; background: var(--background); color: var(--foreground); border: 1px solid var(--border); border-radius: 6px;" />
+        <span style="font-size: 12px; color: var(--muted-foreground);">tokens (min ${MIN_CONTEXT_WINDOW.toLocaleString()})</span>
+      </div>
+      <div style="margin-top: 6px; font-size: 12px; color: var(--muted-foreground);">
+        Set to whatever your model server actually supports. Compaction thresholds scale with this value.
+      </div>
+
+      <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted-foreground); margin: 18px 0 10px;">Enabled tools</div>
       <div id="hai-settings-tools" style="display: flex; flex-direction: column; gap: 4px;">
         <div style="font-size: 13px; color: var(--muted-foreground);">Loading…</div>
       </div>
@@ -69,6 +82,7 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
   const applyBtn = panel.querySelector("#hai-settings-apply") as HTMLButtonElement;
   const allBtn = panel.querySelector("#hai-settings-all") as HTMLButtonElement;
   const noneBtn = panel.querySelector("#hai-settings-none") as HTMLButtonElement;
+  const contextInput = panel.querySelector("#hai-settings-context") as HTMLInputElement;
 
   const renderTools = () => {
     if (!state.loaded) return;
@@ -96,7 +110,9 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
   const handler = (settings: ServerSettings, allTools: string[]) => {
     state.allTools = allTools;
     state.enabled = new Set(settings.enabledTools);
+    state.contextWindow = settings.contextWindow;
     state.loaded = true;
+    contextInput.value = String(settings.contextWindow);
     applyBtn.disabled = false;
     renderTools();
   };
@@ -116,9 +132,13 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
 
   applyBtn.onclick = () => {
     if (!state.loaded) return;
+    const parsed = Math.floor(Number(contextInput.value));
+    const contextWindow = Number.isFinite(parsed) && parsed >= MIN_CONTEXT_WINDOW
+      ? parsed
+      : state.contextWindow;
     agent.sendRaw({
       type: "set_settings",
-      settings: { enabledTools: [...state.enabled] },
+      settings: { enabledTools: [...state.enabled], contextWindow },
     });
     close();
   };

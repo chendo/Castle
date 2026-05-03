@@ -54,6 +54,13 @@ async function writeModelsJson(): Promise<void> {
   if (!modelId) throw new Error("MODEL_NAME env var is required");
   const input = await detectModelInput(url, key, modelId);
   console.log(`[hai] model ${modelId} input modalities: ${input.join(", ")}`);
+  // Seed contextWindow from the same env var settings.ts reads. The value is
+  // overwritten per-session from settings.json before the agent runs, so this
+  // is just a sane initial value for the registry parse.
+  const seedContextWindow = (() => {
+    const fromEnv = Number(Deno.env.get("MODEL_CONTEXT_WINDOW"));
+    return Number.isFinite(fromEnv) && fromEnv >= 8192 ? fromEnv : 65536;
+  })();
   const config = {
     providers: {
       local: {
@@ -65,7 +72,7 @@ async function writeModelsJson(): Promise<void> {
           {
             id: modelId,
             name: modelId,
-            contextWindow: 32768,
+            contextWindow: seedContextWindow,
             maxTokens: 4096,
             reasoning: false,
             input,
@@ -368,7 +375,7 @@ async function handleSocket(socket: WebSocket): Promise<void> {
     }
 
     if (msg.type === "set_settings") {
-      const incoming = (msg as unknown as { settings: { enabledTools: ToolName[] } }).settings;
+      const incoming = (msg as unknown as { settings: { enabledTools?: ToolName[]; contextWindow?: number } }).settings;
       const saved = await saveSettings(incoming);
       // Tool changes only take effect on a fresh session — reset, re-wire the
       // broadcast onto the new agent (resetAgentSession nulls the old one), and

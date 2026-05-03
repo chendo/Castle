@@ -150,6 +150,17 @@ function formatBucketTime(date: Date, tz: string, includeDate: boolean): string 
   });
 }
 
+function formatChangeTime(date: Date, tz: string, includeDate: boolean): string {
+  if (includeDate) {
+    return date.toLocaleString("en-US", {
+      timeZone: tz, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+    }).replace(/,\s*/g, " ");
+  }
+  return date.toLocaleString("en-US", {
+    timeZone: tz, hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+  });
+}
+
 const ALLOWED_INTERVALS = [1, 5, 10, 15, 30, 60];
 
 export function pickAutoInterval(durationMs: number): number {
@@ -166,33 +177,44 @@ function round1(n: number): number {
 }
 
 export interface HistoryPoint { value: number; timestamp: Date; rawIso: string }
+export interface StateChange { state: string; timestamp: Date; rawIso: string }
 
-export function parseHistoryPoints(raw: unknown): HistoryPoint[] | null {
-  if (!raw || typeof raw !== "object") return null;
+// Sentinels HA emits when a sensor is offline / starting up. They aren't real
+// readings, so we exclude them from numeric-vs-state classification.
+const STATE_SENTINELS = new Set(["unknown", "unavailable", "none", ""]);
 
-  // Modern HA WS `history/history_during_period`: { "<entity_id>": [{ s, lu, lc, a }, ...] }
-  // Older REST `history/period`: [[{ state, last_changed }, ...]] (array of per-entity arrays)
+export function isNumericState(s: string): boolean {
+  if (STATE_SENTINELS.has(s)) return false;
+  const n = parseFloat(s);
+  return !isNaN(n) && isFinite(n);
+}
+
+/**
+ * Parse HA history into ordered state changes. Accepts both the modern WS
+ * shape ({ "<entity_id>": [{ s, lu, ... }] }) and the legacy REST shape
+ * (array of per-entity arrays with `state` / `last_changed`). Returns every
+ * recorded change — numeric or not — sorted chronologically.
+ */
+export function parseStateChanges(raw: unknown): StateChange[] {
+  if (!raw || typeof raw !== "object") return [];
+
   let pointArrays: unknown[] = [];
-  if (Array.isArray(raw)) {
-    pointArrays = raw;
-  } else {
-    pointArrays = Object.values(raw as Record<string, unknown>);
-  }
+  if (Array.isArray(raw)) pointArrays = raw;
+  else pointArrays = Object.values(raw as Record<string, unknown>);
 
-  const points: HistoryPoint[] = [];
+  const out: StateChange[] = [];
   for (const arr of pointArrays) {
     if (!Array.isArray(arr)) continue;
     for (const pt of arr) {
       if (typeof pt !== "object" || pt === null) continue;
       const p = pt as Record<string, unknown>;
 
-      // State: prefer abbreviated `s`, fall back to `state`
       const stateRaw = p.s ?? p.state;
       let stateStr: string | undefined;
       if (typeof stateRaw === "string") stateStr = stateRaw;
       else if (typeof stateRaw === "number") stateStr = String(stateRaw);
+      else if (typeof stateRaw === "boolean") stateStr = stateRaw ? "on" : "off";
 
-      // Timestamp: abbreviated `lu`/`lc` are epoch SECONDS (numbers); full names are ISO strings.
       const tsRaw = p.lu ?? p.lc ?? p.last_updated ?? p.last_changed;
       let lcStr: string | undefined;
       if (typeof tsRaw === "string") lcStr = tsRaw;
@@ -200,9 +222,34 @@ export function parseHistoryPoints(raw: unknown): HistoryPoint[] | null {
       else if (tsRaw instanceof Date) lcStr = tsRaw.toISOString();
 
       if (stateStr == null || !lcStr) continue;
-      const num = parseFloat(stateStr);
-      if (!isNaN(num)) points.push({ value: num, timestamp: new Date(lcStr), rawIso: lcStr });
+      out.push({ state: stateStr, timestamp: new Date(lcStr), rawIso: lcStr });
     }
+  }
+  out.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+  return out;
+}
+
+/**
+ * Decide whether a series should be summarised as numeric buckets or as
+ * state-change events. Returns "numeric" when the bulk of valid (non-sentinel)
+ * samples parse as finite numbers, else "state". `[]` returns "empty".
+ */
+export function classifyHistory(changes: StateChange[]): "numeric" | "state" | "empty" {
+  if (changes.length === 0) return "empty";
+  const valid = changes.filter((c) => !STATE_SENTINELS.has(c.state));
+  if (valid.length === 0) return "state";
+  const numeric = valid.filter((c) => isNumericState(c.state)).length;
+  // 70% threshold: tolerate the occasional "unknown" mid-stream while still
+  // catching truly categorical sensors (e.g. a string-valued select).
+  return numeric / valid.length >= 0.7 ? "numeric" : "state";
+}
+
+export function parseHistoryPoints(raw: unknown): HistoryPoint[] | null {
+  const changes = parseStateChanges(raw);
+  const points: HistoryPoint[] = [];
+  for (const c of changes) {
+    if (!isNumericState(c.state)) continue;
+    points.push({ value: parseFloat(c.state), timestamp: c.timestamp, rawIso: c.rawIso });
   }
   return points.length > 0 ? points : null;
 }
@@ -258,6 +305,90 @@ export function buildBuckets(points: HistoryPoint[], rangeStart: Date, rangeEnd:
     }
   }
   return buckets;
+}
+
+// Beyond this many state changes we collapse to one line per hour. Picked so a
+// busy binary sensor (motion, door) over a day still fits comfortably.
+export const STATE_CHANGE_PER_LINE_LIMIT = 60;
+
+/**
+ * Render a state-change history (binary sensors, enums, anything non-numeric).
+ * Per the roadmap: show timestamps with seconds for each change when there
+ * aren't too many; otherwise batch by hour with a count and the ending state.
+ */
+export function formatStateChangeSummary(
+  entityId: string,
+  changes: StateChange[],
+  rangeStart: Date,
+  rangeEnd: Date,
+  tz: string,
+): string {
+  const durationMs = rangeEnd.getTime() - rangeStart.getTime();
+  const includeDate = durationMs > 24 * 3_600_000;
+
+  // Collapse consecutive duplicates — HA usually only stores real transitions,
+  // but `last_updated`-driven entries can repeat when only attributes changed.
+  const compact: StateChange[] = [];
+  for (const c of changes) {
+    if (compact.length === 0 || compact[compact.length - 1].state !== c.state) {
+      compact.push(c);
+    }
+  }
+
+  const counts = new Map<string, number>();
+  for (const c of compact) counts.set(c.state, (counts.get(c.state) ?? 0) + 1);
+  const distribution = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([s, n]) => `${s}=${n}`)
+    .join(" ");
+
+  const dur = durationMs / 3_600_000;
+  const durLabel = dur < 1
+    ? `${Math.round(durationMs / 60_000)}min`
+    : Number.isInteger(dur) ? `${dur}h` : `${dur.toFixed(1)}h`;
+
+  const lines: string[] = [];
+  lines.push(entityId);
+  const last = compact.length > 0 ? compact[compact.length - 1].state : "(none)";
+  lines.push(`${formatBucketTime(rangeStart, tz, true)} → ${formatBucketTime(rangeEnd, tz, true)} (${durLabel}, ${compact.length} change${compact.length === 1 ? "" : "s"}, last=${last})`);
+  lines.push("");
+  if (distribution) {
+    lines.push(`Distribution: ${distribution}`);
+    lines.push("");
+  }
+
+  if (compact.length === 0) return lines.join("\n");
+
+  if (compact.length <= STATE_CHANGE_PER_LINE_LIMIT) {
+    for (const c of compact) {
+      lines.push(`${formatChangeTime(c.timestamp, tz, includeDate)} ${c.state}`);
+    }
+    return lines.join("\n");
+  }
+
+  // Hour batching for dense series. Bucket to wall-clock hours in the HA tz so
+  // labels line up with real hours instead of arbitrary offsets from rangeStart.
+  lines.push("(many changes — batched by hour: count → ending state)");
+  const buckets = new Map<string, { last: StateChange; count: number; bucketStart: Date }>();
+  for (const c of compact) {
+    // Normalize each timestamp down to the start of its hour in HA's timezone.
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hour12: false,
+    }).formatToParts(c.timestamp);
+    const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
+    const key = `${get("year")}-${get("month")}-${get("day")}T${get("hour")}`;
+    const existing = buckets.get(key);
+    if (existing) {
+      existing.last = c;
+      existing.count++;
+    } else {
+      buckets.set(key, { last: c, count: 1, bucketStart: c.timestamp });
+    }
+  }
+  for (const { last: l, count, bucketStart } of buckets.values()) {
+    lines.push(`${formatBucketTime(bucketStart, tz, includeDate)} ${count}× → ${l.state}`);
+  }
+  return lines.join("\n");
 }
 
 function formatHistorySummary(
@@ -801,7 +932,7 @@ export function buildTools(
     {
       name: "ha_get_history",
       label: "Get History",
-      description: "Sensor history bucketed at a chosen granularity. Each bucket reports min/max (single value if stable, _ if empty). Returns Stats line + per-bucket lines like '14:05=20.3/20.7'. Use a smaller interval_minutes for short windows (e.g. 5min over the last hour) and a larger one for multi-day windows. Pass either `hours` (relative to now) OR start_time+end_time (ISO 8601).",
+      description: "Entity history. For numeric sensors: bucketed min/max at a chosen granularity (lines like '14:05=20.3/20.7'). For binary/enum entities (door, motion, lights, selects, etc.): a list of state changes with HH:MM:SS timestamps, batched per hour when very dense. interval_minutes only applies to the numeric path. Pass either `hours` (relative to now) OR start_time+end_time (ISO 8601).",
       parameters: Type.Object({
         entity_id: Type.String({ description: "Entity to get history for" }),
         hours: Type.Optional(Type.Number({ description: "Hours of history ending now. Ignored if start_time/end_time are set. Default 24." })),
@@ -842,12 +973,22 @@ export function buildTools(
 
         const raw = await ha.getHistory(params.entity_id, start, end);
         const tz = await getHATimezone(ha);
-        const points = parseHistoryPoints(raw);
-        if (!points || points.length === 0) {
+        const changes = parseStateChanges(raw);
+        if (changes.length === 0) {
           console.log(`[tool] ha_get_history raw for ${params.entity_id}:`, JSON.stringify(raw).slice(0, 500));
           return ok(`No history data for ${params.entity_id}`);
         }
-        return ok(formatHistorySummary(params.entity_id, points, start, end, intervalMin, tz));
+        const kind = classifyHistory(changes);
+        if (kind === "numeric") {
+          const points: HistoryPoint[] = [];
+          for (const c of changes) {
+            if (!isNumericState(c.state)) continue;
+            points.push({ value: parseFloat(c.state), timestamp: c.timestamp, rawIso: c.rawIso });
+          }
+          if (points.length === 0) return ok(`No history data for ${params.entity_id}`);
+          return okText(formatHistorySummary(params.entity_id, points, start, end, intervalMin, tz), { maxBytes: 16 * 1024 });
+        }
+        return okText(formatStateChangeSummary(params.entity_id, changes, start, end, tz), { maxBytes: 16 * 1024 });
       },
     },
   ];

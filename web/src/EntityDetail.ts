@@ -31,9 +31,9 @@ function isNumeric(s: string): boolean {
   return /^-?\d+(\.\d+)?$/.test(s);
 }
 
+// Match ChartRenderer: rely solely on the `.dark` class set by the theme system.
 function isDarkMode(): boolean {
-  return document.documentElement.classList.contains("dark") ||
-    window.matchMedia?.("(prefers-color-scheme: dark)").matches;
+  return document.documentElement.classList.contains("dark");
 }
 
 /** Open the rich entity detail modal. */

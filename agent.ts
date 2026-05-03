@@ -43,13 +43,23 @@ export function getAgentSession(ha: HAClient): Promise<AgentSession> {
     sessionPromise = (async () => {
       const settings = await loadSettings();
       const model = getLocalModel();
+      // Override the bundled-in models.json contextWindow with the user-configured
+      // value. The model object is mutated in place because pi-coding-agent reads
+      // contextWindow off the model when sizing compaction thresholds.
+      model.contextWindow = settings.contextWindow;
       const isMultimodal = Array.isArray(model.input) && model.input.includes("image");
       if (!isMultimodal) {
         console.log("[agent] model is text-only — ha_get_camera_snapshot will fall back to text descriptions");
       }
+      console.log(`[agent] context window: ${settings.contextWindow} tokens`);
       // Per-turn cache for ha_get_dashboard so drill-down doesn't refetch the
       // (potentially huge) config on every call. Cleared on agent_end below.
       const dashboardCache = new Map<string, unknown>();
+
+      // Scale compaction thresholds with the context window so a larger window
+      // actually buys more retained history instead of always trimming back to 8k.
+      const reserveTokens = Math.min(4096, Math.floor(settings.contextWindow * 0.0625));
+      const keepRecentTokens = Math.max(8192, Math.floor(settings.contextWindow * 0.125));
 
       const result = await createAgentSession({
         cwd: CWD,
@@ -63,8 +73,8 @@ export function getAgentSession(ha: HAClient): Promise<AgentSession> {
         settingsManager: SettingsManager.inMemory({
           compaction: {
             enabled: true,
-            reserveTokens: 4096,
-            keepRecentTokens: 8192,
+            reserveTokens,
+            keepRecentTokens,
           },
         }),
         thinkingLevel: "low",

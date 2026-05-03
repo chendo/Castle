@@ -1,5 +1,15 @@
 import { assertEquals, assertExists } from "jsr:@std/assert@1";
-import { buildBuckets, computeStats, parseHistoryPoints, pickAutoInterval } from "../tools.ts";
+import {
+  buildBuckets,
+  classifyHistory,
+  computeStats,
+  formatStateChangeSummary,
+  isNumericState,
+  parseHistoryPoints,
+  parseStateChanges,
+  pickAutoInterval,
+  STATE_CHANGE_PER_LINE_LIMIT,
+} from "../tools.ts";
 
 Deno.test("parseHistoryPoints — modern WS shape (object keyed by entity, abbreviated keys, epoch seconds)", () => {
   const raw = {
@@ -100,6 +110,143 @@ Deno.test("buildBuckets — points outside range are dropped", () => {
   assertEquals(buckets.length, 2);
   assertEquals(buckets[0].values, []);
   assertEquals(buckets[1].values, [2]);
+});
+
+Deno.test("isNumericState — sentinels and edge cases", () => {
+  assertEquals(isNumericState("20.5"), true);
+  assertEquals(isNumericState("-3"), true);
+  assertEquals(isNumericState("0"), true);
+  assertEquals(isNumericState("on"), false);
+  assertEquals(isNumericState("off"), false);
+  assertEquals(isNumericState("unknown"), false);
+  assertEquals(isNumericState("unavailable"), false);
+  assertEquals(isNumericState(""), false);
+});
+
+Deno.test("parseStateChanges — keeps every state, sorted chronologically", () => {
+  const raw = {
+    "binary_sensor.front_door": [
+      { s: "off", lu: 1714521600 },     // 2024-05-01T00:00:00Z
+      { s: "on",  lu: 1714521630 },     // +30s
+      { s: "off", lu: 1714521900 },     // +5min
+      { s: "on",  lu: 1714521700 },     // out-of-order — should be sorted in
+    ],
+  };
+  const cs = parseStateChanges(raw);
+  assertEquals(cs.length, 4);
+  assertEquals(cs.map((c) => c.state), ["off", "on", "on", "off"]);
+  assertEquals(cs[0].timestamp.toISOString(), "2024-05-01T00:00:00.000Z");
+  assertEquals(cs[3].timestamp.toISOString(), "2024-05-01T00:05:00.000Z");
+});
+
+Deno.test("parseStateChanges — legacy REST shape with full keys + ISO strings", () => {
+  const raw = [[
+    { state: "closed", last_changed: "2024-05-01T00:00:00Z" },
+    { state: "open",   last_changed: "2024-05-01T00:01:00Z" },
+  ]];
+  const cs = parseStateChanges(raw);
+  assertEquals(cs.length, 2);
+  assertEquals(cs[1].state, "open");
+});
+
+Deno.test("parseStateChanges — empty / malformed return []", () => {
+  assertEquals(parseStateChanges(null), []);
+  assertEquals(parseStateChanges(undefined), []);
+  assertEquals(parseStateChanges({}), []);
+  assertEquals(parseStateChanges([]), []);
+  assertEquals(parseStateChanges({ foo: "bar" }), []);
+});
+
+Deno.test("classifyHistory — numeric sensor", () => {
+  const cs = parseStateChanges({
+    "sensor.t": [
+      { s: "20.1", lu: 1714521600 },
+      { s: "20.2", lu: 1714521660 },
+      { s: "unknown", lu: 1714521720 }, // sentinel — ignored
+      { s: "20.3", lu: 1714521780 },
+    ],
+  });
+  assertEquals(classifyHistory(cs), "numeric");
+});
+
+Deno.test("classifyHistory — binary sensor (categorical)", () => {
+  const cs = parseStateChanges({
+    "binary_sensor.x": [
+      { s: "off", lu: 1714521600 },
+      { s: "on",  lu: 1714521660 },
+      { s: "off", lu: 1714521720 },
+    ],
+  });
+  assertEquals(classifyHistory(cs), "state");
+});
+
+Deno.test("classifyHistory — empty", () => {
+  assertEquals(classifyHistory([]), "empty");
+});
+
+Deno.test("classifyHistory — only sentinels falls back to state", () => {
+  const cs = parseStateChanges({
+    "sensor.x": [
+      { s: "unknown", lu: 1714521600 },
+      { s: "unavailable", lu: 1714521660 },
+    ],
+  });
+  assertEquals(classifyHistory(cs), "state");
+});
+
+Deno.test("formatStateChangeSummary — sparse list shows HH:MM:SS for every change", () => {
+  const start = new Date("2024-05-01T00:00:00Z");
+  const end = new Date("2024-05-01T01:00:00Z");
+  const changes = [
+    { state: "off", timestamp: new Date("2024-05-01T00:00:30Z"), rawIso: "" },
+    { state: "on",  timestamp: new Date("2024-05-01T00:00:45Z"), rawIso: "" },
+    { state: "off", timestamp: new Date("2024-05-01T00:05:12Z"), rawIso: "" },
+  ];
+  const out = formatStateChangeSummary("binary_sensor.door", changes, start, end, "UTC");
+  // Header + count
+  assertEquals(out.includes("binary_sensor.door"), true);
+  assertEquals(out.includes("3 changes"), true);
+  assertEquals(out.includes("last=off"), true);
+  // Distribution
+  assertEquals(out.includes("Distribution: off=2 on=1"), true);
+  // Each event has seconds
+  assertEquals(/00:00:30 off/.test(out), true);
+  assertEquals(/00:00:45 on/.test(out), true);
+  assertEquals(/00:05:12 off/.test(out), true);
+});
+
+Deno.test("formatStateChangeSummary — collapses consecutive duplicates", () => {
+  const start = new Date("2024-05-01T00:00:00Z");
+  const end = new Date("2024-05-01T01:00:00Z");
+  const changes = [
+    { state: "off", timestamp: new Date("2024-05-01T00:00:00Z"), rawIso: "" },
+    { state: "off", timestamp: new Date("2024-05-01T00:01:00Z"), rawIso: "" },
+    { state: "on",  timestamp: new Date("2024-05-01T00:02:00Z"), rawIso: "" },
+    { state: "on",  timestamp: new Date("2024-05-01T00:03:00Z"), rawIso: "" },
+  ];
+  const out = formatStateChangeSummary("binary_sensor.door", changes, start, end, "UTC");
+  // Only 2 actual transitions kept
+  assertEquals(out.includes("2 changes"), true);
+});
+
+Deno.test("formatStateChangeSummary — dense series batches by hour", () => {
+  const start = new Date("2024-05-01T00:00:00Z");
+  const end = new Date("2024-05-01T03:00:00Z");
+  const changes = [];
+  // Generate alternating on/off changes, more than the per-line cap, spread across 3 hours.
+  const total = STATE_CHANGE_PER_LINE_LIMIT + 30;
+  for (let i = 0; i < total; i++) {
+    const ts = new Date(start.getTime() + i * 60_000); // 1/min
+    changes.push({ state: i % 2 === 0 ? "off" : "on", timestamp: ts, rawIso: "" });
+  }
+  const out = formatStateChangeSummary("binary_sensor.dense", changes, start, end, "UTC");
+  assertEquals(out.includes("(many changes — batched by hour"), true);
+  // Should have at most 3 hour-bucket lines (00, 01, 02 UTC).
+  const bucketLines = out.split("\n").filter((l) => /\d+× → /.test(l));
+  // Either 2 or 3 hours covered depending on where the last sample lands; just
+  // assert that batching collapsed the per-line render.
+  assertEquals(bucketLines.length <= 3, true);
+  assertEquals(bucketLines.length >= 1, true);
 });
 
 Deno.test("pickAutoInterval — duration thresholds", () => {

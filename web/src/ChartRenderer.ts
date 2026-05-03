@@ -66,9 +66,11 @@ async function fetchSeries(args: ChartArgs): Promise<Record<string, HistoryPoint
   return await res.json();
 }
 
+// The theme system in main.ts always reflects the resolved theme as a `.dark` class
+// on <html> (handling "system" = OS preference internally). Reading the class here
+// keeps charts in sync with the rest of the app instead of double-detecting.
 function isDarkMode(): boolean {
-  return document.documentElement.classList.contains("dark") ||
-    window.matchMedia?.("(prefers-color-scheme: dark)").matches;
+  return document.documentElement.classList.contains("dark");
 }
 
 function buildConfig(series: Record<string, HistoryPoint[]>, args: ChartArgs): ChartConfiguration<"line"> {

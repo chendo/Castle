@@ -1,4 +1,9 @@
 import "./app.css";
+// Importing ThemeToggle has the side-effect of applying the saved/system theme to <html>
+// and registering the <theme-toggle> custom element. Default is "system" (auto), which
+// is what the roadmap calls for and also makes the chart's dark-mode auto-detect line up
+// with the rest of the app.
+import "@mariozechner/mini-lit/dist/ThemeToggle.js";
 import {
   AppStorage,
   ChatPanel,

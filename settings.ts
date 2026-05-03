@@ -22,19 +22,39 @@ export type ToolName = typeof ALL_TOOL_NAMES[number];
 
 export interface Settings {
   enabledTools: ToolName[];
+  // LLM context window in tokens. Drives compaction thresholds in the agent.
+  // Floored at 8k so things still work; no upper bound — user knows their backend.
+  contextWindow: number;
 }
+
+// 64k chosen per the roadmap; modern open-weights models comfortably support it.
+// MODEL_CONTEXT_WINDOW env var lets a deployment change the seed default without
+// touching settings.json (settings.json still wins once a value is saved there).
+const DEFAULT_CONTEXT_WINDOW = (() => {
+  const fromEnv = Number(Deno.env.get("MODEL_CONTEXT_WINDOW"));
+  return Number.isFinite(fromEnv) && fromEnv >= 8192 ? fromEnv : 65536;
+})();
+
+const MIN_CONTEXT_WINDOW = 8192;
 
 const DEFAULTS: Settings = {
   enabledTools: [...ALL_TOOL_NAMES],
+  contextWindow: DEFAULT_CONTEXT_WINDOW,
 };
 
 let cached: Settings | null = null;
 
 function sanitize(s: Partial<Settings> | null | undefined): Settings {
   const enabled = Array.isArray(s?.enabledTools) ? s!.enabledTools : DEFAULTS.enabledTools;
-  // Keep only known tool names.
   const filtered = enabled.filter((n): n is ToolName => (ALL_TOOL_NAMES as readonly string[]).includes(n));
-  return { enabledTools: filtered.length ? filtered : [...ALL_TOOL_NAMES] };
+  const cwRaw = typeof s?.contextWindow === "number" ? s!.contextWindow : DEFAULTS.contextWindow;
+  const contextWindow = Number.isFinite(cwRaw) && cwRaw >= MIN_CONTEXT_WINDOW
+    ? Math.floor(cwRaw)
+    : DEFAULTS.contextWindow;
+  return {
+    enabledTools: filtered.length ? filtered : [...ALL_TOOL_NAMES],
+    contextWindow,
+  };
 }
 
 export async function loadSettings(): Promise<Settings> {
