@@ -262,12 +262,16 @@ async function handler(req: Request): Promise<Response> {
 // --- WebSocket handling ----------------------------------------------------
 
 const sockets = new Set<WebSocket>();
-let agentBroadcastSetup = false;
+// Tracked per-agent: resetAgentSession() rebuilds the agent, so a single
+// module-level "wired" boolean would leave the new agent unsubscribed and the
+// browser would silently miss every event from then on (fixed by full refresh,
+// which loads the new state via the hello snapshot — exactly the symptom we hit).
+const broadcastWiredAgents = new WeakSet<object>();
 
-async function setupAgentBroadcast(): Promise<void> {
-  if (agentBroadcastSetup) return;
-  agentBroadcastSetup = true;
+async function ensureAgentBroadcast(): Promise<void> {
   const session = await getAgentSession(ha);
+  if (broadcastWiredAgents.has(session.agent)) return;
+  broadcastWiredAgents.add(session.agent);
   session.agent.subscribe((event: AgentEvent) => {
     const frame = JSON.stringify({ type: "event", event });
     for (const ws of sockets) {
@@ -304,7 +308,7 @@ async function handleSocket(socket: WebSocket): Promise<void> {
 
   socket.onopen = async () => {
     try {
-      await setupAgentBroadcast();
+      await ensureAgentBroadcast();
     } catch (err) {
       console.error("[ws] broadcast setup failed:", err);
       socket.send(JSON.stringify({ type: "error", message: "agent unavailable" }));
@@ -318,6 +322,7 @@ async function handleSocket(socket: WebSocket): Promise<void> {
 
     if (msg.type === "hello") {
       try {
+        await ensureAgentBroadcast();
         const session = await getAgentSession(ha);
         socket.send(JSON.stringify({ type: "snapshot", state: serializeSnapshot(session) }));
       } catch (err) {
@@ -336,6 +341,7 @@ async function handleSocket(socket: WebSocket): Promise<void> {
       console.log(`[query] ${text}`);
       lastQueryAt = Date.now();
       queryCount++;
+      await ensureAgentBroadcast();
       submitPrompt(text, ha);
       return;
     }
@@ -363,8 +369,11 @@ async function handleSocket(socket: WebSocket): Promise<void> {
     if (msg.type === "set_settings") {
       const incoming = (msg as unknown as { settings: { enabledTools: ToolName[] } }).settings;
       const saved = await saveSettings(incoming);
-      // Tool changes only take effect on a fresh session — reset and broadcast.
+      // Tool changes only take effect on a fresh session — reset, re-wire the
+      // broadcast onto the new agent (resetAgentSession nulls the old one), and
+      // push a snapshot so every client sees the cleared state.
       await resetAgentSession();
+      await ensureAgentBroadcast();
       const session = await getAgentSession(ha);
       const snapshotFrame = JSON.stringify({ type: "snapshot", state: serializeSnapshot(session) });
       const settingsFrame = JSON.stringify({ type: "settings", settings: saved, all_tools: ALL_TOOL_NAMES });
@@ -381,6 +390,7 @@ async function handleSocket(socket: WebSocket): Promise<void> {
     if (msg.type === "reset") {
       try {
         await resetAgentSession();
+        await ensureAgentBroadcast();
         // Broadcast a fresh snapshot to ALL connected clients so every browser sees the cleared state.
         const session = await getAgentSession(ha);
         const snapshot = JSON.stringify({ type: "snapshot", state: serializeSnapshot(session) });
