@@ -8,7 +8,6 @@ import {
 } from "npm:@mariozechner/pi-coding-agent";
 import type { HAClient } from "./ha-client.ts";
 import { buildTools } from "./tools.ts";
-import { formatStates } from "./catalog.ts";
 import { loadSettings } from "./settings.ts";
 import { logMessageEnd, resetConversationFile } from "./persistence.ts";
 
@@ -31,12 +30,6 @@ function getLocalModel(): any {
 }
 
 let sessionPromise: Promise<AgentSession> | null = null;
-
-async function buildHomeStateText(ha: HAClient): Promise<string> {
-  const exposedList = await ha.getExposedEntities();
-  const exposed = exposedList ? new Set(exposedList) : undefined;
-  return formatStates(ha.getAllStates(), exposed);
-}
 
 export function getAgentSession(ha: HAClient): Promise<AgentSession> {
   if (!sessionPromise) {
@@ -93,12 +86,12 @@ export function getAgentSession(ha: HAClient): Promise<AgentSession> {
         }
       });
 
-      // Append metadata to the latest user message at LLM-call time only:
-      // - Current time (every turn, since it changes)
-      // - Current home state (first turn only; after that the agent uses ha_get_states)
-      // transformContext mutates only what the LLM sees, so stored messages — and the UI —
-      // keep showing the user's clean text.
-      let homeStateInjected = false;
+      // Append the current wall-clock time to the latest user message at
+      // LLM-call time. Home-state used to be injected here too, but it's a
+      // meaningful chunk of context the agent rarely needs in full — now the
+      // agent fetches what it needs via ha_get_states (with `filter`) instead.
+      // transformContext mutates only what the LLM sees, so stored messages —
+      // and the UI — keep showing the user's clean text.
       result.session.agent.transformContext = async (messages) => {
         const lastUserIdx = (() => {
           for (let i = messages.length - 1; i >= 0; i--) {
@@ -121,15 +114,7 @@ export function getAgentSession(ha: HAClient): Promise<AgentSession> {
           hour12: false,
         });
 
-        const blocks: string[] = [`\n\nCurrent time: ${now} (${tz})`];
-
-        if (!homeStateInjected) {
-          homeStateInjected = true;
-          const stateText = await buildHomeStateText(ha);
-          blocks.push(`\nCurrent home state:\n${stateText}`);
-        }
-
-        const append = blocks.join("\n");
+        const append = `\n\nCurrent time: ${now} (${tz})`;
         const lastUser = messages[lastUserIdx] as { role: "user"; content: any; timestamp: number };
         const newContent = typeof lastUser.content === "string"
           ? lastUser.content + append
@@ -166,8 +151,7 @@ async function drainQueue(): Promise<void> {
 
 /**
  * Clear the current conversation. Aborts any in-flight turn and drops the
- * session so the next prompt starts fresh — including a re-injection of
- * "Current home state" on the new first turn.
+ * session so the next prompt starts fresh.
  */
 export async function resetAgentSession(): Promise<void> {
   resetConversationFile();

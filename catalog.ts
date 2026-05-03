@@ -156,28 +156,6 @@ export function buildServicesData(services: HAServices, presentDomains: Set<stri
   return out;
 }
 
-export function formatStates(states: HAState[], exposed?: Set<string>): string {
-  return states
-    .filter(s => {
-      if (exposed !== undefined && !exposed.has(s.entity_id)) return false;
-      const [domain] = s.entity_id.split(".");
-      return !SKIP_DOMAINS.has(domain);
-    })
-    .map(s => {
-      const attrs: string[] = [];
-      const a = s.attributes;
-      if (a.brightness != null) attrs.push(`brightness=${Math.round((a.brightness as number) / 2.55)}%`);
-      if (a.color_temp != null) attrs.push(`color_temp=${a.color_temp}`);
-      if (a.temperature != null) attrs.push(`set=${a.temperature}°`);
-      if (a.current_temperature != null) attrs.push(`current=${a.current_temperature}°`);
-      if (a.humidity != null) attrs.push(`humidity=${a.humidity}%`);
-      if (a.unit_of_measurement != null) attrs.push(`unit=${a.unit_of_measurement}`);
-      const suffix = attrs.length ? ` [${attrs.join(", ")}]` : "";
-      return `${s.entity_id}: ${s.state}${suffix}`;
-    })
-    .join("\n");
-}
-
 export function extractDomains(states: HAState[]): Set<string> {
   const out = new Set<string>();
   for (const s of states) {
