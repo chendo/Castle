@@ -15,9 +15,44 @@ const ha = new HAClient(HA_URL, HA_TOKEN);
 let lastQueryAt: number | null = null;
 let queryCount = 0;
 
-function writeModelsJson(): void {
+const MODEL_ID = "unsloth/qwen3.6-35b-a3b";
+
+// LM Studio's native REST API (not the OpenAI-compat one) exposes per-model
+// capability metadata. `type: "vlm"` (or a `vision: true` flag on newer builds)
+// means the model accepts image input. Returns ["text", "image"] for VLMs and
+// ["text"] otherwise. Falls back to text-only on any error so startup never blocks.
+async function detectModelInput(baseUrl: string, apiKey: string, modelId: string): Promise<string[]> {
+  // baseUrl is the OpenAI-compat URL ending in /v1 — the REST API lives at /api/v0
+  const restBase = baseUrl.replace(/\/v1\/?$/, "") + "/api/v0";
+  const headers = { Authorization: `Bearer ${apiKey}` };
+  try {
+    const res = await fetch(`${restBase}/models/${encodeURIComponent(modelId)}`, {
+      headers,
+      signal: AbortSignal.timeout(2000),
+    });
+    if (res.ok) {
+      const m = await res.json() as { type?: string; vision?: boolean };
+      if (m.vision === true || m.type === "vlm") return ["text", "image"];
+      return ["text"];
+    }
+    // Fallback: list endpoint, in case the per-id route isn't available
+    const listRes = await fetch(`${restBase}/models`, { headers, signal: AbortSignal.timeout(2000) });
+    if (!listRes.ok) throw new Error(`models list ${listRes.status}`);
+    const list = await listRes.json() as { data?: Array<{ id: string; type?: string; vision?: boolean }> };
+    const found = list.data?.find((m) => m.id === modelId);
+    if (found && (found.vision === true || found.type === "vlm")) return ["text", "image"];
+    return ["text"];
+  } catch (err) {
+    console.warn(`[hai] LM Studio capability probe failed (${(err as Error).message}); assuming text-only`);
+    return ["text"];
+  }
+}
+
+async function writeModelsJson(): Promise<void> {
   const key = Deno.env.get("LM_STUDIO_API_KEY") ?? "lm-studio";
   const url = Deno.env.get("LM_STUDIO_URL") ?? "http://host.docker.internal:1234/v1";
+  const input = await detectModelInput(url, key, MODEL_ID);
+  console.log(`[hai] model ${MODEL_ID} input modalities: ${input.join(", ")}`);
   const config = {
     providers: {
       lmstudio: {
@@ -27,13 +62,12 @@ function writeModelsJson(): void {
         compat: { supportsDeveloperRole: false, supportsReasoningEffort: false },
         models: [
           {
-            id: "unsloth/qwen3.6-35b-a3b",
+            id: MODEL_ID,
             name: "Qwen3 35B (Local)",
             contextWindow: 32768,
             maxTokens: 4096,
             reasoning: false,
-            // Qwen3 is text-only. Update this when running a multimodal model.
-            input: ["text"],
+            input,
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
           },
         ],
@@ -41,7 +75,7 @@ function writeModelsJson(): void {
     },
   };
   const agentDir = new URL(".pi-agent/", import.meta.url).pathname.replace(/\/$/, "");
-  Deno.writeTextFileSync(`${agentDir}/models.json`, JSON.stringify(config, null, 2));
+  await Deno.writeTextFile(`${agentDir}/models.json`, JSON.stringify(config, null, 2));
 }
 
 async function regenerateCatalog(): Promise<void> {
@@ -365,6 +399,6 @@ async function handleSocket(socket: WebSocket): Promise<void> {
   socket.onerror = () => sockets.delete(socket);
 }
 
-writeModelsJson();
+await writeModelsJson();
 connectWithRetry(); // background — server starts immediately
 Deno.serve({ port: PORT }, handler);
