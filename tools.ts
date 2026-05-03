@@ -391,7 +391,9 @@ export function buildTools(ha: HAClient, opts: { multimodal?: boolean } = {}) {
     {
       name: "ha_get_camera_snapshot",
       label: "Camera Snapshot (image input)",
-      description: "Capture a snapshot of a camera. With a multimodal model, the image is returned inline so the model can see it. With a text-only model, only a confirmation is returned (the user can still view the camera via ha_show_camera).",
+      description: isMultimodal
+        ? "Capture a camera snapshot AND feed the image to YOU so you can see and describe it. Use this whenever the user asks what's happening at a camera, to describe a scene, identify something, count objects, etc. — anything where you need to look at the image yourself. Pair with ha_show_camera if the user also wants to see the image inline."
+        : "Capture a camera snapshot. The current model is text-only, so the image is NOT fed back to you — only a size confirmation. Prefer ha_show_camera to actually display the image to the user.",
       parameters: Type.Object({
         entity_id: Type.String({ description: "Camera entity ID (must start with camera.)" }),
       }),
@@ -433,7 +435,7 @@ export function buildTools(ha: HAClient, opts: { multimodal?: boolean } = {}) {
     {
       name: "ha_show_camera",
       label: "Show Camera",
-      description: "Render a camera entity inline in the chat. live=false (default) shows a single snapshot; live=true shows a continuous MJPEG feed (the browser pauses it when it's offscreen). Use when the user asks to see a camera.",
+      description: "Render a camera entity inline in the chat for the USER to view. live=false (default) shows a single snapshot; live=true shows a continuous MJPEG feed (the browser pauses it when it's offscreen). This does NOT let YOU see the image — if you also need to look at it (e.g. to describe contents), call ha_get_camera_snapshot. Use when the user asks to see/show/view a camera.",
       parameters: Type.Object({
         entity_id: Type.String({ description: "Camera entity ID (must start with camera.)" }),
         live: Type.Optional(Type.Boolean({ description: "true for continuous feed, false for one-shot snapshot. Default false." })),
