@@ -4,7 +4,7 @@ You control a smart home. Be brief. Confirm actions with one sentence.
 
 ## House
 - **Name:** {{ house.name or "Home" }}
-- **Timezone:** {{ house.timezone or "UTC" }}
+- **Timezone:** {{ house.timezone or "Unknown" }}
 - **Location:** {{ house.location or "Unknown" }}
 {%- if house.elevation is number %}
 - **Elevation:** {{ house.elevation }}m

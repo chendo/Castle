@@ -563,14 +563,15 @@ export function buildTools(
     {
       name: "ha_get_states",
       label: "Get States",
-      description: "Get current state of a specific entity or a filtered list",
+      description: "Look up entity states. Prefer the narrowest call possible: `entity_id` for one specific entity (returns full attributes), `filter` for a case-insensitive substring search across entity_id + friendly_name, `domain` to scope to one domain. Combine `filter` with `domain` to narrow further. Calling with no parameters dumps every exposed entity and is almost never what you want — always reach for `filter` first when you know roughly what you're looking for.",
       parameters: Type.Object({
-        entity_id: Type.Optional(Type.String({ description: "Specific entity ID, or omit for all" })),
-        domain: Type.Optional(Type.String({ description: "Filter by domain, e.g. light, sensor" })),
+        entity_id: Type.Optional(Type.String({ description: "Specific entity ID — returns state + every attribute" })),
+        filter: Type.Optional(Type.String({ description: "Case-insensitive substring matched against entity_id AND friendly_name. Examples: `kitchen`, `motion`, `temp`." })),
+        domain: Type.Optional(Type.String({ description: "Restrict to one domain (light, sensor, binary_sensor, switch, …)" })),
       }),
       async execute(
         _id: string,
-        params: { entity_id?: string; domain?: string },
+        params: { entity_id?: string; filter?: string; domain?: string },
         _signal: AbortSignal | undefined,
         _onUpdate: unknown,
         _ctx: unknown,
@@ -580,15 +581,30 @@ export function buildTools(
           if (!s) return ok(`Unknown entity: ${params.entity_id}`);
           return okText(`${s.entity_id}: ${s.state}\nAttributes: ${JSON.stringify(s.attributes)}`, { maxBytes: 4 * 1024 });
         }
-        const all = ha.getAllStates().filter(s =>
-          !params.domain || s.entity_id.startsWith(params.domain + ".")
-        );
-        if (all.length === 0) return ok("No entities found");
-        const lines = all.map(s => `${s.entity_id}: ${s.state}`);
-        return okList("", lines, {
-          maxBytes: 8 * 1024,
-          hint: params.domain ? "narrow with `entity_id=<id>`" : "filter with `domain=<name>` or query a specific `entity_id=<id>`",
+        const needle = params.filter?.trim().toLowerCase();
+        const all = ha.getAllStates().filter((s) => {
+          if (params.domain && !s.entity_id.startsWith(params.domain + ".")) return false;
+          if (!needle) return true;
+          if (s.entity_id.toLowerCase().includes(needle)) return true;
+          const friendly = (s.attributes.friendly_name as string | undefined)?.toLowerCase();
+          return friendly ? friendly.includes(needle) : false;
         });
+        if (all.length === 0) {
+          const scope = [params.domain && `domain=${params.domain}`, needle && `filter="${params.filter}"`].filter(Boolean).join(", ");
+          return ok(scope ? `No entities match (${scope})` : "No entities found");
+        }
+        const lines = all.map((s) => {
+          const friendly = s.attributes.friendly_name as string | undefined;
+          const suffix = friendly && friendly !== s.entity_id ? ` (${friendly})` : "";
+          return `${s.entity_id}${suffix}: ${s.state}`;
+        });
+        // Pick a hint that points the agent at the next narrower step.
+        let hint: string;
+        if (params.entity_id) hint = "";
+        else if (needle) hint = `narrow with \`entity_id=<id>\` once you've spotted the right entity`;
+        else if (params.domain) hint = `add \`filter=<substring>\` to search by name within this domain`;
+        else hint = `add \`filter=<substring>\` (matches entity_id + friendly_name) or \`domain=<name>\` — calling with no narrowing is almost never useful`;
+        return okList("", lines, { maxBytes: 8 * 1024, hint });
       },
     },
 
