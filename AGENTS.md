@@ -49,6 +49,19 @@ docker compose exec hai deno task test:integration  # WS round-trip via LM Studi
 
 The integration test asks the LLM about a weather entity via `/ws` and asserts only read-only tools are called. Override the entity with `HAI_TEST_WEATHER_ENTITY` if `weather.forecast_home` doesn't exist on your HA instance.
 
+## Rules for committing
+
+These are non-negotiable; the pre-commit hook enforces some, but agents working on this repo must self-enforce all of them.
+
+**Run the test suite before every commit.** `./scripts/check.sh` (or at minimum `deno task test:unit`) must be green. If you added behavior, add a test for it in `tests/` first; if you changed behavior, update the existing test. Never commit with red or skipped tests "to fix later".
+
+**Never commit secrets.** Tokens, API keys, long-lived access tokens, network IPs that identify a private deployment, hostnames that aren't public DNS — none of these belong in tracked files. They go in `.env` (gitignored) or `docker-compose.override.yml` (gitignored). When in doubt, treat it as a secret.
+
+- Do not hardcode anything that looks like a token, key, or private IP — read it from an env var with a generic public default (e.g. `homeassistant.local`, `host.docker.internal`).
+- Do not commit `.env`, `.pi-agent/`, `docker-compose.override.yml`, or any file under `workspace/` (scratch / dev notes).
+- Before committing, scan the diff for accidental secret leakage: tokens (`eyJ…` JWTs, `sk-…` keys), private IPs (`10.…`, `172.16–31.…`, `192.168.…`), and HA tokens. The pre-commit hook is a safety net, not a substitute for looking.
+- If a secret is committed by mistake, **stop and rotate the secret first**, then rewrite history with `git filter-repo --replace-text` (see existing scrub flow). Do not just delete the file in a follow-up commit — the value stays reachable in the original blob.
+
 ## Architecture
 
 - **main.ts** — HTTP server (Deno.serve). Routes: `GET /` (UI), `GET /health`, `GET /states`, `POST /query` (SSE stream)
