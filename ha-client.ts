@@ -184,21 +184,39 @@ export class HAClient {
 
   async getAreas(): Promise<Map<string, { name: string; entities: Set<string> }>> {
     try {
-      const areas = await this.call<Array<{ id: string; name: string; labels: string[] }>>({ type: "config/area_registry/list" });
+      // Areas live in the area registry. Entity-area assignment lives in the
+      // ENTITY registry (entity-level override) with a fallback to the DEVICE
+      // registry (the entity's device's area). state.attributes.area_id is
+      // almost never populated, so the previous version of this method
+      // dropped basically every entity into "Other".
+      const areas = await this.call<Array<{ area_id: string; name: string; labels?: string[] }>>({ type: "config/area_registry/list" });
+      const entityRegistry = await this.call<Array<{ entity_id: string; device_id?: string | null; area_id?: string | null }>>({ type: "config/entity_registry/list" });
+      const deviceRegistry = await this.call<Array<{ id: string; area_id?: string | null }>>({ type: "config/device_registry/list" });
+
+      const deviceToArea = new Map<string, string>();
+      for (const d of deviceRegistry) {
+        if (d.area_id) deviceToArea.set(d.id, d.area_id);
+      }
+
       const entityToArea = new Map<string, string>();
-      for (const s of this.states.values()) {
-        if (s.attributes?.area_id) {
-          entityToArea.set(s.entity_id, s.attributes.area_id as string);
+      for (const e of entityRegistry) {
+        if (e.area_id) {
+          entityToArea.set(e.entity_id, e.area_id);
+        } else if (e.device_id) {
+          const inherited = deviceToArea.get(e.device_id);
+          if (inherited) entityToArea.set(e.entity_id, inherited);
         }
       }
+
       const result = new Map<string, { name: string; entities: Set<string> }>();
       for (const area of areas) {
         const entities = new Set<string>();
         for (const [eid, aid] of entityToArea) {
-          if (aid === area.id) entities.add(eid);
+          if (aid === area.area_id) entities.add(eid);
         }
-        result.set(area.id, { name: area.name, entities });
+        result.set(area.area_id, { name: area.name, entities });
       }
+      console.log(`[ha] areas: ${result.size}, entities mapped to an area: ${entityToArea.size}`);
       return result;
     } catch (err) {
       console.warn("[ha] failed to fetch areas:", (err as Error).message);
