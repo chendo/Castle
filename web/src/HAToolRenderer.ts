@@ -2,6 +2,7 @@ import type { ToolResultMessage } from "@mariozechner/pi-ai";
 import {
   type ToolRenderer,
   type ToolRenderResult,
+  getToolRenderer,
   registerToolRenderer,
   renderCollapsibleHeader,
 } from "@mariozechner/pi-web-ui";
@@ -145,4 +146,17 @@ export function registerHAToolRenderers(): void {
   for (const [name, cfg] of Object.entries(CONFIGS)) {
     registerToolRenderer(name, new HACompactRenderer(cfg));
   }
+}
+
+/**
+ * Register a generic collapsed-by-default renderer for `toolName` if no specific
+ * one is registered. Lets us fall back gracefully for tools we haven't built a
+ * bespoke widget for (instead of pi-web-ui's expanded JSON DefaultRenderer).
+ */
+export function ensureCollapsibleRenderer(toolName: string): void {
+  if (getToolRenderer(toolName)) return;
+  registerToolRenderer(toolName, new HACompactRenderer({
+    icon: Wrench,
+    summarize: () => toolName,
+  }));
 }

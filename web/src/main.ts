@@ -10,7 +10,7 @@ import {
   setAppStorage,
 } from "@mariozechner/pi-web-ui";
 import { WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
-import { registerHAToolRenderers } from "./HAToolRenderer";
+import { ensureCollapsibleRenderer, registerHAToolRenderers } from "./HAToolRenderer";
 import { registerChartRenderer } from "./ChartRenderer";
 import { registerCameraRenderer } from "./CameraRenderer";
 import { buildTopbar } from "./Topbar";
@@ -51,6 +51,24 @@ await providerKeys.set("lmstudio", "remote");
 
 const wsUrl = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
 const agent = new WebSocketRemoteAgent(wsUrl);
+
+// Tools we don't have a bespoke widget for get a generic collapsed renderer.
+// Catch them both from the snapshot's tool list (covers the steady state) and
+// from tool execution events (covers anything new the agent surfaces mid-turn).
+agent.subscribe((event) => {
+  if (event.type === "tool_execution_start" || event.type === "tool_execution_end") {
+    ensureCollapsibleRenderer(event.toolName);
+  }
+});
+const originalApplySnapshot = agent.applySnapshot.bind(agent);
+agent.applySnapshot = (snap: any) => {
+  originalApplySnapshot(snap);
+  if (Array.isArray(snap?.tools)) {
+    for (const t of snap.tools) {
+      if (t?.name) ensureCollapsibleRenderer(t.name);
+    }
+  }
+};
 
 const chatPanel = new ChatPanel();
 await chatPanel.setAgent(agent as any, {

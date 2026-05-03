@@ -94,6 +94,14 @@ export class RemoteAgent {
     if (snapshot.model) this._model = snapshot.model;
     if (snapshot.thinkingLevel) this._thinkingLevel = snapshot.thinkingLevel;
     if (snapshot.tools) this._tools = snapshot.tools.slice();
+
+    // applySnapshot mutates state silently — but AgentInterface only re-renders
+    // in response to subscribed events. Without this, "New chat" replaces messages
+    // server-side but the old conversation stays visible in the UI. Fire a
+    // synthetic agent_end so subscribers re-render with the fresh state.
+    const synthetic = { type: "agent_end", messages: this._messages } as AgentEvent;
+    const signal = new AbortController().signal;
+    for (const l of this.listeners) void l(synthetic, signal);
   }
 
   /** Receive a single AgentEvent forwarded from the server. */
