@@ -297,6 +297,34 @@ const sockets = new Set<WebSocket>();
 const broadcastWiredAgents = new WeakSet<object>();
 
 /**
+ * Surface LLM call failures and retry attempts in the container logs. Without
+ * this the agent silently swallows connection errors into agent state and the
+ * operator only sees them via the browser UI — useless when running headless
+ * or trying to diagnose a misconfigured OPENAI_URL.
+ */
+function logLlmFailure(event: unknown): void {
+  // deno-lint-ignore no-explicit-any
+  const e = event as any;
+  if (!e || typeof e !== "object") return;
+  const url = Deno.env.get("OPENAI_URL") ?? "(OPENAI_URL unset)";
+  if (e.type === "auto_retry_start") {
+    console.error(`[agent] LLM call failed, retrying (${e.attempt}/${e.maxAttempts}, ${e.delayMs}ms backoff): ${e.errorMessage}  [model server: ${url}]`);
+    return;
+  }
+  if (e.type === "auto_retry_end" && e.success === false) {
+    console.error(`[agent] LLM retries exhausted (${e.attempt} attempts): ${e.finalError ?? "unknown"}  [model server: ${url}]`);
+    return;
+  }
+  if (e.type === "message_end" && e.message?.role === "assistant" && e.message.stopReason === "error" && typeof e.message.errorMessage === "string") {
+    // The retry path already logged this turn via auto_retry_start; only emit
+    // for the final/un-retried failure to avoid double-logging.
+    // We can't tell from this event alone whether a retry follows, so log at
+    // warn level and let auto_retry_start be the louder error indicator.
+    console.warn(`[agent] LLM call returned error: ${e.message.errorMessage}  [model server: ${url}]`);
+  }
+}
+
+/**
  * Augment errorMessage on assistant failure messages with the OPENAI_URL the
  * agent was trying to reach. The bare "tcp connect error" / "fetch failed"
  * strings Deno produces don't say which endpoint timed out, so the user can't
@@ -330,6 +358,7 @@ async function ensureAgentBroadcast(): Promise<void> {
   // server's own state.messages cleanup. Without this every retry stacked
   // a duplicate "Error: Connection Error" message in the chat.
   session.subscribe((event: unknown) => {
+    logLlmFailure(event);
     const enriched = enrichErrorEvent(event);
     const frame = JSON.stringify({ type: "event", event: enriched });
     for (const ws of sockets) {
