@@ -306,16 +306,30 @@ export interface Bucket {
   values: number[];
 }
 
+/**
+ * Floor a timestamp to the nearest `intervalMs` so bucket boundaries land on
+ * wall-clock-friendly marks (:00, :05, :30, top-of-hour). UTC floor is fine
+ * for the 1/5/10/15/30/60-minute intervals we allow because every real-world
+ * timezone offset is a whole number of minutes — flooring to a minute-aligned
+ * interval in UTC also aligns to the same interval in any tz.
+ */
+export function alignBucketStart(timestamp: Date, intervalMs: number): Date {
+  return new Date(Math.floor(timestamp.getTime() / intervalMs) * intervalMs);
+}
+
 export function buildBuckets(points: HistoryPoint[], rangeStart: Date, rangeEnd: Date, intervalMs: number): Bucket[] {
   const buckets: Bucket[] = [];
-  // Anchor the first bucket to rangeStart and step forward by intervalMs.
-  for (let t = rangeStart.getTime(); t < rangeEnd.getTime(); t += intervalMs) {
+  // Floor rangeStart to the nearest interval so the first bucket boundary is
+  // wall-clock aligned. The first bucket may extend slightly before rangeStart;
+  // it just won't contain any data from before the window.
+  const alignedStartMs = alignBucketStart(rangeStart, intervalMs).getTime();
+  for (let t = alignedStartMs; t < rangeEnd.getTime(); t += intervalMs) {
     buckets.push({ start: new Date(t), values: [] });
   }
   if (buckets.length === 0) return buckets;
 
   for (const p of points) {
-    const offset = p.timestamp.getTime() - rangeStart.getTime();
+    const offset = p.timestamp.getTime() - alignedStartMs;
     if (offset < 0) continue;
     const idx = Math.floor(offset / intervalMs);
     if (idx >= 0 && idx < buckets.length) {
@@ -495,6 +509,7 @@ export function formatHistorySummary(
   const durationMs = rangeEnd.getTime() - rangeStart.getTime();
   const intervalMs = intervalMin * 60_000;
   const numericBuckets = buildBuckets(points, rangeStart, rangeEnd, intervalMs);
+  const alignedStartMs = alignBucketStart(rangeStart, intervalMs).getTime();
 
   // Sentinel buckets — buckets whose period contained at least one
   // unavailable / unknown event. Computed in parallel so we can mark a bucket
@@ -504,7 +519,7 @@ export function formatHistorySummary(
   for (const c of changes) {
     if (c.timestamp.getTime() < rangeStart.getTime()) continue;
     if (c.timestamp.getTime() >= rangeEnd.getTime()) continue;
-    const idx = Math.floor((c.timestamp.getTime() - rangeStart.getTime()) / intervalMs);
+    const idx = Math.floor((c.timestamp.getTime() - alignedStartMs) / intervalMs);
     if (c.state === "unavailable") unavailBuckets.add(idx);
     else if (c.state === "unknown") unknownBuckets.add(idx);
   }

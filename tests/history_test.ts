@@ -1,5 +1,6 @@
 import { assertEquals, assertExists } from "jsr:@std/assert@1";
 import {
+  alignBucketStart,
   buildBuckets,
   classifyHistory,
   computeStats,
@@ -97,6 +98,36 @@ Deno.test("buildBuckets — aligns to rangeStart, distributes points by index", 
   assertEquals(buckets[3].values, []);
   assertEquals(buckets[4].values, []);
   assertEquals(buckets[5].values, [13]);
+});
+
+Deno.test("alignBucketStart — floors to interval boundary", () => {
+  const ts = new Date("2024-05-01T14:42:37Z");
+  // 5min: 14:40, 30min: 14:30, 60min: 14:00
+  assertEquals(alignBucketStart(ts, 5 * 60_000).toISOString(), "2024-05-01T14:40:00.000Z");
+  assertEquals(alignBucketStart(ts, 30 * 60_000).toISOString(), "2024-05-01T14:30:00.000Z");
+  assertEquals(alignBucketStart(ts, 60 * 60_000).toISOString(), "2024-05-01T14:00:00.000Z");
+  // Already aligned — no change.
+  const aligned = new Date("2024-05-01T14:00:00Z");
+  assertEquals(alignBucketStart(aligned, 5 * 60_000).toISOString(), "2024-05-01T14:00:00.000Z");
+});
+
+Deno.test("buildBuckets — aligns to wall-clock when rangeStart is unaligned", () => {
+  // rangeStart is 14:42 (between 14:40 and 14:45). Buckets should snap to :40.
+  const start = new Date("2024-05-01T14:42:00Z");
+  const end = new Date("2024-05-01T14:55:00Z");
+  const intervalMs = 5 * 60_000;
+  const pts = [
+    { value: 1, timestamp: new Date("2024-05-01T14:43:00Z"), rawIso: "" }, // bucket 0 (14:40-14:45)
+    { value: 2, timestamp: new Date("2024-05-01T14:47:00Z"), rawIso: "" }, // bucket 1 (14:45-14:50)
+    { value: 3, timestamp: new Date("2024-05-01T14:52:00Z"), rawIso: "" }, // bucket 2 (14:50-14:55)
+  ];
+  const buckets = buildBuckets(pts, start, end, intervalMs);
+  // alignedStart = 14:40, end = 14:55 → buckets at 14:40, 14:45, 14:50 = 3 buckets.
+  assertEquals(buckets.length, 3);
+  assertEquals(buckets[0].start.toISOString(), "2024-05-01T14:40:00.000Z");
+  assertEquals(buckets[0].values, [1]);
+  assertEquals(buckets[1].values, [2]);
+  assertEquals(buckets[2].values, [3]);
 });
 
 Deno.test("buildBuckets — points outside range are dropped", () => {
