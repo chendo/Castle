@@ -35,12 +35,11 @@ export type EntityStateChange =
   | { entity_id: string; removed: true };
 
 export interface HealthSnapshot {
-  ok: boolean;
-  entities: number;
-  ws_clients: number;
-  query_count: number;
-  last_query_at: string | null;
-  auth_required: boolean;
+  ha_ok: boolean;
+  ha_url: string;
+  /** null while the first probe is in flight; boolean once known. */
+  llm_ok: boolean | null;
+  llm_url: string;
 }
 
 type Frame =

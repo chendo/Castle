@@ -169,10 +169,18 @@ export function extractDomains(states: HAState[]): Set<string> {
 // Template renderer.
 // ---------------------------------------------------------------------------
 
+export interface DisabledTool {
+  name: string;
+  description: string;
+}
+
 interface BuildAgentsMdOptions {
   houseInfo?: Partial<HouseInfo>;
   services?: ServiceDomain[];
   catalog?: CatalogData;
+  /** Tools that exist but are disabled in settings — surfaced so the agent can
+   * tell the user which switch to flip in Settings → Tools. */
+  disabledTools?: DisabledTool[];
 }
 
 // AGENTS.md is the cached system prompt. Layout lives in
@@ -202,6 +210,7 @@ export function buildAgentsMd(opts: BuildAgentsMdOptions = {}): string {
     house,
     services: opts.services ?? [],
     catalog: opts.catalog ?? { areas: [], unassigned: {} },
+    disabled_tools: opts.disabledTools ?? [],
   });
   return rendered.endsWith("\n") ? rendered : rendered + "\n";
 }

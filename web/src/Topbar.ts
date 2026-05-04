@@ -2,13 +2,42 @@ import type { HealthSnapshot, WebSocketRemoteAgent } from "./WebSocketRemoteAgen
 import { openSettingsDialog } from "./SettingsDialog";
 
 /**
- * Lightweight topbar above the ChatPanel. Shows:
- *   [● Castle]  connected · 115 entities · Qwen3-35B    [⟲ New chat]
+ * Lightweight topbar above the ChatPanel. Layout:
+ *   [≡] Castle  [● homeassistant.local:8123] [● host.docker.internal:1234]   [📄 prompt] [⚙] [⟲ New chat]
  *
- * - Status dot reflects WS connection (red until first open, green while open).
- * - HA-side connectivity / entity count comes from /health, polled every 5s.
- * - Model name comes from the snapshot the agent received from the server.
+ * Each pill's bubble reflects that backend's reachability:
+ * - green when the WS link is up AND the backend reports OK
+ * - red when the WS link is up AND the backend reports unreachable
+ * - grey when the WS itself is disconnected (server can't tell us anything)
  */
+
+function compactUrl(u: string): string {
+  if (!u) return "(unset)";
+  return u.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+}
+
+function makePill(label: string): { el: HTMLElement; dot: HTMLElement; text: HTMLElement } {
+  const el = document.createElement("span");
+  el.style.cssText = `
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px;
+    background: transparent; line-height: 1.4;
+    max-width: 220px; min-width: 0;
+  `;
+  const dot = document.createElement("span");
+  dot.style.cssText = "width: 7px; height: 7px; border-radius: 50%; background: #6b7280; flex-shrink: 0;";
+  const text = document.createElement("span");
+  text.style.cssText = "font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;";
+  text.textContent = label;
+  el.append(dot, text);
+  return { el, dot, text };
+}
+
+function setBubble(dot: HTMLElement, state: "ok" | "bad" | "unknown"): void {
+  const color = state === "ok" ? "#10b981" : state === "bad" ? "#ef4444" : "#6b7280";
+  dot.style.background = color;
+}
+
 export function buildTopbar(agent: WebSocketRemoteAgent, onToggleSidebar?: () => void): HTMLElement {
   const root = document.createElement("div");
   root.style.cssText = `
@@ -36,18 +65,16 @@ export function buildTopbar(agent: WebSocketRemoteAgent, onToggleSidebar?: () =>
     left.appendChild(toggle);
   }
 
-  const dot = document.createElement("span");
-  dot.style.cssText = "width: 8px; height: 8px; border-radius: 50%; background: #ef4444; transition: background 200ms; flex-shrink: 0;";
-
   const logo = document.createElement("span");
   logo.textContent = "Castle";
-  logo.style.cssText = "font-weight: 700; color: var(--primary, #58a6ff);";
+  logo.style.cssText = "font-weight: 700; color: var(--primary, #58a6ff); flex-shrink: 0;";
 
-  const status = document.createElement("span");
-  status.textContent = "connecting…";
-  status.style.cssText = "white-space: nowrap; overflow: hidden; text-overflow: ellipsis;";
+  const ha = makePill("Home Assistant");
+  ha.el.title = "Home Assistant connection";
+  const llm = makePill("LLM");
+  llm.el.title = "LLM endpoint connection";
 
-  left.append(dot, logo, status);
+  left.append(logo, ha.el, llm.el);
 
   const right = document.createElement("div");
   right.style.cssText = "display: flex; align-items: center; gap: 8px;";
@@ -99,38 +126,40 @@ export function buildTopbar(agent: WebSocketRemoteAgent, onToggleSidebar?: () =>
 
   root.append(left, right);
 
-  // State that gets re-rendered into the status string
   let connected = false;
   let health: HealthSnapshot | null = null;
 
-  const renderStatus = () => {
-    dot.style.background = connected && health?.ok ? "#10b981" : "#ef4444";
-    const parts: string[] = [];
-    if (!connected) parts.push("disconnected");
-    else if (!health) parts.push("connected");
-    else if (!health.ok) parts.push("HA offline");
-    else parts.push(`connected · ${health.entities} entities`);
-    const modelName = agent.state.model?.name;
-    if (modelName && modelName !== "Remote") parts.push(modelName);
-    status.textContent = parts.join(" · ");
+  const render = () => {
+    if (!connected) {
+      // WS down — both bubbles grey, since the server can't tell us anything.
+      setBubble(ha.dot, "unknown");
+      setBubble(llm.dot, "unknown");
+      ha.text.textContent = health ? compactUrl(health.ha_url) : "Home Assistant";
+      llm.text.textContent = health ? compactUrl(health.llm_url) : "LLM";
+      ha.el.title = "WebSocket disconnected — status unknown";
+      llm.el.title = "WebSocket disconnected — status unknown";
+      return;
+    }
+    if (!health) return;
+    ha.text.textContent = compactUrl(health.ha_url);
+    setBubble(ha.dot, health.ha_ok ? "ok" : "bad");
+    ha.el.title = `Home Assistant: ${health.ha_url} (${health.ha_ok ? "connected" : "offline"})`;
+
+    llm.text.textContent = compactUrl(health.llm_url);
+    setBubble(llm.dot, health.llm_ok === null ? "unknown" : health.llm_ok ? "ok" : "bad");
+    const llmState = health.llm_ok === null ? "probing…" : health.llm_ok ? "reachable" : "unreachable";
+    llm.el.title = `LLM endpoint: ${health.llm_url} (${llmState})`;
   };
 
   agent.onConnectionChange = (c) => {
     connected = c;
-    renderStatus();
+    render();
   };
-
-  // Re-render when the snapshot arrives (so model name shows up).
-  agent.subscribe(() => renderStatus());
-
-  // Health is pushed by the server: with the initial hello reply, and again
-  // whenever HA flips connection / a new prompt fires / a ws client joins or
-  // leaves. No polling needed.
   agent.onHealth = (h) => {
     health = h;
-    renderStatus();
+    render();
   };
 
-  renderStatus();
+  render();
   return root;
 }

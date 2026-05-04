@@ -87,10 +87,6 @@ export async function writeModelsJson(): Promise<void> {
   const url = Deno.env.get("OPENAI_URL") ?? "http://localhost:1234/v1";
   const input = await detectModelInput(url, key, activeModelId);
   console.log(`[castle] model ${activeModelId} input modalities: ${input.join(", ")}`);
-  const seedContextWindow = (() => {
-    const fromEnv = Number(Deno.env.get("MODEL_CONTEXT_WINDOW"));
-    return Number.isFinite(fromEnv) && fromEnv >= 8192 ? fromEnv : 65536;
-  })();
   const config = {
     providers: {
       local: {
@@ -101,7 +97,10 @@ export async function writeModelsJson(): Promise<void> {
         models: [{
           id: activeModelId,
           name: activeModelId,
-          contextWindow: seedContextWindow,
+          // Placeholder — getAgentSession() overwrites this with settings.contextWindow
+          // (agent.ts:165) before pi-coding-agent ever reads it. The real default + env
+          // override (MODEL_CONTEXT_WINDOW) lives in settings.ts.
+          contextWindow: 8192,
           maxTokens: 4096,
           reasoning: false,
           input,

@@ -107,6 +107,27 @@ Deno.test("buildAgentsMd — survives malformed unit_system", () => {
   assert(!md.includes("not-json"));
 });
 
+Deno.test("buildAgentsMd — disabled tools are listed with their descriptions", () => {
+  const md = buildAgentsMd({
+    houseInfo: HOUSE,
+    disabledTools: [
+      { name: "ha_get_history", description: "fetch historical sensor / state data" },
+      { name: "ha_render_chart", description: "render a chart from historical data" },
+    ],
+  });
+  assert(md.includes("Disabled tools"));
+  assert(md.includes("ha_get_history — fetch historical sensor / state data"));
+  assert(md.includes("ha_render_chart — render a chart from historical data"));
+  // Section sits inside Reminders, before the "Tool guidance:" line.
+  assert(md.indexOf("Disabled tools") > md.indexOf("## Reminders"));
+  assert(md.indexOf("Disabled tools") < md.indexOf("Tool guidance:"));
+});
+
+Deno.test("buildAgentsMd — disabled tools section omitted when list is empty", () => {
+  const md = buildAgentsMd({ houseInfo: HOUSE, disabledTools: [] });
+  assertEquals(md.includes("Disabled tools"), false);
+});
+
 // ---------------------------------------------------------------------------
 // Data builders.
 // ---------------------------------------------------------------------------

@@ -20,3 +20,7 @@ web/dist/
 
 # Local dev scratch — notes, throwaway scripts that shouldn't be tracked
 workspace/
+
+# Playwright-MCP session artifacts (browser snapshots, screenshots from local testing)
+.playwright-mcp/
+topbar.png

@@ -1,6 +1,6 @@
 # Castle — Home Assistant Agent
 
-Deno app that bridges a local LLM (LM Studio) to Home Assistant, exposing natural-language control via HTTP SSE.
+Deno app that bridges an OpenAI-compatible LLM (LM Studio by default) to Home Assistant, exposing natural-language control via a WebSocket protocol consumed by a Lit browser UI.
 
 ## Run locally
 
@@ -8,7 +8,7 @@ Deno app that bridges a local LLM (LM Studio) to Home Assistant, exposing natura
 deno run --allow-all --unstable-node-globals main.ts
 ```
 
-Requires `.env` with `HA_TOKEN` and `LM_STUDIO_API_KEY`. See `docker-compose.yml` for all env vars and defaults.
+Requires `.env` with at least `HA_TOKEN`, `MODEL_NAME`, and (usually) `OPENAI_API_KEY`. See `.env.example` and the env-var table below for all knobs.
 
 ## Run via Docker
 
@@ -53,6 +53,10 @@ The integration test asks the LLM about a weather entity via `/ws` and asserts o
 
 These are non-negotiable; the pre-commit hook enforces some, but agents working on this repo must self-enforce all of them.
 
+**No dangling dead code after a delete or refactor.** When you remove or rename code, sweep the surrounding context for the wreckage: unused imports, now-unreferenced helpers, unread struct fields, dead branches that handled a removed case, comments describing behaviour that no longer exists, and tests for code that no longer exists. `deno lint` catches some of this but not all — eyeball the diff. A half-finished delete is worse than no delete.
+
+**Update the docs alongside the code.** When you change something user- or agent-visible — routes, env vars, the protocol, the tool list, the architecture diagram — update `AGENTS.md`, `CLAUDE.md`, `README.md` (if present), and the relevant doc comments in the same commit. Stale docs are confidently wrong, which is worse than missing.
+
 **Run the test suite before every commit.** `./scripts/check.sh` (or at minimum `deno task test:unit`) must be green. If you added behavior, add a test for it in `tests/` first; if you changed behavior, update the existing test. Never commit with red or skipped tests "to fix later".
 
 **Never commit secrets.** Tokens, API keys, long-lived access tokens, network IPs that identify a private deployment, hostnames that aren't public DNS — none of these belong in tracked files. They go in `.env` (gitignored) or `docker-compose.override.yml` (gitignored). When in doubt, treat it as a secret.
@@ -64,11 +68,12 @@ These are non-negotiable; the pre-commit hook enforces some, but agents working 
 
 ## Architecture
 
-- **main.ts** — HTTP server (Deno.serve). Routes: `GET /` (UI), `GET /health`, `GET /states`, `POST /query` (SSE stream)
+- **main.ts** — HTTP server (`Deno.serve`). Routes: `GET /` (Lit UI from `web/dist/`), `GET /health`, `GET /models`, `GET /agents.md`, `GET /history`, `WS /ws` (the real protocol — every UI action is a WS message: `hello`, `prompt`, `abort`, `reset`, `set_settings`, `set_model`, `set_exposure`, `get_settings`).
 - **ha-client.ts** — WebSocket client to HA (`get_states`, `subscribe_events`, `call_service`, `history`). Fetches exposed entities via `homeassistant/expose_entity/list`.
-- **agent.ts** — Wraps `@mariozechner/pi-coding-agent` into a streaming query handler. Injects current entity states + custom tools into each prompt.
-- **tools.ts** — Three HA tools: `ha_call_service`, `ha_get_states`, `ha_get_history`.
-- **catalog.ts** — Filters entities by HA exposure status, formats state snapshots for the agent prompt. Skips noisy domains (update, device_tracker, etc.).
+- **agent.ts** — Wraps `@mariozechner/pi-coding-agent` into a long-lived session. The system prompt is the auto-generated `.pi-agent/AGENTS.md` (entity catalog), not injected per-prompt.
+- **tools.ts** — 16 HA tools: `ha_call_service`, `ha_fire_event`, `ha_set_state`, `ha_get_states`, `ha_get_entity`, `ha_get_history`, `ha_get_camera_snapshot`, `ha_show_camera`, `ha_get_logs`, `ha_get_notifications`, `ha_get_dashboard`, `ha_edit_dashboard`, `ha_render_chart`, `ha_get_automation`, `ha_update_automation`, `ha_get_automation_trace`. The canonical list lives in `settings.ts:ALL_TOOL_NAMES`.
+- **catalog.ts** — Filters entities by HA exposure status, renders the system-prompt entity catalog from `templates/AGENTS.md.jinja2`. Skips noisy domains (update, device_tracker, etc.).
+- **settings.ts** — Persists `.pi-agent/settings.json` (enabled tools, context window, `allowUnexposedWrites`).
 
 ## .pi-agent/ directory
 
@@ -105,4 +110,4 @@ Put real values in a local `.env` (gitignored). Never hardcode network addresses
 
 ## UI
 
-Served at `/`. Sidebar with entity browser (grouped by domain) and chat interface. Entity list auto-refreshes every 10s via `/states`. Chat streams agent responses via SSE from `/query`.
+Served at `/` from `web/dist/` (built by Vite). Sidebar with entity browser (grouped by domain) and chat interface. The browser opens a single `/ws` connection — entity catalog and chat updates both arrive as WS frames (`states_snapshot`, `state_change`, `snapshot`, `event`, `health`). No HTTP polling.

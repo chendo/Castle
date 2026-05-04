@@ -23,6 +23,28 @@ export const ALL_TOOL_NAMES = [
 ] as const;
 export type ToolName = typeof ALL_TOOL_NAMES[number];
 
+// Short, agent-facing summaries of what each tool would do. Surfaced in the
+// system prompt for tools the user has *disabled*, so the agent can tell the
+// user which capability they'd need to re-enable to fulfil a request.
+export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
+  ha_call_service: "control devices / call HA services (turn_on, set_temperature, etc.)",
+  ha_fire_event: "fire arbitrary HA events on the bus",
+  ha_set_state: "write an entity's state directly (bypasses the service layer)",
+  ha_get_states: "list / search entities and read their current state",
+  ha_get_entity: "inspect one entity's attributes and capabilities",
+  ha_get_history: "fetch historical sensor / state data",
+  ha_get_camera_snapshot: "capture a still image from a camera entity",
+  ha_get_logs: "read recent HA system / integration logs",
+  ha_get_notifications: "read active persistent notifications",
+  ha_get_dashboard: "fetch a Lovelace dashboard's config",
+  ha_edit_dashboard: "modify a Lovelace dashboard's config",
+  ha_render_chart: "render a chart from historical data",
+  ha_show_camera: "display a live camera stream in the UI",
+  ha_get_automation: "fetch an automation's YAML config",
+  ha_update_automation: "create or modify automations",
+  ha_get_automation_trace: "inspect a recent automation run to see why it did or didn't fire",
+};
+
 export interface Settings {
   enabledTools: ToolName[];
   // LLM context window in tokens. Drives compaction thresholds in the agent.

@@ -10,7 +10,7 @@ import {
   writeModelsJson,
 } from "./agent.ts";
 import { parseHistoryPoints } from "./tools.ts";
-import { ALL_TOOL_NAMES, loadSettings, saveSettings, type ToolName } from "./settings.ts";
+import { ALL_TOOL_NAMES, loadSettings, saveSettings, TOOL_DESCRIPTIONS, type ToolName } from "./settings.ts";
 
 const HA_URL = Deno.env.get("HA_URL") ?? "http://homeassistant.local:8123";
 const HA_TOKEN = Deno.env.get("HA_TOKEN") ?? "";
@@ -18,9 +18,6 @@ const PORT = Number(Deno.env.get("PORT") ?? "7090");
 const AUTH_TOKEN = Deno.env.get("CASTLE_AUTH_TOKEN") ?? "";
 
 const ha = new HAClient(HA_URL, HA_TOKEN);
-
-let lastQueryAt: number | null = null;
-let queryCount = 0;
 
 
 async function regenerateCatalog(): Promise<void> {
@@ -35,7 +32,17 @@ async function regenerateCatalog(): Promise<void> {
     const presentDomains = extractDomains(exposedStates);
     const servicesData = buildServicesData(services, presentDomains);
     const catalogData = buildCatalogData(states, exposed, areas);
-    const agentsMd = buildAgentsMd({ houseInfo, services: servicesData, catalog: catalogData });
+    const settings = await loadSettings();
+    const enabled = new Set<ToolName>(settings.enabledTools);
+    const disabledTools = ALL_TOOL_NAMES
+      .filter((n) => !enabled.has(n))
+      .map((n) => ({ name: n, description: TOOL_DESCRIPTIONS[n] }));
+    const agentsMd = buildAgentsMd({
+      houseInfo,
+      services: servicesData,
+      catalog: catalogData,
+      disabledTools,
+    });
     const agentDir = new URL(".pi-agent/", import.meta.url).pathname.replace(/\/$/, "");
     await Deno.writeTextFile(`${agentDir}/AGENTS.md`, agentsMd);
     console.log(`[castle] catalog refreshed (${exposed ? exposed.size : 'all'} entities, ${Object.keys(services).length} service domains)`);
@@ -143,18 +150,8 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (url.pathname === "/health") {
-    return Response.json({
-      ok: ha.isConnected,
-      entities: ha.getAllStates().length,
-      ws_clients: sockets.size,
-      query_count: queryCount,
-      last_query_at: lastQueryAt ? new Date(lastQueryAt).toISOString() : null,
-      auth_required: AUTH_TOKEN !== "",
-    });
+    return Response.json(buildHealth());
   }
-
-  // /states used to be a polled endpoint; replaced by `states_snapshot` +
-  // `state_change` frames over the WS so the browser doesn't poll.
 
   if ((url.pathname.startsWith("/camera/") || url.pathname.startsWith("/camera_stream/")) && req.method === "GET") {
     const isStream = url.pathname.startsWith("/camera_stream/");
@@ -342,14 +339,37 @@ async function ensureAgentBroadcast(): Promise<void> {
   console.log("[ws] agent broadcast wired");
 }
 
+// Probed asynchronously; null means "not yet checked / unknown". Surfaced on
+// the health frame so the UI can render an LLM-side status bubble.
+let llmHealthy: boolean | null = null;
+
+async function probeLlm(): Promise<void> {
+  let healthy = false;
+  try {
+    const models = await listUpstreamModels();
+    healthy = Array.isArray(models);
+  } catch {
+    healthy = false;
+  }
+  if (llmHealthy !== healthy) {
+    llmHealthy = healthy;
+    broadcastHealth();
+  }
+}
+
+function startLlmProbe(): void {
+  void probeLlm();
+  // 15s cadence — listUpstreamModels has its own 5s abort, so worst-case the
+  // probe burns 5s of every 15s when the LLM is unreachable. Cheap enough.
+  setInterval(() => void probeLlm(), 15_000);
+}
+
 function buildHealth() {
   return {
-    ok: ha.isConnected,
-    entities: ha.getAllStates().length,
-    ws_clients: sockets.size,
-    query_count: queryCount,
-    last_query_at: lastQueryAt ? new Date(lastQueryAt).toISOString() : null,
-    auth_required: AUTH_TOKEN !== "",
+    ha_ok: ha.isConnected,
+    ha_url: HA_URL,
+    llm_ok: llmHealthy,
+    llm_url: Deno.env.get("OPENAI_URL") ?? "",
   };
 }
 
@@ -425,8 +445,6 @@ function serializeSnapshot(session: Awaited<ReturnType<typeof getAgentSession>>)
 
 async function handleSocket(socket: WebSocket): Promise<void> {
   sockets.add(socket);
-  // Notify any existing clients that ws_clients went up.
-  broadcastHealth();
   // A user just opened the UI — if HA is currently down and we're sitting on
   // a multi-minute backoff window, kick a fresh connect attempt now so the
   // user doesn't have to wait it out.
@@ -451,12 +469,11 @@ async function handleSocket(socket: WebSocket): Promise<void> {
         await ensureAgentBroadcast();
         const session = await getAgentSession(ha);
         socket.send(JSON.stringify({ type: "snapshot", state: serializeSnapshot(session) }));
-        // Bootstrap the entity catalog over the WS too, so the browser never
-        // has to poll /states. After this the broadcast loop sends a
-        // state_change frame for every HA state_changed event.
+        // Bootstrap the entity catalog over the WS. After this, state_change
+        // frames are pushed for every HA state_changed event.
         socket.send(JSON.stringify({ type: "states_snapshot", states: serializeStates() }));
-        // Initial health frame; further updates are pushed when HA flips
-        // connection state or via broadcastHealth() on prompt activity.
+        // Initial health frame; further updates are pushed when HA connection
+        // state flips or the periodic LLM probe transitions ok ↔ bad.
         socket.send(JSON.stringify({ type: "health", health: buildHealth() }));
       } catch (err) {
         socket.send(JSON.stringify({ type: "error", message: (err as Error).message }));
@@ -472,9 +489,6 @@ async function handleSocket(socket: WebSocket): Promise<void> {
         return;
       }
       console.log(`[query] ${text}`);
-      lastQueryAt = Date.now();
-      queryCount++;
-      broadcastHealth();
       await ensureAgentBroadcast();
       submitPrompt(text, ha);
       return;
@@ -503,6 +517,10 @@ async function handleSocket(socket: WebSocket): Promise<void> {
     if (msg.type === "set_settings") {
       const incoming = (msg as unknown as { settings: { enabledTools?: ToolName[]; contextWindow?: number; allowUnexposedWrites?: boolean } }).settings;
       const saved = await saveSettings(incoming);
+      // Refresh AGENTS.md *before* rebuilding the session — the new agent reads
+      // .pi-agent/AGENTS.md on construction, so a stale file would leave it
+      // unaware of the just-flipped disabled-tool set until the next reconnect.
+      await regenerateCatalog();
       // Tool changes only take effect on a fresh session — reset, re-wire the
       // broadcast onto the new agent (resetAgentSession nulls the old one), and
       // push a snapshot so every client sees the cleared state.
@@ -581,11 +599,11 @@ async function handleSocket(socket: WebSocket): Promise<void> {
     }
   };
 
-  // Other clients see ws_clients change when this socket leaves; tell them.
-  socket.onclose = () => { sockets.delete(socket); broadcastHealth(); };
-  socket.onerror = () => { sockets.delete(socket); broadcastHealth(); };
+  socket.onclose = () => { sockets.delete(socket); };
+  socket.onerror = () => { sockets.delete(socket); };
 }
 
 await writeModelsJson();
 setupHaSupervisor(); // wires HAClient's auto-reconnect loop; runs in background
+startLlmProbe();     // periodically pings OPENAI_URL/models so the UI bubble reflects reality
 Deno.serve({ port: PORT }, handler);
