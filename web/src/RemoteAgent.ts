@@ -159,6 +159,10 @@ export class RemoteAgent {
   // --- internals ------------------------------------------------------------
 
   private reduce(event: AgentEvent): void {
+    // Some events are AgentSessionEvent extensions (auto_retry_*). The core
+    // pi-agent-core type doesn't include them, so cast to access loosely.
+    // deno-lint-ignore no-explicit-any
+    const e = event as any;
     switch (event.type) {
       case "agent_start":
         this._isStreaming = true;
@@ -199,6 +203,26 @@ export class RemoteAgent {
         this._isStreaming = false;
         this._pendingToolCalls = new Set();
         break;
+      // AgentSessionEvent extras — see "default" branch below for non-AgentEvent types.
+    }
+    // pi-coding-agent's session emits auto_retry_start when an agent_end with
+    // a retryable error is observed and the server-side state.messages has
+    // been trimmed to remove the failure assistant message. We mirror that
+    // here so the UI doesn't end up with one error per retry attempt.
+    if (e?.type === "auto_retry_start") {
+      const last = this._messages[this._messages.length - 1] as AgentMessage | undefined;
+      if (last?.role === "assistant" && (last as { stopReason?: string }).stopReason === "error") {
+        this._messages = this._messages.slice(0, -1);
+      }
+      // Surface the retry status in the (otherwise cleared) errorMessage banner
+      // so the user knows we haven't given up yet — pi-web-ui doesn't render
+      // this anywhere, but the banner area picks it up.
+      const detail = e.errorMessage ? `${e.errorMessage}` : "";
+      this._errorMessage = `Retrying (${e.attempt}/${e.maxAttempts})${detail ? ` — ${detail}` : ""}`;
+    } else if (e?.type === "auto_retry_end") {
+      // success=true clears the retry banner; success=false leaves the final
+      // error message in place (it'll be the last assistant message).
+      this._errorMessage = undefined;
     }
   }
 

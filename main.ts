@@ -1,4 +1,3 @@
-import type { AgentEvent } from "npm:@mariozechner/pi-agent-core";
 import { HAClient } from "./ha-client.ts";
 import { buildAgentsMd, buildCatalogData, buildServicesData, extractDomains } from "./catalog.ts";
 import { getAgentSession, resetAgentSession, submitPrompt } from "./agent.ts";
@@ -297,12 +296,42 @@ const sockets = new Set<WebSocket>();
 // which loads the new state via the hello snapshot — exactly the symptom we hit).
 const broadcastWiredAgents = new WeakSet<object>();
 
+/**
+ * Augment errorMessage on assistant failure messages with the OPENAI_URL the
+ * agent was trying to reach. The bare "tcp connect error" / "fetch failed"
+ * strings Deno produces don't say which endpoint timed out, so the user can't
+ * tell whether their model server is down or misconfigured.
+ */
+function enrichErrorEvent(event: unknown): unknown {
+  // deno-lint-ignore no-explicit-any
+  const e = event as any;
+  if (e?.type !== "message_end" || e.message?.role !== "assistant") return event;
+  const msg = e.message;
+  if (msg.stopReason !== "error" || typeof msg.errorMessage !== "string") return event;
+  // Only annotate connection-shaped errors; rate-limit / 5xx already carry useful detail.
+  if (!/connect|fetch failed|connection refused|enotfound|econnreset|timed out|terminated/i.test(msg.errorMessage)) {
+    return event;
+  }
+  const url = Deno.env.get("OPENAI_URL") ?? "(OPENAI_URL unset)";
+  if (msg.errorMessage.includes(url)) return event; // already present
+  return {
+    ...e,
+    message: { ...msg, errorMessage: `${msg.errorMessage}\n[Model server: ${url}]` },
+  };
+}
+
 async function ensureAgentBroadcast(): Promise<void> {
   const session = await getAgentSession(ha);
   if (broadcastWiredAgents.has(session.agent)) return;
   broadcastWiredAgents.add(session.agent);
-  session.agent.subscribe((event: AgentEvent) => {
-    const frame = JSON.stringify({ type: "event", event });
+  // Subscribe at the SESSION level (not session.agent) so the broadcast
+  // includes auto_retry_start / auto_retry_end. The client uses those to
+  // drop the prior failure message when a retry kicks in, matching the
+  // server's own state.messages cleanup. Without this every retry stacked
+  // a duplicate "Error: Connection Error" message in the chat.
+  session.subscribe((event: unknown) => {
+    const enriched = enrichErrorEvent(event);
+    const frame = JSON.stringify({ type: "event", event: enriched });
     for (const ws of sockets) {
       if (ws.readyState === WebSocket.OPEN) {
         try { ws.send(frame); } catch (err) { console.error("[ws] send failed:", err); }
