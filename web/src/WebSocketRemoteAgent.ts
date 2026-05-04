@@ -15,10 +15,17 @@ const PLACEHOLDER_MODEL: Model<any> = {
   maxTokens: 4096,
 };
 
+export interface SessionInfo {
+  path: string;
+  size: number;
+  modified: Date;
+}
+
 export interface ServerSettings {
   enabledTools: string[];
   contextWindow: number;
   allowUnexposedWrites: boolean;
+  conversationCapMb: number;
 }
 
 export interface EntityState {
@@ -50,6 +57,9 @@ type Frame =
   | { type: "state_change"; entity: EntityStateChange }
   | { type: "health"; health: HealthSnapshot }
   | { type: "catalog_regenerated" }
+  | { type: "sessions_list"; sessions: SessionInfo[] }
+  | { type: "session_resumed"; path: string }
+  | { type: "session_deleted"; path: string }
   | { type: "error"; message: string };
 
 /**
@@ -72,6 +82,10 @@ export class WebSocketRemoteAgent extends RemoteAgent {
   public onStateChange?: (change: EntityStateChange) => void;
   /** Server health snapshot — pushed on hello and on HA / ws-client / query changes. */
   public onHealth?: (health: HealthSnapshot) => void;
+  /** Session list response from `list_sessions`. */
+  public onSessionsList?: (sessions: SessionInfo[]) => void;
+  /** Session deletion confirmation. */
+  public onDeleteSession?: (path: string) => void;
   private catalogListeners = new Set<() => void>();
 
   /**
@@ -108,9 +122,19 @@ export class WebSocketRemoteAgent extends RemoteAgent {
   }
 
   /** Force regeneration of `.pi-agent/AGENTS.md` and tear down the agent session
-   * so the next prompt picks up the new system prompt. */
+    * so the next prompt picks up the new system prompt. */
   regenerateCatalog(): void {
     this.send({ type: "regenerate_catalog" });
+  }
+
+  /** Request the list of saved sessions. Response arrives via `onSessionsList`. */
+  listSessions(): void {
+    this.send({ type: "list_sessions" });
+  }
+
+  /** Resume a session from its JSONL path. Server rebuilds and broadcasts snapshot. */
+  resumeSession(path: string): void {
+    this.send({ type: "resume_session", path });
   }
 
   /** Send any custom frame (used by SettingsDialog and friends). */
@@ -157,6 +181,12 @@ export class WebSocketRemoteAgent extends RemoteAgent {
         for (const l of this.catalogListeners) {
           try { l(); } catch (err) { console.error("[ws] catalog listener:", err); }
         }
+      } else if (frame.type === "sessions_list") {
+        this.onSessionsList?.(frame.sessions);
+      } else if (frame.type === "session_resumed") {
+        // No callback needed — the server broadcasts a snapshot after resume.
+      } else if (frame.type === "session_deleted") {
+        this.onDeleteSession?.(frame.path);
       } else if (frame.type === "error") {
         console.error("[ws] server error:", frame.message);
         this.onError?.(frame.message);

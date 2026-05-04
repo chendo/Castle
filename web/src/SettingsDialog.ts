@@ -5,10 +5,12 @@ interface DialogState {
   enabled: Set<string>;
   contextWindow: number;
   allowUnexposedWrites: boolean;
+  conversationCapMb: number;
   loaded: boolean;
 }
 
 const MIN_CONTEXT_WINDOW = 8192;
+const MIN_CONVERSATION_CAP_MB = 10;
 
 /**
  * Settings dialog. Lists every available tool with a checkbox so the user can
@@ -24,6 +26,7 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
     enabled: new Set(),
     contextWindow: 65536,
     allowUnexposedWrites: false,
+    conversationCapMb: 100,
     loaded: false,
   };
 
@@ -68,6 +71,15 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
         Off (default): the agent can only call services / set state on entities exposed to assistants. Reads are unaffected.
       </div>
 
+      <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted-foreground); margin: 18px 0 10px;">Conversation storage cap</div>
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <input id="castle-settings-cap" type="number" min="${MIN_CONVERSATION_CAP_MB}" step="10" style="width: 100px; padding: 4px 8px; font-size: 13px; background: var(--background); color: var(--foreground); border: 1px solid var(--border); border-radius: 6px;" />
+        <span style="font-size: 12px; color: var(--muted-foreground);">MiB (min ${MIN_CONVERSATION_CAP_MB.toLocaleString()})</span>
+      </div>
+      <div style="margin-top: 6px; font-size: 12px; color: var(--muted-foreground);">
+        Oldest sessions are deleted first when the JSONL store exceeds this cap. The active session is never pruned.
+      </div>
+
       <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted-foreground); margin: 18px 0 10px;">Enabled tools</div>
       <div id="castle-settings-tools" style="display: flex; flex-direction: column; gap: 4px;">
         <div style="font-size: 13px; color: var(--muted-foreground);">Loading…</div>
@@ -95,6 +107,7 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
   const noneBtn = panel.querySelector("#castle-settings-none") as HTMLButtonElement;
   const contextInput = panel.querySelector("#castle-settings-context") as HTMLInputElement;
   const allowUnexposedInput = panel.querySelector("#castle-settings-allow-unexposed") as HTMLInputElement;
+  const capInput = panel.querySelector("#castle-settings-cap") as HTMLInputElement;
 
   const renderTools = () => {
     if (!state.loaded) return;
@@ -124,9 +137,11 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
     state.enabled = new Set(settings.enabledTools);
     state.contextWindow = settings.contextWindow;
     state.allowUnexposedWrites = settings.allowUnexposedWrites;
+    state.conversationCapMb = settings.conversationCapMb;
     state.loaded = true;
     contextInput.value = String(settings.contextWindow);
     allowUnexposedInput.checked = settings.allowUnexposedWrites;
+    capInput.value = String(settings.conversationCapMb);
     applyBtn.disabled = false;
     renderTools();
   };
@@ -150,12 +165,17 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
     const contextWindow = Number.isFinite(parsed) && parsed >= MIN_CONTEXT_WINDOW
       ? parsed
       : state.contextWindow;
+    const capRaw = Math.floor(Number(capInput.value));
+    const conversationCapMb = Number.isFinite(capRaw) && capRaw >= MIN_CONVERSATION_CAP_MB
+      ? capRaw
+      : state.conversationCapMb;
     agent.sendRaw({
       type: "set_settings",
       settings: {
         enabledTools: [...state.enabled],
         contextWindow,
         allowUnexposedWrites: allowUnexposedInput.checked,
+        conversationCapMb,
       },
     });
     close();

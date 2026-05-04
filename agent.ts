@@ -2,6 +2,7 @@ import {
   type AgentSession,
   createAgentSession,
   SessionManager,
+  type SessionInfo,
   SettingsManager,
   AuthStorage,
   ModelRegistry,
@@ -9,10 +10,10 @@ import {
 import type { HAClient } from "./ha-client.ts";
 import { buildTools } from "./tools.ts";
 import { loadSettings } from "./settings.ts";
-import { logMessageEnd, resetConversationFile } from "./persistence.ts";
 
 const AGENT_DIR = new URL(".pi-agent/", import.meta.url).pathname.replace(/\/$/, "");
 const CWD = new URL(".", import.meta.url).pathname.replace(/\/$/, "");
+export const SESSIONS_DIR = `${AGENT_DIR}/sessions`;
 
 const authStorage = AuthStorage.create(`${AGENT_DIR}/auth.json`);
 
@@ -124,7 +125,7 @@ export async function setActiveModel(id: string): Promise<void> {
   console.log(`[castle] switching active model: ${activeModelId} → ${id}`);
   activeModelId = id;
   await writeModelsJson();
-  await resetAgentSession();
+  await recreateAgentSession();
 }
 
 // deno-lint-ignore no-explicit-any
@@ -141,6 +142,18 @@ function getLocalModel(): any {
 }
 
 let sessionPromise: Promise<AgentSession> | null = null;
+
+// Path of the JSONL the next session should open. `undefined` means "create a
+// fresh one". Cleared by newConversation(); set by resumeSession(); preserved
+// across model/settings/catalog changes so a swap doesn't drop history.
+let resumeFile: string | undefined = undefined;
+// Path of the session file currently open (set after the session is built).
+// Used by trimSessions() to avoid deleting the live conversation.
+let currentSessionFile: string | undefined = undefined;
+
+export function getCurrentSessionFile(): string | undefined {
+  return currentSessionFile;
+}
 
 // Stable JSON serializer so identical arg objects fingerprint the same even
 // when their keys arrive in different orders. Used for loop detection.
@@ -187,7 +200,9 @@ export function getAgentSession(ha: HAClient): Promise<AgentSession> {
           dashboardCache,
           allowUnexposedWrites: settings.allowUnexposedWrites,
         }),
-        sessionManager: SessionManager.inMemory(),
+        sessionManager: resumeFile
+          ? SessionManager.open(resumeFile, SESSIONS_DIR, CWD)
+          : SessionManager.create(CWD, SESSIONS_DIR),
         settingsManager: SettingsManager.inMemory({
           compaction: {
             enabled: true,
@@ -207,17 +222,12 @@ export function getAgentSession(ha: HAClient): Promise<AgentSession> {
       let perTurnToolCalls = 0;
       const callFingerprintCounts = new Map<string, number>();
 
-      // Persist every completed message to the markdown conversation file.
-      // Errors here must never break the agent loop, so we swallow them.
-      // Also evict the dashboard cache once the turn ends — it's a within-turn
-      // optimization; carrying stale config across turns isn't worth the risk.
+      // pi's SessionManager handles JSONL persistence on its own. We just hook
+      // for the per-turn guardrail counters and dashboard-cache eviction.
       result.session.agent.subscribe((event) => {
         if (event.type === "agent_start") {
           perTurnToolCalls = 0;
           callFingerprintCounts.clear();
-        } else if (event.type === "message_end") {
-          // deno-lint-ignore no-explicit-any
-          void logMessageEnd((event as any).message);
         } else if (event.type === "agent_end") {
           dashboardCache.clear();
         }
@@ -299,6 +309,10 @@ export function getAgentSession(ha: HAClient): Promise<AgentSession> {
         return transformed;
       };
 
+      currentSessionFile = result.session.sessionManager.getSessionFile();
+      if (currentSessionFile) {
+        console.log(`[agent] session file: ${currentSessionFile}`);
+      }
       return result.session;
     })();
   }
@@ -324,12 +338,16 @@ async function drainQueue(): Promise<void> {
 }
 
 /**
- * Clear the current conversation. Aborts any in-flight turn and drops the
- * session so the next prompt starts fresh.
+ * Tear down the in-memory agent session, preserving the resume target so the
+ * next getAgentSession() call rebuilds against the same JSONL file. Used by
+ * model swaps, settings changes, catalog rebuilds — anything where session
+ * config must change but the conversation should continue.
  */
-export async function resetAgentSession(): Promise<void> {
-  resetConversationFile();
-  if (!sessionPromise) return;
+export async function recreateAgentSession(): Promise<void> {
+  if (!sessionPromise) {
+    currentSessionFile = undefined;
+    return;
+  }
   try {
     const session = await sessionPromise;
     session.agent.abort();
@@ -337,7 +355,118 @@ export async function resetAgentSession(): Promise<void> {
   } catch (err) {
     console.warn("[agent] reset error:", (err as Error).message);
   }
+  // If the live session was on a file (it always is now), make that the
+  // resume target so the rebuild reopens the same JSONL instead of starting
+  // a fresh one.
+  if (currentSessionFile) resumeFile = currentSessionFile;
   sessionPromise = null;
+  currentSessionFile = undefined;
+}
+
+/**
+ * Start a brand-new conversation. Aborts the in-flight turn, drops the
+ * session, and clears the resume target so the next prompt opens a fresh file.
+ */
+export async function newConversation(): Promise<void> {
+  resumeFile = undefined;
+  await recreateAgentSession();
+  // recreateAgentSession() set resumeFile = currentSessionFile if there was
+  // one — undo that so we genuinely start fresh.
+  resumeFile = undefined;
+}
+
+/**
+ * Switch the active conversation to the JSONL at `path`. Aborts any in-flight
+ * turn; the next getAgentSession() call will hydrate state from the file.
+ */
+export async function resumeSession(path: string): Promise<void> {
+  // Guard against path traversal — only allow files within SESSIONS_DIR.
+  const abs = new URL(path, import.meta.url).pathname;
+  const sessionsAbs = new URL(SESSIONS_DIR, import.meta.url).pathname;
+  if (!abs.startsWith(sessionsAbs)) {
+    console.warn(`[agent] resume rejected: path outside sessions dir (${path})`);
+    return;
+  }
+  resumeFile = abs;
+  // Don't go through recreateAgentSession() because it would overwrite
+  // resumeFile with currentSessionFile.
+  if (sessionPromise) {
+    try {
+      const session = await sessionPromise;
+      session.agent.abort();
+      session.agent.reset();
+    } catch (err) {
+      console.warn("[agent] resume error:", (err as Error).message);
+    }
+    sessionPromise = null;
+    currentSessionFile = undefined;
+  }
+}
+
+/** List all stored sessions, newest first. */
+export async function listSessions(): Promise<SessionInfo[]> {
+  const sessions = await SessionManager.list(CWD, SESSIONS_DIR);
+  return sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());
+}
+
+/**
+ * Delete oldest .jsonl files in SESSIONS_DIR until total size is under
+ * `capBytes`. Never deletes the active session file. Returns deleted count.
+ */
+export async function trimSessions(capBytes: number): Promise<number> {
+  if (!Number.isFinite(capBytes) || capBytes <= 0) return 0;
+  let entries: Array<{ path: string; size: number; mtime: number }>;
+  try {
+    entries = [];
+    for await (const e of Deno.readDir(SESSIONS_DIR)) {
+      if (!e.isFile || !e.name.endsWith(".jsonl")) continue;
+      const path = `${SESSIONS_DIR}/${e.name}`;
+      try {
+        const stat = await Deno.stat(path);
+        entries.push({ path, size: stat.size, mtime: stat.mtime?.getTime() ?? 0 });
+      } catch { /* race with deletion, skip */ }
+    }
+  } catch (err) {
+    if (err instanceof Deno.errors.NotFound) return 0;
+    throw err;
+  }
+  let total = entries.reduce((s, e) => s + e.size, 0);
+  if (total <= capBytes) return 0;
+  // Oldest first — but never delete the live session file.
+  entries.sort((a, b) => a.mtime - b.mtime);
+  let deleted = 0;
+  for (const e of entries) {
+    if (total <= capBytes) break;
+    if (e.path === currentSessionFile) continue;
+    try {
+      await Deno.remove(e.path);
+      total -= e.size;
+      deleted++;
+    } catch (err) {
+      console.warn(`[trim] couldn't delete ${e.path}:`, (err as Error).message);
+    }
+  }
+  if (deleted) console.log(`[trim] removed ${deleted} session file(s); ${(total / 1_048_576).toFixed(1)} MiB remain`);
+  return deleted;
+}
+
+/** Delete a specific session JSONL file. Returns true if it existed and was removed. */
+export async function deleteSession(path: string): Promise<boolean> {
+  // Guard against path traversal — only allow files within SESSIONS_DIR.
+  const abs = new URL(path, import.meta.url).pathname;
+  const sessionsAbs = new URL(SESSIONS_DIR, import.meta.url).pathname;
+  if (!abs.startsWith(sessionsAbs)) return false;
+  // Never delete the active session file.
+  if (abs === currentSessionFile) return false;
+  try {
+    await Deno.remove(abs);
+    console.log(`[trim] deleted session: ${path}`);
+    return true;
+  } catch (err) {
+    if (err instanceof Deno.errors.NotFound) return false;
+    console.warn(`[trim] couldn't delete ${path}:`, (err as Error).message);
+    return false;
+  }
 }
 
 export function submitPrompt(text: string, ha: HAClient): void {

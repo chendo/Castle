@@ -57,6 +57,12 @@ export interface Settings {
    * about. Reads (ha_get_states, ha_get_history, ha_get_entity) are never gated.
    */
   allowUnexposedWrites: boolean;
+  /**
+   * Disk cap (in megabytes) for the .pi-agent/sessions/ JSONL store. Trimmed
+   * oldest-first whenever the cap is exceeded; the active session is never
+   * deleted. Floored at 10 MiB; no upper bound.
+   */
+  conversationCapMb: number;
 }
 
 // 64k chosen per the roadmap; modern open-weights models comfortably support it.
@@ -68,11 +74,14 @@ const DEFAULT_CONTEXT_WINDOW = (() => {
 })();
 
 const MIN_CONTEXT_WINDOW = 8192;
+export const MIN_CONVERSATION_CAP_MB = 10;
+const DEFAULT_CONVERSATION_CAP_MB = 100;
 
 const DEFAULTS: Settings = {
   enabledTools: [...ALL_TOOL_NAMES],
   contextWindow: DEFAULT_CONTEXT_WINDOW,
   allowUnexposedWrites: false,
+  conversationCapMb: DEFAULT_CONVERSATION_CAP_MB,
 };
 
 let cached: Settings | null = null;
@@ -87,10 +96,15 @@ function sanitize(s: Partial<Settings> | null | undefined): Settings {
   const allowUnexposedWrites = typeof s?.allowUnexposedWrites === "boolean"
     ? s!.allowUnexposedWrites
     : DEFAULTS.allowUnexposedWrites;
+  const capRaw = typeof s?.conversationCapMb === "number" ? s!.conversationCapMb : DEFAULTS.conversationCapMb;
+  const conversationCapMb = Number.isFinite(capRaw) && capRaw >= MIN_CONVERSATION_CAP_MB
+    ? Math.floor(capRaw)
+    : DEFAULTS.conversationCapMb;
   return {
     enabledTools: filtered.length ? filtered : [...ALL_TOOL_NAMES],
     contextWindow,
     allowUnexposedWrites,
+    conversationCapMb,
   };
 }
 

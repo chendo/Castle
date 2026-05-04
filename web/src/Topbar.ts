@@ -1,5 +1,6 @@
 import type { HealthSnapshot, WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
 import { openSettingsDialog } from "./SettingsDialog";
+import { openSessionBrowser } from "./SessionBrowser";
 
 /**
  * Lightweight topbar above the ChatPanel. Layout:
@@ -138,6 +139,17 @@ export function buildTopbar(agent: WebSocketRemoteAgent, onToggleSidebar?: () =>
   `;
   settingsBtn.onclick = () => openSettingsDialog(agent);
   right.append(settingsBtn);
+
+  const historyBtn = document.createElement("button");
+  historyBtn.title = "Session history — view and resume past conversations";
+  historyBtn.textContent = "🕑 History";
+  historyBtn.style.cssText = `
+    padding: 4px 10px; font-size: 12px; cursor: pointer;
+    background: transparent; color: var(--foreground);
+    border: 1px solid var(--border); border-radius: 6px;
+  `;
+  historyBtn.onclick = () => openSessionBrowser(agent);
+  right.append(historyBtn);
 
   const resetBtn = document.createElement("button");
   resetBtn.textContent = "⟲ New chat";

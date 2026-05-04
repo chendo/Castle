@@ -3,12 +3,17 @@ import { buildAgentsMd, buildCatalogData, buildServicesData, extractDomains } fr
 import {
   getActiveModelId,
   getAgentSession,
+  listSessions,
   listUpstreamModels,
-  resetAgentSession,
+  newConversation,
+  recreateAgentSession,
+  resumeSession,
   setActiveModel,
   submitPrompt,
+  trimSessions,
   warmupPromptCache,
   writeModelsJson,
+  deleteSession,
 } from "./agent.ts";
 import { parseHistoryPoints } from "./tools.ts";
 import { ALL_TOOL_NAMES, loadSettings, saveSettings, TOOL_DESCRIPTIONS, type ToolName } from "./settings.ts";
@@ -270,7 +275,7 @@ async function handler(req: Request): Promise<Response> {
 // --- WebSocket handling ----------------------------------------------------
 
 const sockets = new Set<WebSocket>();
-// Tracked per-agent: resetAgentSession() rebuilds the agent, so a single
+// Tracked per-agent: recreateAgentSession() rebuilds the agent, so a single
 // module-level "wired" boolean would leave the new agent unsubscribed and the
 // browser would silently miss every event from then on (fixed by full refresh,
 // which loads the new state via the hello snapshot — exactly the symptom we hit).
@@ -526,16 +531,20 @@ async function handleSocket(socket: WebSocket): Promise<void> {
     }
 
     if (msg.type === "set_settings") {
-      const incoming = (msg as unknown as { settings: { enabledTools?: ToolName[]; contextWindow?: number; allowUnexposedWrites?: boolean } }).settings;
+      const incoming = (msg as unknown as { settings: { enabledTools?: ToolName[]; contextWindow?: number; allowUnexposedWrites?: boolean; conversationCapMb?: number } }).settings;
       const saved = await saveSettings(incoming);
       // Refresh AGENTS.md *before* rebuilding the session — the new agent reads
       // .pi-agent/AGENTS.md on construction, so a stale file would leave it
       // unaware of the just-flipped disabled-tool set until the next reconnect.
       await regenerateCatalog();
-      // Tool changes only take effect on a fresh session — reset, re-wire the
-      // broadcast onto the new agent (resetAgentSession nulls the old one), and
+      // Tool changes only take effect on a fresh session — recreate, re-wire the
+      // broadcast onto the new agent (recreateAgentSession nulls the old one), and
       // push a snapshot so every client sees the cleared state.
-      await resetAgentSession();
+      await recreateAgentSession();
+      // Trim sessions after any settings change — ensures we stay under the cap
+      // even if files grew between saves (e.g. many long agent turns).
+      const trimCount = await trimSessions(saved.conversationCapMb * 1_048_576);
+      if (trimCount) console.log(`[settings] trimmed ${trimCount} session file(s)`);
       await ensureAgentBroadcast();
       const session = await getAgentSession(ha);
       const snapshotFrame = JSON.stringify({ type: "snapshot", state: serializeSnapshot(session) });
@@ -598,7 +607,7 @@ async function handleSocket(socket: WebSocket): Promise<void> {
         // Tear the agent down so the next prompt builds against the fresh
         // .pi-agent/AGENTS.md system prompt — the running session has the
         // old catalog cached in its message history otherwise.
-        await resetAgentSession();
+        await recreateAgentSession();
         await ensureAgentBroadcast();
         const session = await getAgentSession(ha);
         const snapshot = JSON.stringify({ type: "snapshot", state: serializeSnapshot(session) });
@@ -615,7 +624,7 @@ async function handleSocket(socket: WebSocket): Promise<void> {
 
     if (msg.type === "reset") {
       try {
-        await resetAgentSession();
+        await newConversation();
         await ensureAgentBroadcast();
         // Broadcast a fresh snapshot to ALL connected clients so every browser sees the cleared state.
         const session = await getAgentSession(ha);
@@ -626,6 +635,63 @@ async function handleSocket(socket: WebSocket): Promise<void> {
         console.log("[ws] session reset");
       } catch (err) {
         socket.send(JSON.stringify({ type: "error", message: `reset failed: ${(err as Error).message}` }));
+      }
+      return;
+    }
+
+    if (msg.type === "list_sessions") {
+      try {
+        const sessions = await listSessions();
+        socket.send(JSON.stringify({ type: "sessions_list", sessions }));
+      } catch (err) {
+        socket.send(JSON.stringify({ type: "error", message: `list_sessions failed: ${(err as Error).message}` }));
+      }
+      return;
+    }
+
+    if (msg.type === "resume_session") {
+      const path = (msg as unknown as { path?: string }).path;
+      if (typeof path !== "string" || !path) {
+        socket.send(JSON.stringify({ type: "error", message: "resume_session: path required" }));
+        return;
+      }
+      try {
+        await resumeSession(path);
+        await ensureAgentBroadcast();
+        const session = await getAgentSession(ha);
+        const snapshot = JSON.stringify({ type: "snapshot", state: serializeSnapshot(session) });
+        for (const ws of sockets) {
+          if (ws.readyState === WebSocket.OPEN) ws.send(snapshot);
+        }
+        socket.send(JSON.stringify({ type: "session_resumed", path }));
+        console.log(`[ws] session resumed: ${path}`);
+      } catch (err) {
+        socket.send(JSON.stringify({ type: "error", message: `resume_session failed: ${(err as Error).message}` }));
+      }
+      return;
+    }
+
+    if (msg.type === "delete_session") {
+      const path = (msg as unknown as { path?: string }).path;
+      if (typeof path !== "string" || !path) {
+        socket.send(JSON.stringify({ type: "error", message: "delete_session: path required" }));
+        return;
+      }
+      try {
+        const deleted = await deleteSession(path);
+        if (!deleted) {
+          socket.send(JSON.stringify({ type: "error", message: "session not found or is the active session" }));
+          return;
+        }
+        // Refresh the list for all clients.
+        const sessions = await listSessions();
+        const frame = JSON.stringify({ type: "sessions_list", sessions });
+        for (const ws of sockets) {
+          if (ws.readyState === WebSocket.OPEN) ws.send(frame);
+        }
+        socket.send(JSON.stringify({ type: "session_deleted", path }));
+      } catch (err) {
+        socket.send(JSON.stringify({ type: "error", message: `delete_session failed: ${(err as Error).message}` }));
       }
       return;
     }
