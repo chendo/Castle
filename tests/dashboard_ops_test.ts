@@ -1,5 +1,5 @@
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { applyDashboardOps, type DashboardOp, walkPath, walkToParent } from "../tools.ts";
+import { applyDashboardOps, type DashboardOp, formatDashboardDiffs, walkPath, walkToParent } from "../tools.ts";
 
 function sampleConfig() {
   return {
@@ -171,6 +171,37 @@ Deno.test("applyDashboardOps — collects errors instead of throwing; first fail
   const { errors } = applyDashboardOps(sampleConfig(), ops);
   assertEquals(errors.length, 1);
   assert(errors[0].startsWith("op[0]"));
+});
+
+Deno.test("applyDashboardOps — diffs surface per-op parent before/after", () => {
+  const ops: DashboardOp[] = [
+    { op: "set", path: "views.0.title", value: "Living Room" },
+    { op: "insert", path: "views.0.cards", value: { type: "markdown" }, index: 0 },
+  ];
+  const { diffs } = applyDashboardOps(sampleConfig(), ops);
+  assertEquals(diffs.length, 2);
+  // Op 0: parent is views.0; before has title=Overview, after has title=Living Room
+  assertEquals(diffs[0].parentPath, "views.0");
+  assertEquals((diffs[0].before as any).title, "Overview");
+  assertEquals((diffs[0].after as any).title, "Living Room");
+  // Op 1: parent is views.0 (path was views.0.cards). Cards array length flips.
+  assertEquals(diffs[1].parentPath, "views.0");
+  assertEquals((diffs[1].before as any).cards.length, 2);
+  assertEquals((diffs[1].after as any).cards.length, 3);
+  assertEquals((diffs[1].after as any).cards[0].type, "markdown");
+});
+
+Deno.test("formatDashboardDiffs — emits before/after blocks per op", () => {
+  const ops: DashboardOp[] = [{ op: "set", path: "views.0.title", value: "Living Room" }];
+  const { diffs } = applyDashboardOps(sampleConfig(), ops);
+  const out = formatDashboardDiffs(diffs);
+  assert(out.includes("op[0] set views.0.title"));
+  assert(out.includes("(parent: views.0)"));
+  assert(out.includes("before:"));
+  assert(out.includes("after:"));
+  // The actual values appear in the JSON dumps.
+  assert(out.includes('"title": "Overview"'));
+  assert(out.includes('"title": "Living Room"'));
 });
 
 Deno.test("walkPath still works after the new helpers landed alongside", () => {

@@ -651,26 +651,86 @@ function parentPath(path: string): string {
   return segs.slice(0, -1).join(".") || "(root)";
 }
 
+function truncateJson(v: unknown, max: number): string {
+  const s = JSON.stringify(v, null, 2);
+  if (s.length <= max) return s;
+  return s.slice(0, max - 1) + "…";
+}
+
+/**
+ * Render OpDiff[] as a human-readable verification block — one section per op,
+ * showing before/after of the parent container so the agent can confirm the
+ * mutation landed where intended. Each side is JSON-pretty-printed and
+ * trimmed to keep the total response within tool-output budgets.
+ */
+export function formatDashboardDiffs(diffs: OpDiff[]): string {
+  if (diffs.length === 0) return "(no diffs)";
+  const PER_SIDE = 600; // bytes
+  const lines: string[] = [];
+  for (const d of diffs) {
+    const opLabel = d.op.op === "insert"
+      ? `insert ${d.op.path}${(d.op as { index?: number }).index !== undefined ? `@${(d.op as { index?: number }).index}` : ""}`
+      : `${d.op.op} ${d.op.path}`;
+    lines.push(`op[${d.index}] ${opLabel}  (parent: ${d.parentPath})`);
+    lines.push("before:");
+    lines.push(truncateJson(d.before, PER_SIDE));
+    lines.push("after:");
+    lines.push(truncateJson(d.after, PER_SIDE));
+    lines.push("");
+  }
+  return lines.join("\n").trimEnd();
+}
+
+export interface OpDiff {
+  index: number;
+  op: DashboardOp;
+  /** Path of the parent container the diff is rooted at — usually one level up from op.path. */
+  parentPath: string;
+  /** Snapshot of parentPath BEFORE this op (deep-cloned, captures effects of previous ops). */
+  before: unknown;
+  /** Snapshot of parentPath AFTER this op. */
+  after: unknown;
+}
+
 /**
  * Apply a sequence of ops to a dashboard config. Returns a NEW config object
  * (deep-cloned before any mutation) so failures leave the original untouched.
  * Errors are returned in `errors` instead of thrown so the caller can surface
- * all problems at once.
+ * all problems at once. `diffs` carries a before/after snapshot of each op's
+ * parent container so the agent (and the user) can verify what changed.
  */
 export function applyDashboardOps(
   config: unknown,
   ops: DashboardOp[],
-): { config: unknown; errors: string[] } {
+): { config: unknown; errors: string[]; diffs: OpDiff[] } {
   const cloned = JSON.parse(JSON.stringify(config));
   const errors: string[] = [];
+  const diffs: OpDiff[] = [];
   for (let i = 0; i < ops.length; i++) {
+    const op = ops[i];
+    // Per-op diff is rooted at the parent of the path. For insert the path
+    // already points at the array, so "one level up" lands you at the
+    // array's container — same containing scope a reader needs to verify
+    // a card landed where they expected.
+    const pp = parentPath(op.path);
+    const beforeParent = snapshotAt(cloned, pp);
     try {
-      applyOp(cloned, ops[i]);
+      applyOp(cloned, op);
+      const afterParent = snapshotAt(cloned, pp);
+      diffs.push({ index: i, op, parentPath: pp, before: beforeParent, after: afterParent });
     } catch (err) {
-      errors.push(`op[${i}] (${ops[i].op} ${("path" in ops[i] ? ops[i].path : "")}): ${(err as Error).message}`);
+      errors.push(`op[${i}] (${op.op} ${("path" in op ? op.path : "")}): ${(err as Error).message}`);
     }
   }
-  return { config: cloned, errors };
+  return { config: cloned, errors, diffs };
+}
+
+/** Walk to `path` and return a deep clone of the value, or null when missing. */
+function snapshotAt(root: unknown, path: string): unknown {
+  if (path === "(root)") return JSON.parse(JSON.stringify(root));
+  const { value, found } = walkPath(root, path);
+  if (!found) return null;
+  return JSON.parse(JSON.stringify(value));
 }
 
 /**
@@ -1480,7 +1540,7 @@ export function buildTools(
             type: "lovelace/config",
             url_path: params.name === "(default)" ? null : params.name,
           });
-          const { config: edited, errors } = applyDashboardOps(config, params.ops);
+          const { config: edited, errors, diffs } = applyDashboardOps(config, params.ops);
           if (errors.length > 0) {
             return ok(`Refused: ${errors.length} op error(s) — nothing written:\n- ${errors.join("\n- ")}`);
           }
@@ -1514,7 +1574,12 @@ export function buildTools(
             lines.push(`${warnings.length} validation warning(s):`);
             for (const w of warnings) lines.push(`- ${w}`);
           }
-          return ok(lines.join("\n"));
+          // Per-op before/after so the agent can verify each change landed
+          // where intended without a separate ha_get_dashboard round-trip.
+          lines.push("");
+          lines.push("--- diffs ---");
+          lines.push(formatDashboardDiffs(diffs));
+          return okText(lines.join("\n"), { maxBytes: 16 * 1024 });
         } catch (err) {
           return ok(`Failed to edit "${params.name}": ${(err as Error).message}`);
         }
