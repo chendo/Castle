@@ -1483,39 +1483,32 @@ export function buildTools(
     {
       name: "ha_get_logs",
       label: "Get Logs",
-      description: "Recent Home Assistant log entries (up to 100 lines). type='error' returns the plaintext error log (warnings + errors from the current session); type='system' returns structured system_log entries. Optional case-insensitive regex filter.",
+      description: "Recent Home Assistant system_log entries (up to 100 lines, structured: level, timestamp, source, message). Optional regex filter, case-insensitive by default — pass `flags=''` for case-sensitive matching.",
       parameters: Type.Object({
-        type: Type.Union([Type.Literal("error"), Type.Literal("system")], { description: "error | system" }),
         filter: Type.Optional(Type.String({
-          description: "Case-insensitive JavaScript regex matched against each line. Plain words work too (e.g. `zigbee`). Examples: `error|warn`, `\\bauth\\b`, `traceback`.",
+          description: "JavaScript regex matched against each line. Plain words work too (e.g. `zigbee`). Examples: `error|warn`, `\\bauth\\b`, `traceback`.",
+        })),
+        flags: Type.Optional(Type.String({
+          description: "Regex flags. Default `i` (case-insensitive). Pass an empty string for case-sensitive matching, or combine flags like `im` (multiline) / `is` (dotAll). Allowed: i, m, s, u.",
         })),
       }),
       async execute(
         _id: string,
-        params: { type: "error" | "system"; filter?: string },
+        params: { filter?: string; flags?: string },
       ): Promise<ToolResult> {
         let f: RegExp | null = null;
         if (params.filter && params.filter.trim().length > 0) {
+          // Default to case-insensitive (the historical behaviour of this tool).
+          // Validate flags so a typo like 'I' fails loudly instead of being
+          // silently dropped by RegExp.
+          const flags = params.flags ?? "i";
+          if (!/^[imsu]*$/.test(flags)) {
+            return ok(`Invalid flags '${flags}'. Allowed: i, m, s, u.`);
+          }
           try {
-            f = new RegExp(params.filter, "i");
+            f = new RegExp(params.filter, flags);
           } catch (err) {
             return ok(`Invalid filter regex: ${(err as Error).message}. Filter is a JavaScript regex (e.g. \`error|warn\`, \`zigbee\`).`);
-          }
-        }
-        if (params.type === "error") {
-          try {
-            const res = await ha.restCall("/api/error_log");
-            if (!res.ok) return ok(`error_log failed: ${res.status}`);
-            const text = await res.text();
-            const lines = text.split("\n").filter((l) => l.trim());
-            const filtered = f ? lines.filter((l) => f!.test(l)) : lines;
-            // error_log is reverse-chronological: newest at the bottom. Show
-            // the tail (most recent 100 lines) and let okList trim by bytes.
-            const slice = filtered.slice(-100);
-            if (slice.length === 0) return ok("(no matching log lines)");
-            return okList("", slice, { maxBytes: 12 * 1024, hint: "tighten with `filter=<regex>`" });
-          } catch (err) {
-            return ok(`error_log fetch failed: ${(err as Error).message}`);
           }
         }
         try {

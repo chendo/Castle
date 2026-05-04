@@ -87,9 +87,9 @@ const CONFIGS: Record<string, RendererConfig> = {
   ha_get_logs: {
     icon: FileText,
     summarize: (p) => {
-      const args: string[] = [`${p?.type ?? "?"}`];
-      if (p?.filter) args.push(`filter=/${p.filter}/i`);
-      return `ha_get_logs (${args.join(", ")})`;
+      if (!p?.filter) return "ha_get_logs";
+      const flags = p?.flags ?? "i";
+      return `ha_get_logs (filter=/${p.filter}/${flags})`;
     },
   },
   ha_get_notifications: {
