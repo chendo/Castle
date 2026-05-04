@@ -91,6 +91,11 @@ export class WebSocketRemoteAgent extends RemoteAgent {
     this.send({ type: "reset" });
   }
 
+  /** Switch the active model. Server validates, swaps, and broadcasts a fresh snapshot. */
+  setModel(modelId: string): void {
+    this.send({ type: "set_model", model_id: modelId });
+  }
+
   /** Send any custom frame (used by SettingsDialog and friends). */
   sendRaw(frame: any): void {
     this.send(frame);

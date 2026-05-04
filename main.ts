@@ -1,6 +1,14 @@
 import { HAClient } from "./ha-client.ts";
 import { buildAgentsMd, buildCatalogData, buildServicesData, extractDomains } from "./catalog.ts";
-import { getAgentSession, resetAgentSession, submitPrompt } from "./agent.ts";
+import {
+  getActiveModelId,
+  getAgentSession,
+  listUpstreamModels,
+  resetAgentSession,
+  setActiveModel,
+  submitPrompt,
+  writeModelsJson,
+} from "./agent.ts";
 import { parseHistoryPoints } from "./tools.ts";
 import { ALL_TOOL_NAMES, loadSettings, saveSettings, type ToolName } from "./settings.ts";
 
@@ -14,76 +22,6 @@ const ha = new HAClient(HA_URL, HA_TOKEN);
 let lastQueryAt: number | null = null;
 let queryCount = 0;
 
-// Some OpenAI-compat servers (LM Studio, vLLM with --enable-vision-info) expose
-// per-model capability metadata at /api/v0/models/<id>: `type: "vlm"` or a
-// `vision: true` flag means the model accepts image input. Returns ["text",
-// "image"] when reported, ["text"] otherwise. Falls back to text-only on any
-// error so startup never blocks against a server that doesn't implement /api/v0.
-async function detectModelInput(baseUrl: string, apiKey: string, modelId: string): Promise<string[]> {
-  // baseUrl is the OpenAI-compat URL ending in /v1 — the metadata API lives at /api/v0
-  const restBase = baseUrl.replace(/\/v1\/?$/, "") + "/api/v0";
-  const headers = { Authorization: `Bearer ${apiKey}` };
-  try {
-    const res = await fetch(`${restBase}/models/${encodeURIComponent(modelId)}`, {
-      headers,
-      signal: AbortSignal.timeout(2000),
-    });
-    if (res.ok) {
-      const m = await res.json() as { type?: string; vision?: boolean };
-      if (m.vision === true || m.type === "vlm") return ["text", "image"];
-      return ["text"];
-    }
-    // Fallback: list endpoint, in case the per-id route isn't available
-    const listRes = await fetch(`${restBase}/models`, { headers, signal: AbortSignal.timeout(2000) });
-    if (!listRes.ok) throw new Error(`models list ${listRes.status}`);
-    const list = await listRes.json() as { data?: Array<{ id: string; type?: string; vision?: boolean }> };
-    const found = list.data?.find((m) => m.id === modelId);
-    if (found && (found.vision === true || found.type === "vlm")) return ["text", "image"];
-    return ["text"];
-  } catch (err) {
-    console.warn(`[hai] capability probe failed (${(err as Error).message}); assuming text-only`);
-    return ["text"];
-  }
-}
-
-async function writeModelsJson(): Promise<void> {
-  const key = Deno.env.get("OPENAI_API_KEY") ?? "";
-  const url = Deno.env.get("OPENAI_URL") ?? "http://localhost:1234/v1";
-  const modelId = Deno.env.get("MODEL_NAME");
-  if (!modelId) throw new Error("MODEL_NAME env var is required");
-  const input = await detectModelInput(url, key, modelId);
-  console.log(`[hai] model ${modelId} input modalities: ${input.join(", ")}`);
-  // Seed contextWindow from the same env var settings.ts reads. The value is
-  // overwritten per-session from settings.json before the agent runs, so this
-  // is just a sane initial value for the registry parse.
-  const seedContextWindow = (() => {
-    const fromEnv = Number(Deno.env.get("MODEL_CONTEXT_WINDOW"));
-    return Number.isFinite(fromEnv) && fromEnv >= 8192 ? fromEnv : 65536;
-  })();
-  const config = {
-    providers: {
-      local: {
-        baseUrl: url,
-        api: "openai-completions",
-        apiKey: key,
-        compat: { supportsDeveloperRole: false, supportsReasoningEffort: false },
-        models: [
-          {
-            id: modelId,
-            name: modelId,
-            contextWindow: seedContextWindow,
-            maxTokens: 4096,
-            reasoning: false,
-            input,
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          },
-        ],
-      },
-    },
-  };
-  const agentDir = new URL(".pi-agent/", import.meta.url).pathname.replace(/\/$/, "");
-  await Deno.writeTextFile(`${agentDir}/models.json`, JSON.stringify(config, null, 2));
-}
 
 async function regenerateCatalog(): Promise<void> {
   try {
@@ -236,6 +174,18 @@ async function handler(req: Request): Promise<Response> {
       return new Response(haRes.body, { headers });
     } catch (err) {
       return new Response(`Camera fetch failed: ${(err as Error).message}`, { status: 502 });
+    }
+  }
+
+  if (url.pathname === "/models" && req.method === "GET") {
+    // Browser model picker fetches this to populate its list. Proxies the
+    // upstream OpenAI-compat /v1/models endpoint so the API key never leaves
+    // the server. Returns { active: <id>, models: [{ id }, …] }.
+    try {
+      const list = await listUpstreamModels();
+      return Response.json({ active: getActiveModelId(), models: list.map((m) => ({ id: m.id })) });
+    } catch (err) {
+      return Response.json({ error: (err as Error).message }, { status: 502 });
     }
   }
 
@@ -568,6 +518,29 @@ async function handleSocket(socket: WebSocket): Promise<void> {
         }
       }
       console.log(`[settings] enabled tools: ${saved.enabledTools.join(", ")}`);
+      return;
+    }
+
+    if (msg.type === "set_model") {
+      const id = (msg as unknown as { model_id?: unknown }).model_id;
+      if (typeof id !== "string" || !id) {
+        socket.send(JSON.stringify({ type: "error", message: "set_model: model_id required" }));
+        return;
+      }
+      try {
+        await setActiveModel(id);
+        // Session was reset; build a fresh one + broadcast snapshot so every
+        // client sees state.model flip to the new id.
+        await ensureAgentBroadcast();
+        const session = await getAgentSession(ha);
+        const snap = JSON.stringify({ type: "snapshot", state: serializeSnapshot(session) });
+        for (const ws of sockets) {
+          if (ws.readyState === WebSocket.OPEN) ws.send(snap);
+        }
+        console.log(`[hai] active model set to ${id}`);
+      } catch (err) {
+        socket.send(JSON.stringify({ type: "error", message: `set_model failed: ${(err as Error).message}` }));
+      }
       return;
     }
 

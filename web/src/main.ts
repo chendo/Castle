@@ -20,6 +20,7 @@ import { registerChartRenderer } from "./ChartRenderer";
 import { registerCameraRenderer } from "./CameraRenderer";
 import { buildTopbar } from "./Topbar";
 import { buildSidebar } from "./Sidebar";
+import { openModelPickerDialog } from "./ModelPickerDialog";
 
 registerHAToolRenderers();
 registerChartRenderer();
@@ -77,6 +78,11 @@ agent.applySnapshot = (snap: any) => {
 const chatPanel = new ChatPanel();
 await chatPanel.setAgent(agent as any, {
   onApiKeyRequired: async () => true,
+  // Replace pi-web-ui's built-in cloud model picker with our /v1/models-driven
+  // one. The cloud picker would list providers we can't actually call (the
+  // server picks the LLM endpoint, browser just displays what's available)
+  // and would mislead the user into thinking they can switch to e.g. GPT-4.
+  onModelSelect: () => openModelPickerDialog(agent),
 });
 
 const app = document.getElementById("app")!;

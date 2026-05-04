@@ -16,6 +16,118 @@ const CWD = new URL(".", import.meta.url).pathname.replace(/\/$/, "");
 
 const authStorage = AuthStorage.create(`${AGENT_DIR}/auth.json`);
 
+// ---------------------------------------------------------------------------
+// Model lifecycle.
+//
+// The active model id is mutable — the browser model picker can swap it at
+// runtime. activeModelId is the source of truth; writeModelsJson rewrites
+// .pi-agent/models.json from it before each session is built. setActiveModel
+// also resets the in-flight session so the next prompt picks up the new model.
+// ---------------------------------------------------------------------------
+
+let activeModelId: string = Deno.env.get("MODEL_NAME") ?? "";
+
+export function getActiveModelId(): string {
+  return activeModelId;
+}
+
+/** Pulls the upstream /v1/models list. Used by the browser model picker. */
+export async function listUpstreamModels(): Promise<Array<{ id: string }>> {
+  const url = Deno.env.get("OPENAI_URL") ?? "http://localhost:1234/v1";
+  const key = Deno.env.get("OPENAI_API_KEY") ?? "";
+  const headers: Record<string, string> = {};
+  if (key) headers["Authorization"] = `Bearer ${key}`;
+  const res = await fetch(`${url.replace(/\/$/, "")}/models`, { headers, signal: AbortSignal.timeout(5000) });
+  if (!res.ok) throw new Error(`upstream /models returned ${res.status}`);
+  const json = await res.json() as { data?: Array<{ id: string }> };
+  return Array.isArray(json.data) ? json.data : [];
+}
+
+/**
+ * Probe per-model capability metadata to figure out if image input is
+ * supported. Some OpenAI-compat servers (LM Studio, vLLM with vision-info,
+ * llama.cpp) expose this at /api/v0/models/<id>; everything else falls through
+ * to text-only assumption. Side-effects: none — just returns the modalities.
+ */
+async function detectModelInput(baseUrl: string, apiKey: string, modelId: string): Promise<string[]> {
+  const restBase = baseUrl.replace(/\/v1\/?$/, "") + "/api/v0";
+  const headers: Record<string, string> = {};
+  if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+  try {
+    const res = await fetch(`${restBase}/models/${encodeURIComponent(modelId)}`, {
+      headers,
+      signal: AbortSignal.timeout(2000),
+    });
+    if (res.ok) {
+      const m = await res.json() as { type?: string; vision?: boolean };
+      if (m.vision === true || m.type === "vlm") return ["text", "image"];
+      return ["text"];
+    }
+    const listRes = await fetch(`${restBase}/models`, { headers, signal: AbortSignal.timeout(2000) });
+    if (!listRes.ok) throw new Error(`models list ${listRes.status}`);
+    const list = await listRes.json() as { data?: Array<{ id: string; type?: string; vision?: boolean }> };
+    const found = list.data?.find((m) => m.id === modelId);
+    if (found && (found.vision === true || found.type === "vlm")) return ["text", "image"];
+    return ["text"];
+  } catch (err) {
+    console.warn(`[hai] capability probe failed (${(err as Error).message}); assuming text-only`);
+    return ["text"];
+  }
+}
+
+/**
+ * Persist the current activeModelId into .pi-agent/models.json so
+ * ModelRegistry.create() picks up the right model on the next session
+ * construction. Always run before getAgentSession when the active model
+ * has changed.
+ */
+export async function writeModelsJson(): Promise<void> {
+  if (!activeModelId) throw new Error("no active model — set MODEL_NAME env var or POST set_model");
+  const key = Deno.env.get("OPENAI_API_KEY") ?? "";
+  const url = Deno.env.get("OPENAI_URL") ?? "http://localhost:1234/v1";
+  const input = await detectModelInput(url, key, activeModelId);
+  console.log(`[hai] model ${activeModelId} input modalities: ${input.join(", ")}`);
+  const seedContextWindow = (() => {
+    const fromEnv = Number(Deno.env.get("MODEL_CONTEXT_WINDOW"));
+    return Number.isFinite(fromEnv) && fromEnv >= 8192 ? fromEnv : 65536;
+  })();
+  const config = {
+    providers: {
+      local: {
+        baseUrl: url,
+        api: "openai-completions",
+        apiKey: key,
+        compat: { supportsDeveloperRole: false, supportsReasoningEffort: false },
+        models: [{
+          id: activeModelId,
+          name: activeModelId,
+          contextWindow: seedContextWindow,
+          maxTokens: 4096,
+          reasoning: false,
+          input,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        }],
+      },
+    },
+  };
+  await Deno.writeTextFile(`${AGENT_DIR}/models.json`, JSON.stringify(config, null, 2));
+}
+
+/**
+ * Switch the active model. Re-detects modalities, rewrites models.json, and
+ * tears down the current agent session so the next prompt builds against the
+ * new model. Does NOT auto-prompt — the caller is expected to broadcast a
+ * fresh snapshot to connected clients so they see the new state.model.
+ */
+export async function setActiveModel(id: string): Promise<void> {
+  if (!id || typeof id !== "string") throw new Error("set_model: id required");
+  if (id === activeModelId) return;
+  console.log(`[hai] switching active model: ${activeModelId} → ${id}`);
+  activeModelId = id;
+  await writeModelsJson();
+  await resetAgentSession();
+}
+
 // deno-lint-ignore no-explicit-any
 function getLocalModel(): any {
   const registry = ModelRegistry.create(authStorage, `${AGENT_DIR}/models.json`);
