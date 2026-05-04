@@ -8,7 +8,7 @@ import {
 } from "@mariozechner/pi-web-ui";
 import { html } from "lit";
 import { createRef, ref } from "lit/directives/ref.js";
-import { Activity, Bell, FileText, History, LayoutDashboard, Wrench, Zap } from "lucide";
+import { Activity, Bell, FileText, History, LayoutDashboard, ListChecks, Sparkles, Wrench, Zap } from "lucide";
 
 type Icon = typeof Wrench;
 
@@ -84,6 +84,25 @@ const CONFIGS: Record<string, RendererConfig> = {
   ha_modify_dashboard: {
     icon: LayoutDashboard,
     summarize: (p) => `ha_modify_dashboard ${p?.name ?? "?"} (replace full config)`,
+  },
+  ha_get_automation: {
+    icon: Sparkles,
+    summarize: (p) => p?.automation_id ? `ha_get_automation ${p.automation_id}` : "ha_get_automation",
+  },
+  ha_update_automation: {
+    icon: Sparkles,
+    summarize: (p) => {
+      if (!p?.automation_id) return "ha_update_automation";
+      const strict = p.strict ? " strict" : "";
+      return `ha_update_automation ${p.automation_id}${strict}`;
+    },
+  },
+  ha_get_automation_trace: {
+    icon: ListChecks,
+    summarize: (p) => {
+      if (!p?.automation_id) return "ha_get_automation_trace";
+      return `ha_get_automation_trace ${p.automation_id}${p.run_id ? ` :${p.run_id}` : " (latest)"}`;
+    },
   },
 };
 

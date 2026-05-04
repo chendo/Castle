@@ -609,6 +609,150 @@ export function summarizeDashboard(config: unknown): string {
   return lines.join("\n");
 }
 
+/**
+ * Walk an automation config and collect every entity_id and service reference.
+ * Skips template strings ({{ ... }}) since we can't statically resolve them.
+ *
+ * The walker is intentionally generic: HA's automation/script schema lets any
+ * action key (`service`, `target.entity_id`, `entity_id`, `device_id`) appear
+ * inside `choose[].sequence`, `repeat.sequence`, `if.then`, etc. Recursive
+ * descent on arrays + objects catches everything without per-shape parsing.
+ */
+export function collectConfigReferences(config: unknown): { entityIds: string[]; services: string[] } {
+  const entityIds = new Set<string>();
+  const services = new Set<string>();
+
+  const isTemplate = (s: string): boolean => /\{\{|\{%/.test(s);
+  const addEntity = (v: unknown) => {
+    if (typeof v === "string") {
+      if (!isTemplate(v) && /^[a-z_]+\.[a-z0-9_]+$/i.test(v)) entityIds.add(v);
+    } else if (Array.isArray(v)) {
+      for (const x of v) addEntity(x);
+    }
+  };
+  const addService = (v: unknown) => {
+    if (typeof v === "string" && !isTemplate(v) && /^[a-z_]+\.[a-z0-9_]+$/i.test(v)) {
+      services.add(v);
+    }
+  };
+
+  const walk = (node: unknown, parentKey?: string) => {
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item, parentKey);
+      return;
+    }
+    if (node === null || typeof node !== "object") return;
+    const obj = node as Record<string, unknown>;
+    for (const [k, v] of Object.entries(obj)) {
+      if (k === "entity_id") addEntity(v);
+      else if (k === "service" || k === "action") addService(v);
+      walk(v, k);
+    }
+  };
+
+  walk(config);
+  return { entityIds: [...entityIds], services: [...services] };
+}
+
+/**
+ * Cross-reference what the config calls out against what HA actually has.
+ * Returns warnings for unknowns; an empty list means the config looks valid.
+ * "Warnings" not "errors" because templates can synthesize entity_ids/services
+ * we can't see, and we'd rather not refuse a legitimate config.
+ */
+export function validateAutomationConfig(
+  config: unknown,
+  knownEntityIds: Set<string>,
+  knownServices: Set<string>,
+): { warnings: string[]; entityIds: string[]; services: string[] } {
+  const { entityIds, services } = collectConfigReferences(config);
+  const warnings: string[] = [];
+  for (const id of entityIds) {
+    if (!knownEntityIds.has(id)) warnings.push(`unknown entity_id: ${id}`);
+  }
+  for (const svc of services) {
+    if (!knownServices.has(svc)) warnings.push(`unknown service: ${svc}`);
+  }
+  return { warnings, entityIds, services };
+}
+
+/**
+ * Render a trace/get response into a compact human-readable summary. The raw
+ * trace tree is large (every condition+action step at every nesting level)
+ * and most of it is repeating the config the caller already has, so we only
+ * surface what's interesting:
+ *   - When the automation ran and how it terminated.
+ *   - What triggered it (variables.trigger.platform / .description).
+ *   - The ordered step list with each step's path, timestamp, and result/error.
+ */
+export function formatAutomationTrace(trace: Record<string, unknown>): string {
+  const lines: string[] = [];
+  const ts = (trace.timestamp as { start?: string; finish?: string } | undefined) ?? {};
+  const state = (trace.state as string | undefined) ?? "(unknown)";
+  const scriptExec = (trace.script_execution as string | undefined) ?? "";
+  const trigger = (trace.trigger as string | undefined) ?? "(unknown trigger)";
+
+  lines.push(`Automation ${trace.item_id ?? "?"} run ${trace.run_id ?? "?"}`);
+  lines.push(`Started: ${ts.start ?? "?"}${ts.finish ? `  Finished: ${ts.finish}` : ""}`);
+  lines.push(`State: ${state}${scriptExec ? `  ScriptExecution: ${scriptExec}` : ""}`);
+  lines.push(`Trigger: ${trigger}`);
+  if (trace.error) lines.push(`Error: ${String(trace.error)}`);
+  lines.push("");
+
+  // The trace map keys are dotted paths into the config — e.g. `trigger/0`,
+  // `condition/0`, `action/2/choose/0/sequence/1`. Each value is an array of
+  // step records (one per execution; `repeat` and parallel actions can yield
+  // multiple). Walk in a stable order and surface the shortest-meaningful info.
+  const traceMap = trace.trace as Record<string, Array<Record<string, unknown>>> | undefined;
+  if (!traceMap || typeof traceMap !== "object") {
+    lines.push("(no step trace available)");
+    return lines.join("\n");
+  }
+  const paths = Object.keys(traceMap).sort((a, b) => {
+    // Order by first-step timestamp within each path so output is chronological.
+    const aTs = traceMap[a]?.[0]?.timestamp as string | undefined;
+    const bTs = traceMap[b]?.[0]?.timestamp as string | undefined;
+    if (aTs && bTs) return aTs.localeCompare(bTs);
+    return a.localeCompare(b);
+  });
+
+  lines.push(`Steps (${paths.length} paths):`);
+  for (const path of paths) {
+    const steps = traceMap[path];
+    if (!Array.isArray(steps) || steps.length === 0) continue;
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i] as Record<string, unknown>;
+      const stepTs = step.timestamp as string | undefined;
+      const result = step.result as Record<string, unknown> | undefined;
+      const error = step.error as string | undefined;
+      const changedVars = step.changed_variables as Record<string, unknown> | undefined;
+
+      const tsLabel = stepTs ? stepTs.slice(11, 23) : "?"; // HH:MM:SS.SSS
+      const idxLabel = steps.length > 1 ? `[${i}]` : "";
+      const resultBits: string[] = [];
+      if (result) {
+        // condition steps: { result: bool }
+        if (typeof result.result === "boolean") resultBits.push(`condition=${result.result}`);
+        // service-call: { params: {...}, running_script: bool }
+        // wait/delay: { wait: { trigger: ..., remaining: ... } }
+        if (result.params) resultBits.push("called");
+        if (result.wait) resultBits.push("wait");
+        if (result.choice !== undefined) resultBits.push(`choose=${result.choice}`);
+        if (result.enabled === false) resultBits.push("disabled");
+      }
+      if (changedVars && changedVars.trigger) {
+        const t = changedVars.trigger as Record<string, unknown>;
+        const desc = t.description ?? `${t.platform}`;
+        resultBits.push(`trigger:${desc}`);
+      }
+      const resultStr = resultBits.length ? ` ${resultBits.join(", ")}` : "";
+      const errStr = error ? ` ERROR=${error}` : "";
+      lines.push(`  ${tsLabel} ${path}${idxLabel}${resultStr}${errStr}`);
+    }
+  }
+  return lines.join("\n");
+}
+
 export function buildTools(
   ha: HAClient,
   opts: { multimodal?: boolean; dashboardCache?: Map<string, unknown>; allowUnexposedWrites?: boolean } = {},
@@ -1111,6 +1255,112 @@ export function buildTools(
           return ok(`Dashboard "${params.name}" updated.`);
         } catch (err) {
           return ok(`Failed to update "${params.name}": ${(err as Error).message}`);
+        }
+      },
+    },
+
+    {
+      name: "ha_get_automation",
+      label: "Get Automation",
+      description: "Fetch the full config for one automation. `automation_id` is the numeric id from the entity's `attributes.id` (NOT the entity_id slug — e.g. for automation.morning_lights with attributes.id=1776352404227, pass 1776352404227). Returns the JSON config you'd see in HA's automation editor.",
+      parameters: Type.Object({
+        automation_id: Type.String({ description: "Numeric automation id (from attributes.id)" }),
+      }),
+      async execute(_id: string, params: { automation_id: string }): Promise<ToolResult> {
+        try {
+          const res = await ha.restCall(`/api/config/automation/config/${encodeURIComponent(params.automation_id)}`);
+          if (!res.ok) {
+            const body = await res.text();
+            return ok(`Failed to fetch automation ${params.automation_id}: ${res.status} ${body.slice(0, 300)}`);
+          }
+          const json = await res.json();
+          return okText(JSON.stringify(json, null, 2), { maxBytes: 16 * 1024, hint: "edit the config and pass it back to ha_update_automation with the same automation_id" });
+        } catch (err) {
+          return ok(`Failed to fetch automation ${params.automation_id}: ${(err as Error).message}`);
+        }
+      },
+    },
+
+    {
+      name: "ha_update_automation",
+      label: "Update Automation",
+      description: "Replace the full config for one automation. ALWAYS call ha_get_automation first, edit the returned config, then pass the modified config back. Validates entity_ids and service names against the live registry — unknown ones produce warnings (templates and unknown-but-future entities are common false positives, so we warn rather than refuse). Pass strict=true to refuse on any warning.",
+      parameters: Type.Object({
+        automation_id: Type.String({ description: "Numeric automation id (from attributes.id)" }),
+        config: Type.Record(Type.String(), Type.Unknown(), { description: "Complete automation config (alias, trigger, condition, action, mode, etc)" }),
+        strict: Type.Optional(Type.Boolean({ description: "If true, refuse to save when validation produces any warning. Default false (save with warnings)." })),
+      }),
+      async execute(_id: string, params: { automation_id: string; config: Record<string, unknown>; strict?: boolean }): Promise<ToolResult> {
+        // Build the validation universe from live HA state.
+        const knownEntityIds = new Set(ha.getAllStates().map((s) => s.entity_id));
+        const services = await ha.getServices();
+        const knownServices = new Set<string>();
+        for (const [domain, svcs] of Object.entries(services)) {
+          for (const name of Object.keys(svcs)) knownServices.add(`${domain}.${name}`);
+        }
+        const { warnings, entityIds, services: refServices } = validateAutomationConfig(params.config, knownEntityIds, knownServices);
+        if (params.strict && warnings.length > 0) {
+          return ok(`Refused (strict mode): ${warnings.length} validation warning(s):\n- ${warnings.join("\n- ")}\nDrop strict=true to save anyway, or fix the config.`);
+        }
+        try {
+          const res = await ha.restCall(`/api/config/automation/config/${encodeURIComponent(params.automation_id)}`, {
+            method: "POST",
+            body: JSON.stringify(params.config),
+          });
+          if (!res.ok) {
+            const body = await res.text();
+            return ok(`Failed to update automation ${params.automation_id}: ${res.status} ${body.slice(0, 500)}`);
+          }
+          const lines: string[] = [`Automation ${params.automation_id} updated. Referenced ${entityIds.length} entity_id(s), ${refServices.length} service(s).`];
+          if (warnings.length > 0) {
+            lines.push("");
+            lines.push(`${warnings.length} warning(s) (saved anyway, strict=false):`);
+            for (const w of warnings) lines.push(`- ${w}`);
+          }
+          return ok(lines.join("\n"));
+        } catch (err) {
+          return ok(`Failed to update automation ${params.automation_id}: ${(err as Error).message}`);
+        }
+      },
+    },
+
+    {
+      name: "ha_get_automation_trace",
+      label: "Automation Trace",
+      description: "Fetch the most recent execution trace for an automation: when it triggered, what triggered it, which conditions evaluated, which actions ran with timing, and any errors. Pass run_id to fetch a specific run instead of the latest. Use after ha_get_automation when an automation isn't behaving as expected.",
+      parameters: Type.Object({
+        automation_id: Type.String({ description: "Numeric automation id (from attributes.id)" }),
+        run_id: Type.Optional(Type.String({ description: "Specific run id; omit for the most recent run" })),
+      }),
+      async execute(_id: string, params: { automation_id: string; run_id?: string }): Promise<ToolResult> {
+        try {
+          // 1. Get the run id if not specified — list traces, pick the latest.
+          let runId = params.run_id;
+          if (!runId) {
+            const list = await ha.call<Array<{ run_id: string; timestamp: { start: string; finish?: string }; state: string; trigger?: string; script_execution?: string }>>({
+              type: "trace/list",
+              domain: "automation",
+              item_id: params.automation_id,
+            });
+            if (!Array.isArray(list) || list.length === 0) {
+              return ok(`No traces found for automation ${params.automation_id}. (Traces only exist after the automation has run since HA last started.)`);
+            }
+            // Sort by start timestamp descending — HA usually returns newest first
+            // but we don't want to depend on that.
+            list.sort((a, b) => new Date(b.timestamp.start).getTime() - new Date(a.timestamp.start).getTime());
+            runId = list[0].run_id;
+          }
+
+          // 2. Fetch the trace itself.
+          const trace = await ha.call<Record<string, unknown>>({
+            type: "trace/get",
+            domain: "automation",
+            item_id: params.automation_id,
+            run_id: runId,
+          });
+          return okText(formatAutomationTrace(trace), { maxBytes: 16 * 1024, hint: "raw trace JSON has more detail; ask for run_id=... to fetch a specific run" });
+        } catch (err) {
+          return ok(`Failed to fetch trace for automation ${params.automation_id}: ${(err as Error).message}`);
         }
       },
     },

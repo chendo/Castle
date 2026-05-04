@@ -17,6 +17,9 @@ export const ALL_TOOL_NAMES = [
   "ha_modify_dashboard",
   "ha_render_chart",
   "ha_show_camera",
+  "ha_get_automation",
+  "ha_update_automation",
+  "ha_get_automation_trace",
 ] as const;
 export type ToolName = typeof ALL_TOOL_NAMES[number];
 
