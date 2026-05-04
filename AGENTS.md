@@ -47,7 +47,45 @@ docker compose exec castle deno task test:unit  # unit only (no LLM/HA needed)
 docker compose exec castle deno task test:integration  # WS round-trip via LM Studio
 ```
 
-The integration test asks the LLM about a weather entity via `/ws` and asserts only read-only tools are called. Override the entity with `CASTLE_TEST_WEATHER_ENTITY` if `weather.forecast_home` doesn't exist on your HA instance.
+### Integration tests against HA demo instance
+
+The project includes a full integration test suite that runs Castle against a
+test-specific Home Assistant instance using the `demo:` configuration. This
+provides ~50 deterministic entities (lights, switches, climate, cameras,
+automations, dashboards) for reproducible testing.
+
+```bash
+# Full pipeline: boots ha-demo + castle, waits for readiness, runs tests, tears down
+./scripts/run-integration-tests.sh
+
+# Or run just the Deno tests inside a running container (requires HA and LM Studio reachable)
+docker compose exec castle deno task test:integration
+```
+
+**Prerequisites:** `.env.test` (copy from `.env.test.example`) with `MODEL_NAME`,
+`OPENAI_API_KEY`, etc. An external OpenAI-compatible server must be reachable from
+the castle container — typically `http://host.docker.internal:1234/v1`.
+
+The test suite covers all 16 HA tools, plus scenario tests for context inference,
+multi-tool problem solving, automation/dashboard CRUD, and camera operations. The
+eval harness scores models on two axes: (1) which tools were called with correct args,
+and (2) whether actual HA entity states changed after write operations. Excess tool
+calls are warn-only; missing or wrong tool calls fail the test.
+
+Test files live in `tests/integration/`:
+
+| File | Coverage |
+|---|---|
+| `shared.ts` | WS driver, assertion helpers, HA REST API utilities |
+| `tools_basic_test.ts` | All 16 tools individually tested with all args |
+| `tools_dashboard_test.ts` | Dashboard CRUD: get, set, delete, insert + YAML verification |
+| `tools_automation_test.ts` | Automation CRUD + trace debugging + strict validation |
+| `tools_camera_test.ts` | Snapshot capture, live feed, context-based entity resolution |
+| `agent_context_test.ts` | Multi-turn context, cross-domain coordination, problem solving |
+| `agent_eval_test.ts` | Model eval harness with weighted scoring across ~20 cases |
+
+Run integration tests after every notable change to agent behavior, tool definitions,
+or the WebSocket protocol. They are not part of the pre-commit hook (require a real LLM).
 
 ## Rules for committing
 
