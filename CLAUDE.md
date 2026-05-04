@@ -56,6 +56,27 @@ Sweep the diff for dead code every time. After removing or renaming something, c
 
 Also re-read `AGENTS.md`, `CLAUDE.md`, and any nearby doc comments in the same pass. When you change a route, env var, protocol, tool list, or architectural shape, the docs that describe it become wrong instantly — fix them in the same commit. Stale docs that confidently describe a system that no longer exists are worse than missing docs.
 
+## Committing
+
+- **One commit, one focused change.** A UI tweak, a tool-description edit, and a server-side bugfix are three commits even when they're all in the same session's dirty tree. Mixed commits are hostile to bisection, review, and `git revert` — split them.
+- **Validate before staging.** Either tests cover it end-to-end, or you ran the code and watched the new behaviour work (the page renders, the tool call succeeds, the flag actually toggles the thing). Never commit a change you haven't seen run.
+- **Subject line is for `git log --oneline` skimmers** — humans and agents both. Imperative mood, ≤ 72 chars, no trailing period. Bias toward "*what changed and why*" rather than "*how*": `Fix camera widget memory leak from per-instance body observer` beats `Refactor CameraRenderer.ts`. Make it findable from a one-line history grep.
+- **Body explains the why.** Context (what was wrong, what constraint forced the choice), the approach in a sentence or two, non-obvious trade-offs. Future-you reads these in `git blame`; write them so the reasoning survives the diff being touched again later.
+
+## Performance and lifecycles
+
+Every observer, listener, interval, timeout, subscription, and long-lived closure is a potential leak *and* a potential CPU drain. Before adding one, answer two questions: (1) what cleans this up when its owning element / session / turn ends? (2) how often does it run, and what's the cost-per-run × worst-case rate?
+
+Specific shapes that bite us repeatedly in this codebase:
+
+- `MutationObserver` scoped wider than necessary — especially `document.body` with `subtree: true`. Every mutation in the entire app fires the callback. Per-instance observers compound this.
+- Per-instance globals (`document.addEventListener`, ...) with no removal path. Use a Lit custom element with `disconnectedCallback` instead of inventing a cleanup observer.
+- Intervals that don't self-cancel when the state they're updating goes away.
+- Maps that grow per turn / per message without pruning.
+- Subscriptions taken inside render functions, re-taken on every render. The Set grows unbounded.
+
+When you touch a hot path (anything that runs per token delta, per state change, per chat message), re-check the cost and the cleanup story. Default to the cheapest mechanism that solves the problem. If you can't articulate the answer to (1) and (2), the code probably leaks.
+
 ## Conventions worth knowing
 
 - The agent's system prompt is the auto-generated `.pi-agent/AGENTS.md` (entity catalog), **not** the project's `AGENTS.md` (contributor guide). Don't confuse them.
