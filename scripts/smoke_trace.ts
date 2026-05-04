@@ -40,7 +40,11 @@ const trace = await ha.call<Record<string, unknown>>({
   item_id: automation_id,
   run_id: latest.run_id as string,
 });
-console.log("\n--- formatAutomationTrace output ---");
-console.log(formatAutomationTrace(trace));
+// Pull HA's timezone the same way the live tool does, so the smoke output
+// matches what the agent / web UI would actually see.
+const houseInfo = await ha.getHouseInfo();
+const tz = houseInfo.timezone || "UTC";
+console.log(`\n--- formatAutomationTrace output (tz=${tz}) ---`);
+console.log(formatAutomationTrace(trace, tz));
 console.log("--- end ---");
 Deno.exit(0);
