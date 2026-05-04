@@ -1,4 +1,4 @@
-# hai — Home Assistant Agent
+# Castle — Home Assistant Agent
 
 Deno app that bridges a local LLM (LM Studio) to Home Assistant, exposing natural-language control via HTTP SSE.
 
@@ -23,9 +23,9 @@ Container mounts the workspace directory — no rebuild needed for source change
 Deno is **not installed on the host**. Always execute commands inside the container:
 
 ```bash
-docker compose exec hai deno run --allow-all main.ts          # run a script
-docker compose logs -f hai                                     # view logs
-docker compose exec hai sh                                     # shell into container
+docker compose exec castle deno run --allow-all main.ts          # run a script
+docker compose logs -f castle                                  # view logs
+docker compose exec castle sh                                     # shell into container
 ```
 
 ## Development
@@ -36,18 +36,18 @@ After cloning, wire the pre-commit hook (it lives at `scripts/git-hooks/`):
 git config core.hooksPath scripts/git-hooks
 ```
 
-Frontend iteration: `docker compose --profile dev up -d web-watch` keeps `web/dist/` continuously rebuilt; refresh the browser after each save. Edit `*.ts` (Deno) → `docker compose restart hai`.
+Frontend iteration: `docker compose --profile dev up -d web-watch` keeps `web/dist/` continuously rebuilt; refresh the browser after each save. Edit `*.ts` (Deno) → `docker compose restart castle`.
 
 Run all checks manually:
 
 ```bash
 ./scripts/check.sh                           # deno check + lint + unit tests + web tsc
-docker compose exec hai deno task test       # both unit and integration
-docker compose exec hai deno task test:unit  # unit only (no LLM/HA needed)
-docker compose exec hai deno task test:integration  # WS round-trip via LM Studio
+docker compose exec castle deno task test       # both unit and integration
+docker compose exec castle deno task test:unit  # unit only (no LLM/HA needed)
+docker compose exec castle deno task test:integration  # WS round-trip via LM Studio
 ```
 
-The integration test asks the LLM about a weather entity via `/ws` and asserts only read-only tools are called. Override the entity with `HAI_TEST_WEATHER_ENTITY` if `weather.forecast_home` doesn't exist on your HA instance.
+The integration test asks the LLM about a weather entity via `/ws` and asserts only read-only tools are called. Override the entity with `CASTLE_TEST_WEATHER_ENTITY` if `weather.forecast_home` doesn't exist on your HA instance.
 
 ## Rules for committing
 
@@ -94,7 +94,7 @@ The HA token must have **write permission** for this API endpoint. If the call f
 | `OPENAI_URL` | `http://host.docker.internal:1234/v1` (in Docker) / `http://localhost:1234/v1` (host) | OpenAI-compatible API base URL (LM Studio, vLLM, llama.cpp, OpenRouter, real OpenAI, etc.) |
 | `OPENAI_API_KEY` | *(empty)* | API key for the OpenAI-compatible endpoint |
 | `MODEL_NAME` | *(required)* | Model id passed in chat completions (e.g. `qwen/qwen3-vl-30b`, `gpt-4o-mini`) |
-| `HAI_AUTH_TOKEN` | *(empty)* | Optional bearer token guarding hai's own WS/HTTP server |
+| `CASTLE_AUTH_TOKEN` | *(empty)* | Optional bearer token guarding Castle's own WS/HTTP server |
 | `PORT` | `7090` | Server listen port (mapped to 7091 externally) |
 
 Put real values in a local `.env` (gitignored). Never hardcode network addresses or tokens in tracked files. See `.env.example` for the template.

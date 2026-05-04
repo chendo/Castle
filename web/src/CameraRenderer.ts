@@ -52,7 +52,7 @@ function buildLiveFeed(args: CameraArgs, container: HTMLElement): void {
   const renderBadge = (live: boolean) => {
     if (live) {
       badge.style.background = "rgba(220, 38, 38, 0.85)";
-      badge.innerHTML = `<span style="width:6px;height:6px;border-radius:50%;background:white;display:inline-block;animation:hai-pulse 1.4s infinite;"></span>LIVE`;
+      badge.innerHTML = `<span style="width:6px;height:6px;border-radius:50%;background:white;display:inline-block;animation:castle-pulse 1.4s infinite;"></span>LIVE`;
     } else {
       badge.style.background = "rgba(0,0,0,0.6)";
       badge.textContent = "PAUSED";
@@ -60,10 +60,10 @@ function buildLiveFeed(args: CameraArgs, container: HTMLElement): void {
   };
 
   // Inject the pulse keyframes once.
-  if (!document.getElementById("hai-pulse-style")) {
+  if (!document.getElementById("castle-pulse-style")) {
     const style = document.createElement("style");
-    style.id = "hai-pulse-style";
-    style.textContent = "@keyframes hai-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }";
+    style.id = "castle-pulse-style";
+    style.textContent = "@keyframes castle-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }";
     document.head.appendChild(style);
   }
 

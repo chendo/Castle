@@ -17,7 +17,7 @@ const MIN_CONTEXT_WINDOW = 8192;
  * change takes effect on the next prompt.
  */
 export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
-  if (document.getElementById("hai-settings-overlay")) return;
+  if (document.getElementById("castle-settings-overlay")) return;
 
   const state: DialogState = {
     allTools: [],
@@ -28,7 +28,7 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
   };
 
   const overlay = document.createElement("div");
-  overlay.id = "hai-settings-overlay";
+  overlay.id = "castle-settings-overlay";
   overlay.style.cssText = `
     position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 200;
     display: flex; align-items: center; justify-content: center;
@@ -47,12 +47,12 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
   panel.innerHTML = `
     <div style="padding: 18px 20px 14px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
       <div style="font-size: 16px; font-weight: 600;">Settings</div>
-      <button id="hai-settings-close" title="Close" style="background:transparent;border:none;color:var(--muted-foreground);font-size:22px;cursor:pointer;padding:0 4px;line-height:1;">×</button>
+      <button id="castle-settings-close" title="Close" style="background:transparent;border:none;color:var(--muted-foreground);font-size:22px;cursor:pointer;padding:0 4px;line-height:1;">×</button>
     </div>
     <div style="padding: 16px 20px; overflow-y: auto; flex: 1;">
       <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted-foreground); margin-bottom: 10px;">Context window</div>
       <div style="display: flex; align-items: center; gap: 8px;">
-        <input id="hai-settings-context" type="number" min="${MIN_CONTEXT_WINDOW}" step="1024" style="width: 140px; padding: 4px 8px; font-size: 13px; background: var(--background); color: var(--foreground); border: 1px solid var(--border); border-radius: 6px;" />
+        <input id="castle-settings-context" type="number" min="${MIN_CONTEXT_WINDOW}" step="1024" style="width: 140px; padding: 4px 8px; font-size: 13px; background: var(--background); color: var(--foreground); border: 1px solid var(--border); border-radius: 6px;" />
         <span style="font-size: 12px; color: var(--muted-foreground);">tokens (min ${MIN_CONTEXT_WINDOW.toLocaleString()})</span>
       </div>
       <div style="margin-top: 6px; font-size: 12px; color: var(--muted-foreground);">
@@ -61,7 +61,7 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
 
       <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted-foreground); margin: 18px 0 10px;">Write protection</div>
       <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px;">
-        <input id="hai-settings-allow-unexposed" type="checkbox" />
+        <input id="castle-settings-allow-unexposed" type="checkbox" />
         <span>Allow agent to control non-exposed entities</span>
       </label>
       <div style="margin-top: 6px; font-size: 12px; color: var(--muted-foreground);">
@@ -69,32 +69,32 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
       </div>
 
       <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted-foreground); margin: 18px 0 10px;">Enabled tools</div>
-      <div id="hai-settings-tools" style="display: flex; flex-direction: column; gap: 4px;">
+      <div id="castle-settings-tools" style="display: flex; flex-direction: column; gap: 4px;">
         <div style="font-size: 13px; color: var(--muted-foreground);">Loading…</div>
       </div>
       <div style="margin-top: 12px; font-size: 12px; color: var(--muted-foreground);">
         Disabling a tool prevents the agent from calling it. Changes restart the conversation.
       </div>
       <div style="margin-top: 8px;">
-        <button id="hai-settings-all" style="font-size: 12px; padding: 4px 10px; background: transparent; color: var(--foreground); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; margin-right: 6px;">Enable all</button>
-        <button id="hai-settings-none" style="font-size: 12px; padding: 4px 10px; background: transparent; color: var(--foreground); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Disable all</button>
+        <button id="castle-settings-all" style="font-size: 12px; padding: 4px 10px; background: transparent; color: var(--foreground); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; margin-right: 6px;">Enable all</button>
+        <button id="castle-settings-none" style="font-size: 12px; padding: 4px 10px; background: transparent; color: var(--foreground); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Disable all</button>
       </div>
     </div>
     <div style="padding: 12px 20px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 8px;">
-      <button id="hai-settings-cancel" style="padding: 6px 14px; background: transparent; color: var(--foreground); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; font-size: 13px;">Cancel</button>
-      <button id="hai-settings-apply" style="padding: 6px 14px; background: var(--primary, #58a6ff); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 13px;" disabled>Apply</button>
+      <button id="castle-settings-cancel" style="padding: 6px 14px; background: transparent; color: var(--foreground); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; font-size: 13px;">Cancel</button>
+      <button id="castle-settings-apply" style="padding: 6px 14px; background: var(--primary, #58a6ff); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 13px;" disabled>Apply</button>
     </div>
   `;
 
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
 
-  const toolsContainer = panel.querySelector("#hai-settings-tools") as HTMLElement;
-  const applyBtn = panel.querySelector("#hai-settings-apply") as HTMLButtonElement;
-  const allBtn = panel.querySelector("#hai-settings-all") as HTMLButtonElement;
-  const noneBtn = panel.querySelector("#hai-settings-none") as HTMLButtonElement;
-  const contextInput = panel.querySelector("#hai-settings-context") as HTMLInputElement;
-  const allowUnexposedInput = panel.querySelector("#hai-settings-allow-unexposed") as HTMLInputElement;
+  const toolsContainer = panel.querySelector("#castle-settings-tools") as HTMLElement;
+  const applyBtn = panel.querySelector("#castle-settings-apply") as HTMLButtonElement;
+  const allBtn = panel.querySelector("#castle-settings-all") as HTMLButtonElement;
+  const noneBtn = panel.querySelector("#castle-settings-none") as HTMLButtonElement;
+  const contextInput = panel.querySelector("#castle-settings-context") as HTMLInputElement;
+  const allowUnexposedInput = panel.querySelector("#castle-settings-allow-unexposed") as HTMLInputElement;
 
   const renderTools = () => {
     if (!state.loaded) return;
@@ -161,8 +161,8 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
     close();
   };
 
-  panel.querySelector("#hai-settings-close")!.addEventListener("click", close);
-  panel.querySelector("#hai-settings-cancel")!.addEventListener("click", close);
+  panel.querySelector("#castle-settings-close")!.addEventListener("click", close);
+  panel.querySelector("#castle-settings-cancel")!.addEventListener("click", close);
 
   const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
   document.addEventListener("keydown", onKey);

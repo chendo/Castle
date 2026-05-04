@@ -45,7 +45,7 @@ const SAMPLE_SERVICES: ServiceDomain[] = [{
 Deno.test("buildAgentsMd — section order is system → house → services → entities → reminders", () => {
   const md = buildAgentsMd({ houseInfo: HOUSE, services: SAMPLE_SERVICES, catalog: SAMPLE_CATALOG });
   const idx = (s: string) => md.indexOf(s);
-  const system = idx("# hai — Home Assistant Agent");
+  const system = idx("# Castle — Home Assistant Agent");
   const house = idx("## House");
   const services = idx("## Services available");
   const entities = idx("## Areas");

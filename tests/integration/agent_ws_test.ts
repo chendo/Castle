@@ -1,17 +1,17 @@
-// Integration tests: connect to a running hai server, drive the agent over /ws,
+// Integration tests: connect to a running Castle server, drive the agent over /ws,
 // assert read-only behavior. Skips gracefully if the server or HA isn't reachable.
 //
-// Required: hai listening at $HAI_WS_URL (default ws://localhost:7090/ws), HA up,
+// Required: Castle listening at $CASTLE_WS_URL (default ws://localhost:7090/ws), HA up,
 // LM Studio reachable from the server.
 //
 // Run: deno task test:integration
 
 import { assert, assertEquals } from "jsr:@std/assert@1";
 
-const WS_URL = Deno.env.get("HAI_WS_URL") ?? "ws://localhost:7090/ws";
-const STATES_URL = Deno.env.get("HAI_STATES_URL") ?? "http://localhost:7090/states";
-const WEATHER_ENTITY = Deno.env.get("HAI_TEST_WEATHER_ENTITY") ?? "weather.forecast_home";
-const TIMEOUT_MS = Number(Deno.env.get("HAI_TEST_TIMEOUT_MS") ?? 90_000);
+const WS_URL = Deno.env.get("CASTLE_WS_URL") ?? "ws://localhost:7090/ws";
+const STATES_URL = Deno.env.get("CASTLE_STATES_URL") ?? "http://localhost:7090/states";
+const WEATHER_ENTITY = Deno.env.get("CASTLE_TEST_WEATHER_ENTITY") ?? "weather.forecast_home";
+const TIMEOUT_MS = Number(Deno.env.get("CASTLE_TEST_TIMEOUT_MS") ?? 90_000);
 
 interface AgentEvent {
   type: string;
@@ -39,7 +39,7 @@ async function reachable(): Promise<boolean> {
 }
 
 async function findCameraEntity(): Promise<string | null> {
-  const explicit = Deno.env.get("HAI_TEST_CAMERA_ENTITY");
+  const explicit = Deno.env.get("CASTLE_TEST_CAMERA_ENTITY");
   if (explicit) return explicit;
   try {
     const res = await fetch(STATES_URL);

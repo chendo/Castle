@@ -70,7 +70,7 @@ async function detectModelInput(baseUrl: string, apiKey: string, modelId: string
     if (found && (found.vision === true || found.type === "vlm")) return ["text", "image"];
     return ["text"];
   } catch (err) {
-    console.warn(`[hai] capability probe failed (${(err as Error).message}); assuming text-only`);
+    console.warn(`[castle] capability probe failed (${(err as Error).message}); assuming text-only`);
     return ["text"];
   }
 }
@@ -86,7 +86,7 @@ export async function writeModelsJson(): Promise<void> {
   const key = Deno.env.get("OPENAI_API_KEY") ?? "";
   const url = Deno.env.get("OPENAI_URL") ?? "http://localhost:1234/v1";
   const input = await detectModelInput(url, key, activeModelId);
-  console.log(`[hai] model ${activeModelId} input modalities: ${input.join(", ")}`);
+  console.log(`[castle] model ${activeModelId} input modalities: ${input.join(", ")}`);
   const seedContextWindow = (() => {
     const fromEnv = Number(Deno.env.get("MODEL_CONTEXT_WINDOW"));
     return Number.isFinite(fromEnv) && fromEnv >= 8192 ? fromEnv : 65536;
@@ -122,7 +122,7 @@ export async function writeModelsJson(): Promise<void> {
 export async function setActiveModel(id: string): Promise<void> {
   if (!id || typeof id !== "string") throw new Error("set_model: id required");
   if (id === activeModelId) return;
-  console.log(`[hai] switching active model: ${activeModelId} → ${id}`);
+  console.log(`[castle] switching active model: ${activeModelId} → ${id}`);
   activeModelId = id;
   await writeModelsJson();
   await resetAgentSession();

@@ -6,21 +6,21 @@
 // undocumented endpoints during development.
 //
 // Usage:
-//   docker compose exec hai deno run --allow-all scripts/ws.ts \
+//   docker compose exec castledeno run --allow-all scripts/ws.ts \
 //     --type get_states
 //
-//   docker compose exec hai deno run --allow-all scripts/ws.ts \
+//   docker compose exec castledeno run --allow-all scripts/ws.ts \
 //     --type 'config/area_registry/list'
 //
 //   # Send a command with extra fields by passing JSON via --data.
-//   docker compose exec hai deno run --allow-all scripts/ws.ts \
+//   docker compose exec castledeno run --allow-all scripts/ws.ts \
 //     --type trace/list --data '{"domain":"automation","item_id":"123"}'
 //
 //   # Or pipe a complete JSON command on stdin (--type omitted):
-//   echo '{"type":"get_services"}' | docker compose exec -T hai \
+//   echo '{"type":"get_services"}' | docker compose exec -T castle \
 //     deno run --allow-all scripts/ws.ts --stdin
 //
-// HA_URL and HA_TOKEN come from the environment (already set in the hai
+// HA_URL and HA_TOKEN come from the environment (already set in the castle
 // container). Output is the raw JSON of every response frame, one per line,
 // pretty-printed.
 

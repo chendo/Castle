@@ -15,7 +15,7 @@ import { ALL_TOOL_NAMES, loadSettings, saveSettings, type ToolName } from "./set
 const HA_URL = Deno.env.get("HA_URL") ?? "http://homeassistant.local:8123";
 const HA_TOKEN = Deno.env.get("HA_TOKEN") ?? "";
 const PORT = Number(Deno.env.get("PORT") ?? "7090");
-const AUTH_TOKEN = Deno.env.get("HAI_AUTH_TOKEN") ?? "";
+const AUTH_TOKEN = Deno.env.get("CASTLE_AUTH_TOKEN") ?? "";
 
 const ha = new HAClient(HA_URL, HA_TOKEN);
 
@@ -38,9 +38,9 @@ async function regenerateCatalog(): Promise<void> {
     const agentsMd = buildAgentsMd({ houseInfo, services: servicesData, catalog: catalogData });
     const agentDir = new URL(".pi-agent/", import.meta.url).pathname.replace(/\/$/, "");
     await Deno.writeTextFile(`${agentDir}/AGENTS.md`, agentsMd);
-    console.log(`[hai] catalog refreshed (${exposed ? exposed.size : 'all'} entities, ${Object.keys(services).length} service domains)`);
+    console.log(`[castle] catalog refreshed (${exposed ? exposed.size : 'all'} entities, ${Object.keys(services).length} service domains)`);
   } catch (err) {
-    console.error(`[hai] catalog refresh failed:`, (err as Error).message);
+    console.error(`[castle] catalog refresh failed:`, (err as Error).message);
   }
 }
 
@@ -72,13 +72,13 @@ function setupHaSupervisor(): void {
         const exposedList = await ha.getExposedEntities();
         const n = exposedList ? exposedList.length : "all";
         if (!firstReady) {
-          console.log(`[hai] ready (${n} entities)`);
+          console.log(`[castle] ready (${n} entities)`);
           firstReady = true;
         } else {
-          console.log(`[hai] reconnected (${n} entities)`);
+          console.log(`[castle] reconnected (${n} entities)`);
         }
       } catch (err) {
-        console.error("[hai] post-connect setup failed:", (err as Error).message);
+        console.error("[castle] post-connect setup failed:", (err as Error).message);
       }
     })();
     // Wire the long-running periodic refresh once, on the first successful connect.
@@ -537,7 +537,7 @@ async function handleSocket(socket: WebSocket): Promise<void> {
         for (const ws of sockets) {
           if (ws.readyState === WebSocket.OPEN) ws.send(snap);
         }
-        console.log(`[hai] active model set to ${id}`);
+        console.log(`[castle] active model set to ${id}`);
       } catch (err) {
         socket.send(JSON.stringify({ type: "error", message: `set_model failed: ${(err as Error).message}` }));
       }

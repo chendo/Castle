@@ -2,18 +2,18 @@
 # Run all checks: deno typecheck + lint, web tsc.
 # Used by the pre-commit hook and runnable manually.
 #
-# Speed: prefers `docker compose exec` (warm hai container). Falls back to
-# `docker compose run --rm` (cold start) if hai isn't running.
+# Speed: prefers `docker compose exec` (warm castle container). Falls back to
+# `docker compose run --rm` (cold start) if castle isn't running.
 
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
 deno_run() {
-  if docker compose ps --status running --services 2>/dev/null | grep -q '^hai$'; then
-    docker compose exec -T hai "$@"
+  if docker compose ps --status running --services 2>/dev/null | grep -q '^castle$'; then
+    docker compose exec -T castle "$@"
   else
-    docker compose run --rm hai "$@"
+    docker compose run --rm castle "$@"
   fi
 }
 

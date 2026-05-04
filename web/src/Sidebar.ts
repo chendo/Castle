@@ -21,8 +21,8 @@ function stateClass(s: string): string {
   return "";
 }
 
-const OPEN_DOMAINS_KEY = "hai-sidebar-open-domains";
-const HIDE_UNEXPOSED_KEY = "hai-sidebar-hide-unexposed";
+const OPEN_DOMAINS_KEY = "castle-sidebar-open-domains";
+const HIDE_UNEXPOSED_KEY = "castle-sidebar-hide-unexposed";
 
 function loadOpenDomains(): Set<string> {
   try {

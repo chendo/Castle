@@ -32,7 +32,7 @@ const sessions = new SessionsStore();
 const customProviders = new CustomProvidersStore();
 
 const backend = new IndexedDBStorageBackend({
-  dbName: "hai-web",
+  dbName: "castle-web",
   version: 1,
   stores: [
     settings.getConfig(),

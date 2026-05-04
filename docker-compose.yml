@@ -1,7 +1,7 @@
 services:
-  hai:
+  castle:
     build: .
-    container_name: hai
+    container_name: castle
     volumes:
       - .:/workspace
       - deno-cache:/root/.cache/deno
@@ -17,15 +17,15 @@ services:
     # If your runtime needs a custom host alias (Lima, Podman, etc.), put it in
     # a local `docker-compose.override.yml` (gitignored) — for example:
     #   services:
-    #     hai:
+    #     castle:
     #       extra_hosts:
     #         - "host.docker.internal:192.0.2.10"
     ports:
-      - "127.0.0.1:${HAI_PORT:-7091}:7090"
+      - "127.0.0.1:${CASTLE_PORT:-7091}:7090"
     restart: unless-stopped
 
   # One-shot build service: `docker compose run --rm web-build`
-  # Writes web/dist/ on the host (via the workspace mount); hai serves from there.
+  # Writes web/dist/ on the host (via the workspace mount); castle serves from there.
   web-build:
     image: node:20-alpine
     working_dir: /workspace/web
@@ -37,10 +37,10 @@ services:
   # Continuous rebuild during frontend iteration.
   # Start with: `docker compose --profile dev up -d web-watch`
   # Stop with:  `docker compose --profile dev stop web-watch`
-  # hai keeps serving web/dist/ — refresh the browser after each rebuild.
+  # castle keeps serving web/dist/ — refresh the browser after each rebuild.
   web-watch:
     image: node:20-alpine
-    container_name: hai-web-watch
+    container_name: castle-web-watch
     working_dir: /workspace/web
     volumes:
       - .:/workspace

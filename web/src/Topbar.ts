@@ -3,7 +3,7 @@ import { openSettingsDialog } from "./SettingsDialog";
 
 /**
  * Lightweight topbar above the ChatPanel. Shows:
- *   [● hai]  connected · 115 entities · Qwen3-35B    [⟲ New chat]
+ *   [● Castle]  connected · 115 entities · Qwen3-35B    [⟲ New chat]
  *
  * - Status dot reflects WS connection (red until first open, green while open).
  * - HA-side connectivity / entity count comes from /health, polled every 5s.
@@ -40,7 +40,7 @@ export function buildTopbar(agent: WebSocketRemoteAgent, onToggleSidebar?: () =>
   dot.style.cssText = "width: 8px; height: 8px; border-radius: 50%; background: #ef4444; transition: background 200ms; flex-shrink: 0;";
 
   const logo = document.createElement("span");
-  logo.textContent = "hai";
+  logo.textContent = "Castle";
   logo.style.cssText = "font-weight: 700; color: var(--primary, #58a6ff);";
 
   const status = document.createElement("span");
