@@ -106,29 +106,54 @@ async function regenerateCatalog(): Promise<void> {
   }
 }
 
-async function connectWithRetry(): Promise<void> {
-  for (let attempt = 1; ; attempt++) {
-    try {
-      await ha.connect();
-      const exposedList = await ha.getExposedEntities();
-      const exposed = exposedList ? new Set(exposedList) : undefined;
-      // Write static entity catalog to AGENTS.md once connected — this becomes the cached system prompt
-      await regenerateCatalog();
-      console.log(`[hai] ready (${exposed ? exposed.size : 'all'} entities)`);
+/**
+ * Bootstrap and supervision: wire callbacks once, then hand off to HAClient's
+ * own connect/retry loop. start() returns after the first attempt settles; the
+ * loop continues in the background indefinitely. Every successful (re)connect
+ * triggers a catalog refresh; transitions also flush a health frame to the UI.
+ */
+function setupHaSupervisor(): void {
+  let firstReady = false;
+  let catalogTimer: number | undefined;
 
-      // Regenerate catalog every 5 minutes to pick up area/entity changes
-      setInterval(regenerateCatalog, 5 * 60 * 1000);
-      // Once HA is alive, fan state_changed events out to any WS clients.
-      wireStateBroadcast();
-      // Broadcast a fresh health frame whenever HA flips state (online→offline
-      // or recovers). UI listens for these instead of polling /health.
-      ha.onConnectionChange(() => broadcastHealth());
+  ha.onConnectionChange((connected) => {
+    broadcastHealth();
+    if (!connected) {
+      // Stop the catalog timer while disconnected; restart on next reconnect.
+      if (catalogTimer !== undefined) {
+        clearInterval(catalogTimer);
+        catalogTimer = undefined;
+      }
       return;
-    } catch (err) {
-      console.error(`[hai] connection attempt ${attempt} failed:`, (err as Error).message);
-      await new Promise((r) => setTimeout(r, 5_000));
     }
-  }
+    // Connected (or reconnected). Refresh catalog so AGENTS.md picks up any
+    // entity / area changes that happened while we were offline.
+    void (async () => {
+      try {
+        await regenerateCatalog();
+        const exposedList = await ha.getExposedEntities();
+        const n = exposedList ? exposedList.length : "all";
+        if (!firstReady) {
+          console.log(`[hai] ready (${n} entities)`);
+          firstReady = true;
+        } else {
+          console.log(`[hai] reconnected (${n} entities)`);
+        }
+      } catch (err) {
+        console.error("[hai] post-connect setup failed:", (err as Error).message);
+      }
+    })();
+    // Wire the long-running periodic refresh once, on the first successful connect.
+    if (catalogTimer === undefined) {
+      catalogTimer = setInterval(regenerateCatalog, 5 * 60 * 1000);
+    }
+  });
+
+  // Single state_changed → WS broadcast wiring; the listener registry survives
+  // HA reconnects so this only needs to run once.
+  wireStateBroadcast();
+
+  void ha.start();
 }
 
 const WEB_DIST = new URL("web/dist/", import.meta.url).pathname;
@@ -452,6 +477,10 @@ async function handleSocket(socket: WebSocket): Promise<void> {
   sockets.add(socket);
   // Notify any existing clients that ws_clients went up.
   broadcastHealth();
+  // A user just opened the UI — if HA is currently down and we're sitting on
+  // a multi-minute backoff window, kick a fresh connect attempt now so the
+  // user doesn't have to wait it out.
+  ha.ensureConnected();
 
   socket.onopen = async () => {
     try {
@@ -585,5 +614,5 @@ async function handleSocket(socket: WebSocket): Promise<void> {
 }
 
 await writeModelsJson();
-connectWithRetry(); // background — server starts immediately
+setupHaSupervisor(); // wires HAClient's auto-reconnect loop; runs in background
 Deno.serve({ port: PORT }, handler);

@@ -41,6 +41,15 @@ export interface HouseInfo {
 
 type Pending = { resolve: (v: unknown) => void; reject: (e: unknown) => void };
 
+function formatBackoff(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return rem === 0 ? `${m}min` : `${m}m${rem}s`;
+}
+
 export class HAClient {
   private ws!: WebSocket;
   private states = new Map<string, HAState>();
@@ -49,13 +58,96 @@ export class HAClient {
   private _connected = false;
   private exposedEntities: Set<string> | undefined = undefined;
 
+  // Reconnect state. Backoff doubles every failure up to maxReconnectDelay,
+  // resets to minReconnectDelay on a successful auth_ok.
+  private connectingPromise: Promise<void> | undefined;
+  private reconnectTimer: number | undefined;
+  private currentDelay = 1_000;
+  private readonly minReconnectDelay = 1_000;
+  private readonly maxReconnectDelay = 5 * 60 * 1_000;
+  private shutdownRequested = false;
+
   constructor(private url: string, private token: string) {}
 
-  async connect(): Promise<void> {
+  /**
+   * Kick off the connection loop. Returns once the FIRST attempt has settled
+   * (success or failure); the auto-reconnect loop continues in the background
+   * regardless. Subsequent calls while connected/connecting are no-ops.
+   */
+  async start(): Promise<void> {
+    this.shutdownRequested = false;
+    await this.attemptConnect();
+  }
+
+  /**
+   * Cancel any backoff timer and try to reconnect immediately. Called when a
+   * browser opens a WS — the user is presumably here to do something, so the
+   * UX is better if we don't make them wait out a 5-minute backoff window.
+   * Resets the backoff so subsequent failures start fresh.
+   */
+  ensureConnected(): void {
+    if (this._connected || this.connectingPromise || this.shutdownRequested) return;
+    if (this.reconnectTimer !== undefined) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
+    this.currentDelay = this.minReconnectDelay;
+    void this.attemptConnect();
+  }
+
+  /**
+   * Stop the auto-reconnect loop. Closes the socket if open. After this no
+   * further reconnects happen unless start() is called again.
+   */
+  shutdown(): void {
+    this.shutdownRequested = true;
+    if (this.reconnectTimer !== undefined) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
+    if (this._connected) this.ws.close();
+  }
+
+  private async attemptConnect(): Promise<void> {
+    if (this.shutdownRequested || this._connected || this.connectingPromise) {
+      return this.connectingPromise;
+    }
+    this.connectingPromise = this.connectOnce()
+      .then(() => {
+        // Successful auth → reset backoff so a future drop starts at minimum.
+        this.currentDelay = this.minReconnectDelay;
+      })
+      .catch((err) => {
+        // Don't schedule from here — the WebSocket onclose handler always
+        // follows onerror/auth_invalid and will schedule. Just log and let it.
+        console.warn(`[ha] connect failed: ${(err as Error).message}`);
+      })
+      .finally(() => {
+        this.connectingPromise = undefined;
+      });
+    return this.connectingPromise;
+  }
+
+  private scheduleReconnect(): void {
+    if (this.shutdownRequested) return;
+    if (this.reconnectTimer !== undefined) return;
+    if (this._connected || this.connectingPromise) return;
+    const delay = this.currentDelay;
+    // Bump the next-attempt delay BEFORE setting the timer so concurrent
+    // failures don't all see the same value.
+    this.currentDelay = Math.min(delay * 2, this.maxReconnectDelay);
+    console.warn(`[ha] reconnecting in ${formatBackoff(delay)}`);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
+      void this.attemptConnect();
+    }, delay);
+  }
+
+  private connectOnce(): Promise<void> {
     const wsUrl = this.url.replace(/^http/, "ws").replace(/\/?$/, "") + "/api/websocket";
     console.log(`[ha] connecting to ${wsUrl}`);
 
-    await new Promise<void>((resolve, reject) => {
+    return new Promise<void>((resolve, reject) => {
       this.ws = new WebSocket(wsUrl);
 
       this.ws.onmessage = async (ev) => {
@@ -68,9 +160,16 @@ export class HAClient {
             this._connected = true;
             this.notifyConnection(true);
             console.log(`[ha] authenticated (HA ${msg.ha_version})`);
-            await this.fetchAllStates();
-            await this.subscribeStateChanges();
-            resolve();
+            try {
+              await this.fetchAllStates();
+              await this.subscribeStateChanges();
+              resolve();
+            } catch (err) {
+              // Connection dropped mid-bootstrap; the socket's onclose will
+              // fire and trigger reconnect. Reject the connect Promise so
+              // the supervisor sees this attempt as failed.
+              reject(err);
+            }
             break;
           case "auth_invalid":
             reject(new Error(`HA auth failed: ${msg.message}`));
@@ -88,8 +187,22 @@ export class HAClient {
       this.ws.onclose = () => {
         const wasConnected = this._connected;
         this._connected = false;
-        if (wasConnected) this.notifyConnection(false);
-        console.warn("[ha] websocket closed");
+        // Clear connectingPromise synchronously — the failing connect Promise
+        // hasn't drained its .catch/.finally yet (microtasks queued from
+        // reject() haven't run), but for purposes of "are we currently
+        // attempting?" the answer is no. Without this, scheduleReconnect
+        // immediately below would see connectingPromise still set and bail.
+        this.connectingPromise = undefined;
+        if (wasConnected) {
+          this.notifyConnection(false);
+          console.warn("[ha] websocket closed");
+        }
+        // Reject any pending in-flight calls; they'd hang forever otherwise.
+        for (const [, p] of this.pending) p.reject(new Error("HA connection closed"));
+        this.pending.clear();
+        // onclose follows both onerror and a clean session drop, so funneling
+        // reconnect scheduling here is the single point of truth.
+        this.scheduleReconnect();
       };
     });
   }
