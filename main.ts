@@ -120,6 +120,9 @@ async function connectWithRetry(): Promise<void> {
       setInterval(regenerateCatalog, 5 * 60 * 1000);
       // Once HA is alive, fan state_changed events out to any WS clients.
       wireStateBroadcast();
+      // Broadcast a fresh health frame whenever HA flips state (online→offline
+      // or recovers). UI listens for these instead of polling /health.
+      ha.onConnectionChange(() => broadcastHealth());
       return;
     } catch (err) {
       console.error(`[hai] connection attempt ${attempt} failed:`, (err as Error).message);
@@ -364,6 +367,26 @@ async function ensureAgentBroadcast(): Promise<void> {
   console.log("[ws] agent broadcast wired");
 }
 
+function buildHealth() {
+  return {
+    ok: ha.isConnected,
+    entities: ha.getAllStates().length,
+    ws_clients: sockets.size,
+    query_count: queryCount,
+    last_query_at: lastQueryAt ? new Date(lastQueryAt).toISOString() : null,
+    auth_required: AUTH_TOKEN !== "",
+  };
+}
+
+function broadcastHealth(): void {
+  const frame = JSON.stringify({ type: "health", health: buildHealth() });
+  for (const ws of sockets) {
+    if (ws.readyState === WebSocket.OPEN) {
+      try { ws.send(frame); } catch { /* ignore */ }
+    }
+  }
+}
+
 /** Convert HA state list to the entity shape the sidebar / entity-detail UIs use. */
 function serializeStates() {
   return ha.getAllStates().map((s) => ({
@@ -427,6 +450,8 @@ function serializeSnapshot(session: Awaited<ReturnType<typeof getAgentSession>>)
 
 async function handleSocket(socket: WebSocket): Promise<void> {
   sockets.add(socket);
+  // Notify any existing clients that ws_clients went up.
+  broadcastHealth();
 
   socket.onopen = async () => {
     try {
@@ -451,6 +476,9 @@ async function handleSocket(socket: WebSocket): Promise<void> {
         // has to poll /states. After this the broadcast loop sends a
         // state_change frame for every HA state_changed event.
         socket.send(JSON.stringify({ type: "states_snapshot", states: serializeStates() }));
+        // Initial health frame; further updates are pushed when HA flips
+        // connection state or via broadcastHealth() on prompt activity.
+        socket.send(JSON.stringify({ type: "health", health: buildHealth() }));
       } catch (err) {
         socket.send(JSON.stringify({ type: "error", message: (err as Error).message }));
       }
@@ -467,6 +495,7 @@ async function handleSocket(socket: WebSocket): Promise<void> {
       console.log(`[query] ${text}`);
       lastQueryAt = Date.now();
       queryCount++;
+      broadcastHealth();
       await ensureAgentBroadcast();
       submitPrompt(text, ha);
       return;
@@ -550,8 +579,9 @@ async function handleSocket(socket: WebSocket): Promise<void> {
     }
   };
 
-  socket.onclose = () => sockets.delete(socket);
-  socket.onerror = () => sockets.delete(socket);
+  // Other clients see ws_clients change when this socket leaves; tell them.
+  socket.onclose = () => { sockets.delete(socket); broadcastHealth(); };
+  socket.onerror = () => { sockets.delete(socket); broadcastHealth(); };
 }
 
 await writeModelsJson();

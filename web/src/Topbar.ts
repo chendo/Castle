@@ -1,13 +1,5 @@
-import type { WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
+import type { HealthSnapshot, WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
 import { openSettingsDialog } from "./SettingsDialog";
-
-interface HealthSnapshot {
-  ok: boolean;
-  entities: number;
-  ws_clients: number;
-  query_count: number;
-  last_query_at: string | null;
-}
 
 /**
  * Lightweight topbar above the ChatPanel. Shows:
@@ -131,17 +123,13 @@ export function buildTopbar(agent: WebSocketRemoteAgent, onToggleSidebar?: () =>
   // Re-render when the snapshot arrives (so model name shows up).
   agent.subscribe(() => renderStatus());
 
-  const pollHealth = async () => {
-    try {
-      const res = await fetch("/health");
-      if (res.ok) {
-        health = await res.json();
-        renderStatus();
-      }
-    } catch { /* ignore */ }
+  // Health is pushed by the server: with the initial hello reply, and again
+  // whenever HA flips connection / a new prompt fires / a ws client joins or
+  // leaves. No polling needed.
+  agent.onHealth = (h) => {
+    health = h;
+    renderStatus();
   };
-  pollHealth();
-  setInterval(pollHealth, 5000);
 
   renderStatus();
   return root;

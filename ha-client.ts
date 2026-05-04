@@ -66,6 +66,7 @@ export class HAClient {
             break;
           case "auth_ok":
             this._connected = true;
+            this.notifyConnection(true);
             console.log(`[ha] authenticated (HA ${msg.ha_version})`);
             await this.fetchAllStates();
             await this.subscribeStateChanges();
@@ -85,7 +86,9 @@ export class HAClient {
 
       this.ws.onerror = (e) => reject(e);
       this.ws.onclose = () => {
+        const wasConnected = this._connected;
         this._connected = false;
+        if (wasConnected) this.notifyConnection(false);
         console.warn("[ha] websocket closed");
       };
     });
@@ -110,6 +113,18 @@ export class HAClient {
   onStateChange(listener: (entityId: string, newState: HAState | null) => void): () => void {
     this.stateChangeListeners.add(listener);
     return () => { this.stateChangeListeners.delete(listener); };
+  }
+
+  private connectionListeners = new Set<(connected: boolean) => void>();
+  onConnectionChange(listener: (connected: boolean) => void): () => void {
+    this.connectionListeners.add(listener);
+    return () => { this.connectionListeners.delete(listener); };
+  }
+  private notifyConnection(connected: boolean): void {
+    for (const l of this.connectionListeners) {
+      try { l(connected); }
+      catch (err) { console.warn("[ha] connection listener threw:", (err as Error).message); }
+    }
   }
 
   private handleEvent(msg: EventMsg): void {

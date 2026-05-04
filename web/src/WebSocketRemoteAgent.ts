@@ -34,12 +34,22 @@ export type EntityStateChange =
   | EntityState
   | { entity_id: string; removed: true };
 
+export interface HealthSnapshot {
+  ok: boolean;
+  entities: number;
+  ws_clients: number;
+  query_count: number;
+  last_query_at: string | null;
+  auth_required: boolean;
+}
+
 type Frame =
   | { type: "snapshot"; state: any }
   | { type: "event"; event: AgentEvent }
   | { type: "settings"; settings: ServerSettings; all_tools: string[] }
   | { type: "states_snapshot"; states: EntityState[] }
   | { type: "state_change"; entity: EntityStateChange }
+  | { type: "health"; health: HealthSnapshot }
   | { type: "error"; message: string };
 
 /**
@@ -60,6 +70,8 @@ export class WebSocketRemoteAgent extends RemoteAgent {
   public onStatesSnapshot?: (states: EntityState[]) => void;
   /** Single entity update streamed as HA emits state_changed. */
   public onStateChange?: (change: EntityStateChange) => void;
+  /** Server health snapshot — pushed on hello and on HA / ws-client / query changes. */
+  public onHealth?: (health: HealthSnapshot) => void;
 
   constructor(url: string) {
     super({ model: PLACEHOLDER_MODEL });
@@ -117,6 +129,8 @@ export class WebSocketRemoteAgent extends RemoteAgent {
         this.onStatesSnapshot?.(frame.states);
       } else if (frame.type === "state_change") {
         this.onStateChange?.(frame.entity);
+      } else if (frame.type === "health") {
+        this.onHealth?.(frame.health);
       } else if (frame.type === "error") {
         console.error("[ws] server error:", frame.message);
         this.onError?.(frame.message);
