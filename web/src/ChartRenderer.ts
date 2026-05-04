@@ -16,6 +16,7 @@ import {
   Tooltip,
 } from "chart.js";
 import "chartjs-adapter-date-fns";
+import { formatDuration, getDuration } from "./ToolDurations";
 
 Chart.register(LineController, LineElement, PointElement, LinearScale, TimeScale, Filler, Legend, Tooltip);
 
@@ -157,7 +158,7 @@ class ChartToolRenderer implements ToolRenderer {
       : isStreaming ? "inprogress" : "complete";
 
     // Compact title — same args the agent saw, but trimmed to fit a chip:
-    //   "Chart: light.kitchen, light.lounge (24h) — Title"
+    //   "Chart: light.kitchen, light.lounge (24h) — Title  ·  120ms"
     //   "Chart: 5 entities (2026-05-04 09:00 → now)"
     const summary = (() => {
       if (!args) return "ha_render_chart";
@@ -167,7 +168,9 @@ class ChartToolRenderer implements ToolRenderer {
         ? `${shortIso(args.start_time)} → ${args.end_time ? shortIso(args.end_time) : "now"}`
         : `${args.hours ?? 24}h`;
       const title = args.title ? ` — ${args.title}` : "";
-      return `Chart: ${idLabel} (${range})${title}`;
+      const durationMs = result?.toolCallId ? getDuration(result.toolCallId) : undefined;
+      const durationSuffix = durationMs !== undefined ? `  ·  ${formatDuration(durationMs)}` : "";
+      return `Chart: ${idLabel} (${range})${title}${durationSuffix}`;
     })();
 
     const container = createRef<HTMLDivElement>();

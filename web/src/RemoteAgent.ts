@@ -1,5 +1,6 @@
 import type { AgentEvent, AgentMessage, AgentState, AgentTool } from "@mariozechner/pi-agent-core";
 import type { ImageContent, Model, TextContent } from "@mariozechner/pi-ai";
+import { recordEnd, recordStart } from "./ToolDurations";
 
 type Listener = (event: AgentEvent, signal: AbortSignal) => Promise<void> | void;
 
@@ -190,12 +191,14 @@ export class RemoteAgent {
         const next = new Set(this._pendingToolCalls);
         next.add(event.toolCallId);
         this._pendingToolCalls = next;
+        recordStart(event.toolCallId);
         break;
       }
       case "tool_execution_end": {
         const next = new Set(this._pendingToolCalls);
         next.delete(event.toolCallId);
         this._pendingToolCalls = next;
+        recordEnd(event.toolCallId);
         break;
       }
       case "agent_end":

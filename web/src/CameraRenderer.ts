@@ -1,5 +1,6 @@
 import type { ToolResultMessage } from "@mariozechner/pi-ai";
 import { type ToolRenderer, type ToolRenderResult, registerToolRenderer, renderHeader } from "@mariozechner/pi-web-ui";
+import { formatDuration, getDuration } from "./ToolDurations";
 import { html } from "lit";
 import { createRef, ref } from "lit/directives/ref.js";
 import { Camera, Video } from "lucide";
@@ -127,7 +128,9 @@ class CameraToolRenderer implements ToolRenderer {
     const summary = (() => {
       if (!args) return "ha_show_camera";
       const head = `${live ? "Live" : "Snapshot"}: ${args.entity_id}`;
-      return args.title ? `${head} — ${args.title}` : head;
+      const withTitle = args.title ? `${head} — ${args.title}` : head;
+      const durationMs = result?.toolCallId ? getDuration(result.toolCallId) : undefined;
+      return durationMs !== undefined ? `${withTitle}  ·  ${formatDuration(durationMs)}` : withTitle;
     })();
 
     const container = createRef<HTMLDivElement>();
