@@ -24,6 +24,27 @@ services:
       - "127.0.0.1:${CASTLE_PORT:-7091}:7090"
     restart: unless-stopped
 
+  # Test-only Home Assistant instance using the `demo:` configuration.
+  # Provides a deterministic set of ~50 entities (lights, switches, climate,
+  # cameras, automations, dashboards, etc.) for reproducible integration tests.
+  ha-demo:
+    image: homeassistant/home-assistant:latest
+    container_name: ha-demo
+    volumes:
+      - ./tests/integration/ha-demo-config:/config
+      - /run/dbus:/run/dbus:ro
+    environment:
+      - TZ=UTC
+    ports:
+      - "127.0.0.1:${CASTLE_TEST_HA_PORT:-9123}:8123"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8123/api/"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    restart: unless-stopped
+
   # One-shot build service: `docker compose run --rm web-build`
   # Writes web/dist/ on the host (via the workspace mount); castle serves from there.
   web-build:
