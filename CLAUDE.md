@@ -58,6 +58,7 @@ Also re-read `AGENTS.md`, `CLAUDE.md`, and any nearby doc comments in the same p
 
 ## Committing
 
+- **Never use `git -C <path>`.** Triggers a permission prompt on every call. If your shell is somewhere other than the repo root (e.g. `web/` after a `tsc` run), `cd` to the repo root once and run plain `git`.
 - **One commit, one focused change.** A UI tweak, a tool-description edit, and a server-side bugfix are three commits even when they're all in the same session's dirty tree. Mixed commits are hostile to bisection, review, and `git revert` — split them.
 - **Validate before staging.** Either tests cover it end-to-end, or you ran the code and watched the new behaviour work (the page renders, the tool call succeeds, the flag actually toggles the thing). Never commit a change you haven't seen run.
 - **Subject line is for `git log --oneline` skimmers** — humans and agents both. Imperative mood, ≤ 72 chars, no trailing period. Bias toward "*what changed and why*" rather than "*how*": `Fix camera widget memory leak from per-instance body observer` beats `Refactor CameraRenderer.ts`. Make it findable from a one-line history grep.
