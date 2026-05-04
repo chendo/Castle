@@ -759,7 +759,13 @@ export function walkPath(root: unknown, path: string): { value: unknown; found: 
 /**
  * Render a top-level dashboard config as a compact summary so the model can
  * navigate without dragging the whole tree into context. Lists each view's
- * title, path, and card count, plus other top-level keys.
+ * title, path, and card / section / badge counts.
+ *
+ * Handles both layouts:
+ *  - Legacy / "masonry" view: cards live at view.cards[]
+ *  - Newer "sections" view: cards live at view.sections[].cards[]
+ *
+ * Both shapes are reported when present (rare but possible to mix).
  */
 export function summarizeDashboard(config: unknown): string {
   if (config == null || typeof config !== "object") return JSON.stringify(config);
@@ -772,9 +778,20 @@ export function summarizeDashboard(config: unknown): string {
       const view = v as Record<string, unknown>;
       const title = view.title ?? "(untitled)";
       const path = view.path ? ` [${view.path}]` : "";
-      const cards = Array.isArray(view.cards) ? view.cards.length : 0;
+      const directCards = Array.isArray(view.cards) ? view.cards.length : 0;
       const badges = Array.isArray(view.badges) ? view.badges.length : 0;
-      lines.push(`  views.${i}${path}: "${title}" — ${cards} cards${badges ? `, ${badges} badges` : ""}`);
+      const sections = Array.isArray(view.sections) ? view.sections : null;
+      const sectionCards = sections
+        ? sections.reduce((acc, s) => acc + (Array.isArray((s as Record<string, unknown>)?.cards) ? ((s as Record<string, unknown>).cards as unknown[]).length : 0), 0)
+        : 0;
+
+      const parts: string[] = [];
+      if (sections) parts.push(`${sections.length} section${sections.length === 1 ? "" : "s"} (${sectionCards} card${sectionCards === 1 ? "" : "s"})`);
+      if (directCards > 0) parts.push(`${directCards} card${directCards === 1 ? "" : "s"} top-level`);
+      if (!sections && directCards === 0) parts.push("0 cards");
+      if (badges > 0) parts.push(`${badges} badge${badges === 1 ? "" : "s"}`);
+
+      lines.push(`  views.${i}${path}: "${title}" — ${parts.join(", ")}`);
     });
   }
   const topKeys = Object.keys(obj).filter((k) => k !== "views");
@@ -788,8 +805,115 @@ export function summarizeDashboard(config: unknown): string {
     }
   }
   lines.push("");
-  lines.push("To drill in, call again with `path=views.0` (or `views.0.cards.3`, etc.).");
+  lines.push("To drill in, call again with `path=views.0` (or `views.0.sections.0.cards.3`, etc.).");
   return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Stubbed dashboard drill-down renderer.
+//
+// At any drill path, render the value as JSON BUT collapse oversized child
+// objects/arrays into one-line stub strings that include the drill path.
+// Lets the agent walk N layers deep without dragging the whole subtree into
+// context on every step.
+// ---------------------------------------------------------------------------
+
+const DASHBOARD_LEAF_BUDGET = 800; // bytes — anything below this is rendered verbatim
+const DASHBOARD_STUB_MAX = 80;     // chars — per-stub line cap before truncation
+
+/**
+ * Build a one-line stub describing `value` at `path`. Used for child entries
+ * inside an oversized container so the agent can decide whether to drill in.
+ *
+ * Picks a few characteristic fields (type + entity/area/title/name + nested
+ * array counts) so the stub is informative without being huge.
+ */
+export function dashboardStubLine(value: unknown, path: string): string {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    // Scalars / arrays at this level are rare; fall back to a short JSON cut.
+    const s = JSON.stringify(value);
+    return `<${truncate(s, DASHBOARD_STUB_MAX)} · drill: ${path}>`;
+  }
+  const obj = value as Record<string, unknown>;
+  const fields: string[] = [];
+  if (typeof obj.type === "string") fields.push(String(obj.type));
+
+  const idKeys = ["entity", "area", "name", "title", "entity_id", "label"] as const;
+  for (const k of idKeys) {
+    const v = obj[k];
+    if (typeof v === "string") {
+      fields.push(`${k}=${truncate(v, 40)}`);
+      break;
+    }
+  }
+
+  // Surface array sizes — useful for sections/cards/entities/features.
+  for (const k of ["sections", "cards", "entities", "features", "rows"]) {
+    const v = obj[k];
+    if (Array.isArray(v)) fields.push(`${v.length} ${k}`);
+  }
+
+  const summary = fields.length > 0 ? fields.join(" · ") : "(object)";
+  return `<${truncate(summary, DASHBOARD_STUB_MAX)} · drill: ${path}>`;
+}
+
+function truncate(s: string, max: number): string {
+  return s.length <= max ? s : s.slice(0, max - 1) + "…";
+}
+
+/**
+ * Recursive size-aware renderer. If the entire value JSON-stringifies under
+ * the leaf budget, emit verbatim. Otherwise emit a JSON object/array where
+ * children that are themselves over budget become stub strings.
+ *
+ * Result is a JSON string the agent can parse — stubs appear as string values
+ * containing the drill path.
+ */
+export function renderDashboardNode(value: unknown, path: string): string {
+  return JSON.stringify(stubify(value, path), null, 2);
+}
+
+function stubify(value: unknown, path: string): unknown {
+  if (value === null || typeof value !== "object") return value;
+  const full = JSON.stringify(value);
+  if (full.length <= DASHBOARD_LEAF_BUDGET) return value;
+
+  // Past the budget — stub ALL complex children at this level (regardless of
+  // individual size) so the agent gets a consistent "drill list" view.
+  // Mixing inlined small cards with stubbed big ones makes the structure
+  // harder to scan. Scalar fields and arrays-of-scalars stay verbatim because
+  // they're cheap and informative.
+
+  if (Array.isArray(value)) {
+    return value.map((item, i) => {
+      if (item === null || typeof item !== "object") return item;
+      const childPath = path ? `${path}.${i}` : String(i);
+      return dashboardStubLine(item, childPath);
+    });
+  }
+
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    const childPath = path ? `${path}.${k}` : k;
+    if (v === null || typeof v !== "object") {
+      out[k] = v;
+      continue;
+    }
+    // Arrays of scalars stay verbatim — they're informative and cheap.
+    if (Array.isArray(v) && v.every((x) => x === null || typeof x !== "object")) {
+      out[k] = v;
+      continue;
+    }
+    if (Array.isArray(v)) {
+      out[k] = v.map((item, i) => {
+        if (item === null || typeof item !== "object") return item;
+        return dashboardStubLine(item, `${childPath}.${i}`);
+      });
+    } else {
+      out[k] = dashboardStubLine(v, childPath);
+    }
+  }
+  return out;
 }
 
 /**
@@ -1482,8 +1606,14 @@ export function buildTools(
           if (!found) {
             return ok(`Path "${params.path}" not found in dashboard "${params.name}". Call without \`path\` for the top-level summary.`);
           }
-          const text = JSON.stringify(value, null, 2);
-          return okText(text, { maxBytes: 16 * 1024, hint: "drill deeper with a longer `path`" });
+          // Stubbed renderer: collapses oversized children to one-line stubs
+          // with their drill paths so a deep dashboard doesn't blow context.
+          // Stubs look like: "<area · area=office · drill: views.0.sections.0.cards.1>"
+          const text = renderDashboardNode(value, params.path);
+          return okText(text, {
+            maxBytes: 16 * 1024,
+            hint: "stubs ('<… · drill: <path>>') mark oversized children — pass that path to drill in",
+          });
         } catch (err) {
           return ok(`Failed to fetch dashboard "${params.name}": ${(err as Error).message}`);
         }
@@ -1491,37 +1621,9 @@ export function buildTools(
     },
 
     {
-      name: "ha_modify_dashboard",
-      label: "Modify Dashboard",
-      description: "Replace a Lovelace dashboard's full config. Destructive — overwrites the entire dashboard. Workflow: call ha_get_dashboard to fetch the current config, modify it, then call this with the complete new config. Use '(default)' for the main dashboard.",
-      parameters: Type.Object({
-        name: Type.String({ description: "Dashboard url_path. Use '(default)' for the main dashboard." }),
-        config: Type.Record(Type.String(), Type.Unknown(), { description: "Complete new dashboard config (views, cards, etc)" }),
-      }),
-      async execute(
-        _id: string,
-        params: { name: string; config: Record<string, unknown> },
-      ): Promise<ToolResult> {
-        try {
-          await ha.call({
-            type: "lovelace/config/save",
-            url_path: params.name === "(default)" ? null : params.name,
-            config: params.config,
-          });
-          // The cached copy is now stale — drop it so a follow-up ha_get_dashboard
-          // re-fetches the freshly-saved config instead of returning what we wrote.
-          dashboardCache.delete(params.name);
-          return ok(`Dashboard "${params.name}" updated.`);
-        } catch (err) {
-          return ok(`Failed to update "${params.name}": ${(err as Error).message}`);
-        }
-      },
-    },
-
-    {
       name: "ha_edit_dashboard",
       label: "Edit Dashboard",
-      description: "Apply a list of partial edits to a dashboard. Use this instead of ha_modify_dashboard when you only want to change a few fields — saves the agent from regenerating the entire YAML. ALWAYS call ha_get_dashboard first so you know the current path layout. Each op uses the same dotted path syntax (e.g. `views.0.cards.3`) you used to drill in. Three op kinds:\n  - {op: 'set', path, value} — replace value at path; if parent is an array, key must be an existing index (use 'insert' to add).\n  - {op: 'delete', path} — remove the item at path. Object key, or array element (others shift down).\n  - {op: 'insert', path, value, index?} — insert into the array AT path (path itself points at the array). index defaults to end. Bounds: 0..array.length.\nOps apply in order, atomic — if any op fails, nothing is written. Top-level shape (must have at least one view) is checked after the ops apply. Entity_ids and service names referenced in the post-edit config are validated against the live registry; unknowns produce warnings (saved anyway). Use '(default)' for the main dashboard.",
+      description: "Apply a list of partial edits to a dashboard. ALWAYS call ha_get_dashboard first so you know the current path layout. Each op uses the same dotted path syntax (e.g. `views.0.cards.3`) you used to drill in. Three op kinds:\n  - {op: 'set', path, value} — replace value at path; if parent is an array, key must be an existing index (use 'insert' to add).\n  - {op: 'delete', path} — remove the item at path. Object key, or array element (others shift down).\n  - {op: 'insert', path, value, index?} — insert into the array AT path (path itself points at the array). index defaults to end. Bounds: 0..array.length.\nOps apply in order, atomic — if any op fails, nothing is written. The response includes a per-op before/after diff of each op's parent so you can verify the change landed correctly without re-fetching. Top-level shape (must have at least one view) is checked after the ops apply. Entity_ids and service names referenced in the post-edit config are validated against the live registry; unknowns produce warnings (saved anyway). Use '(default)' for the main dashboard.",
       parameters: Type.Object({
         name: Type.String({ description: "Dashboard url_path. Use '(default)' for the main dashboard." }),
         ops: Type.Array(Type.Record(Type.String(), Type.Unknown()), { description: "Ordered list of edits (set/delete/insert)" }),

@@ -1,5 +1,5 @@
 import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@1";
-import { okText, okList, walkPath, summarizeDashboard } from "../tools.ts";
+import { dashboardStubLine, okText, okList, renderDashboardNode, summarizeDashboard, walkPath } from "../tools.ts";
 
 Deno.test("okText — under budget passes through unchanged", () => {
   const r = okText("hello world", { maxBytes: 1024 });
@@ -90,7 +90,7 @@ Deno.test("walkPath — non-numeric segment on array returns found=false", () =>
   assertEquals(r.found, false);
 });
 
-Deno.test("summarizeDashboard — lists views with title and card count", () => {
+Deno.test("summarizeDashboard — lists views with title and card count (legacy/masonry shape)", () => {
   const cfg = {
     title: "Main",
     views: [
@@ -100,20 +100,124 @@ Deno.test("summarizeDashboard — lists views with title and card count", () => 
   };
   const summary = summarizeDashboard(cfg);
   assertStringIncludes(summary, "views (2):");
-  assertStringIncludes(summary, "views.0");
   assertStringIncludes(summary, '"Home"');
-  assertStringIncludes(summary, "3 cards");
-  assertStringIncludes(summary, "1 badges");
-  assertStringIncludes(summary, "views.1");
+  assertStringIncludes(summary, "3 cards top-level");
+  assertStringIncludes(summary, "1 badge");
   assertStringIncludes(summary, '"Office"');
-  assertStringIncludes(summary, "2 cards");
-  // Top-level non-views key surfaces too.
+  assertStringIncludes(summary, "2 cards top-level");
   assertStringIncludes(summary, "title:");
-  // Drill-down hint mentions `path=`.
   assertStringIncludes(summary, "path=");
+});
+
+Deno.test("summarizeDashboard — section views report sections + total cards", () => {
+  const cfg = {
+    views: [{
+      title: "Home",
+      path: "home",
+      sections: [
+        { type: "grid", cards: [{}, {}, {}, {}, {}, {}, {}, {}, {}] }, // 9 cards
+        { type: "grid", cards: [{}, {}] }, // 2 cards
+      ],
+    }],
+  };
+  const summary = summarizeDashboard(cfg);
+  assertStringIncludes(summary, "2 sections");
+  assertStringIncludes(summary, "11 cards");
 });
 
 Deno.test("summarizeDashboard — handles missing views gracefully", () => {
   const summary = summarizeDashboard({ foo: "bar" });
   assertStringIncludes(summary, "foo:");
+});
+
+Deno.test("dashboardStubLine — picks type + identifying field + array counts", () => {
+  const out = dashboardStubLine(
+    { type: "area", area: "office", display_type: "compact", features: [{}, {}] },
+    "views.0.sections.0.cards.1",
+  );
+  assertStringIncludes(out, "area");
+  assertStringIncludes(out, "area=office");
+  assertStringIncludes(out, "2 features");
+  assertStringIncludes(out, "drill: views.0.sections.0.cards.1");
+});
+
+Deno.test("dashboardStubLine — falls back to (object) when no characteristic fields exist", () => {
+  const out = dashboardStubLine({}, "views.0");
+  assertStringIncludes(out, "(object)");
+  assertStringIncludes(out, "drill: views.0");
+});
+
+Deno.test("renderDashboardNode — small subtree renders verbatim", () => {
+  const card = { type: "entities", entities: ["light.kitchen"] };
+  const out = renderDashboardNode(card, "views.0.cards.0");
+  // No stub markers; full JSON is emitted.
+  const parsed = JSON.parse(out);
+  assertEquals(parsed.type, "entities");
+  assertEquals(parsed.entities, ["light.kitchen"]);
+});
+
+Deno.test("renderDashboardNode — oversized array children become stub strings", () => {
+  // Build a section's cards array large enough to blow the leaf budget but
+  // with each card individually large enough to also stub.
+  const bigCard = (n: number) => ({
+    type: "area",
+    area: `room_${n}`,
+    alert_classes: ["motion", "moisture", "occupancy"],
+    sensor_classes: ["temperature", "humidity", "carbon_dioxide", "pm25"],
+    display_type: "compact",
+    features_position: "inline",
+    grid_options: { columns: "full", rows: 1 },
+    tap_action: { action: "navigate", navigation_path: `/home/areas-room-${n}` },
+    features: [{ type: "area-controls", controls: ["light"] }],
+  });
+  const section = {
+    type: "grid",
+    cards: Array.from({ length: 6 }, (_, i) => bigCard(i)),
+  };
+  const out = renderDashboardNode(section, "views.0.sections.0");
+  const parsed = JSON.parse(out);
+  // type stays verbatim.
+  assertEquals(parsed.type, "grid");
+  // cards becomes an array of stub strings, each with its drill path.
+  assertEquals(parsed.cards.length, 6);
+  for (let i = 0; i < 6; i++) {
+    const stub = parsed.cards[i];
+    assertEquals(typeof stub, "string");
+    assertStringIncludes(stub, `drill: views.0.sections.0.cards.${i}`);
+    assertStringIncludes(stub, `area=room_${i}`);
+  }
+});
+
+Deno.test("renderDashboardNode — once stubbing kicks in, all complex children stub (consistent drill view)", () => {
+  // Bigger total → stubbing engaged. A tiny card and a verbose one should both
+  // appear as stub strings in the cards array, so the agent gets a uniform list.
+  const tiny = { type: "button", entity: "switch.a" };
+  const big = {
+    type: "area",
+    area: "office",
+    alert_classes: Array.from({ length: 100 }, (_, i) => `class_${i}_padding`),
+  };
+  const out = renderDashboardNode({ type: "grid", cards: [tiny, big] }, "views.0.sections.0");
+  const parsed = JSON.parse(out);
+  assertEquals(typeof parsed.cards[0], "string");
+  assertEquals(typeof parsed.cards[1], "string");
+  assertStringIncludes(parsed.cards[0], "button");
+  assertStringIncludes(parsed.cards[0], "drill: views.0.sections.0.cards.0");
+  assertStringIncludes(parsed.cards[1], "area=office");
+  assertStringIncludes(parsed.cards[1], "drill: views.0.sections.0.cards.1");
+});
+
+Deno.test("renderDashboardNode — oversized non-array object child stubs to one string", () => {
+  // tap_action is a small object on every card and would be inlined; but if
+  // someone shoves a huge nested object in there it should stub instead.
+  const big = {
+    type: "area",
+    massive_field: { padding: "x".repeat(2000) },
+  };
+  const out = renderDashboardNode(big, "views.0.sections.0.cards.0");
+  const parsed = JSON.parse(out);
+  // The container's small fields stay; the oversized child stubs.
+  assertEquals(parsed.type, "area");
+  assertEquals(typeof parsed.massive_field, "string");
+  assertStringIncludes(parsed.massive_field, "drill: views.0.sections.0.cards.0.massive_field");
 });

@@ -14,7 +14,6 @@ export const ALL_TOOL_NAMES = [
   "ha_get_logs",
   "ha_get_notifications",
   "ha_get_dashboard",
-  "ha_modify_dashboard",
   "ha_edit_dashboard",
   "ha_render_chart",
   "ha_show_camera",

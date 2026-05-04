@@ -103,15 +103,6 @@ const CONFIGS: Record<string, RendererConfig> = {
       return `ha_get_dashboard ${p.name}${path}`;
     },
   },
-  ha_modify_dashboard: {
-    icon: LayoutDashboard,
-    summarize: (p) => {
-      if (!p?.name) return "ha_modify_dashboard";
-      const cfg = p.config && typeof p.config === "object" ? p.config : null;
-      const views = Array.isArray(cfg?.views) ? cfg.views.length : 0;
-      return `ha_modify_dashboard ${p.name} (${views} view${views === 1 ? "" : "s"})`;
-    },
-  },
   ha_edit_dashboard: {
     icon: LayoutDashboard,
     summarize: (p) => {
