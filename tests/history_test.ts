@@ -3,9 +3,12 @@ import {
   alignBucketStart,
   buildBuckets,
   classifyHistory,
+  computeBucketDeltas,
   computeStats,
+  formatCumulativeHistorySummary,
   formatHistorySummary,
   formatStateChangeSummary,
+  isCumulativeStateClass,
   isNumericState,
   parseHistoryPoints,
   parseStateChanges,
@@ -373,6 +376,86 @@ Deno.test("formatHistorySummary — empty bucket inside an unavailable stretch r
   // The 00:10/00:15/00:20 buckets are skipped because their rendered value
   // ("unavail") matches the previous emitted bucket.
   assertEquals((out.match(/=unavail/g) ?? []).length, 1);
+});
+
+Deno.test("isCumulativeStateClass — recognises total_increasing and total", () => {
+  assertEquals(isCumulativeStateClass("total_increasing"), true);
+  assertEquals(isCumulativeStateClass("total"), true);
+  assertEquals(isCumulativeStateClass("measurement"), false);
+  assertEquals(isCumulativeStateClass(undefined), false);
+  assertEquals(isCumulativeStateClass(null), false);
+});
+
+Deno.test("computeBucketDeltas — sums positive deltas into the later sample's bucket", () => {
+  const start = new Date("2024-05-01T00:00:00Z");
+  const intervalMs = 60 * 60_000; // 1h
+  const points = [
+    // bucket 0 (00:00-01:00)
+    { value: 100.0, timestamp: new Date("2024-05-01T00:05:00Z"), rawIso: "" },
+    { value: 100.5, timestamp: new Date("2024-05-01T00:30:00Z"), rawIso: "" }, // +0.5
+    // bucket 1 (01:00-02:00)
+    { value: 101.7, timestamp: new Date("2024-05-01T01:15:00Z"), rawIso: "" }, // +1.2
+    { value: 102.0, timestamp: new Date("2024-05-01T01:45:00Z"), rawIso: "" }, // +0.3
+    // bucket 2 (02:00-03:00) — no readings
+    // bucket 3 (03:00-04:00)
+    { value: 102.4, timestamp: new Date("2024-05-01T03:10:00Z"), rawIso: "" }, // +0.4
+  ];
+  const { perBucket, total } = computeBucketDeltas(points, start.getTime(), intervalMs, 4);
+  assertEquals(perBucket.length, 4);
+  assertEquals(Math.round(perBucket[0] * 100) / 100, 0.5);
+  assertEquals(Math.round(perBucket[1] * 100) / 100, 1.5);
+  assertEquals(perBucket[2], 0);
+  assertEquals(Math.round(perBucket[3] * 100) / 100, 0.4);
+  assertEquals(Math.round(total * 100) / 100, 2.4);
+});
+
+Deno.test("computeBucketDeltas — meter reset counts the new value as accumulation since reset", () => {
+  const start = new Date("2024-05-01T00:00:00Z");
+  const intervalMs = 60 * 60_000;
+  const points = [
+    { value: 999.5, timestamp: new Date("2024-05-01T00:30:00Z"), rawIso: "" },
+    // Reset between samples; new reading is 0.4 — count that as the increase.
+    { value: 0.4, timestamp: new Date("2024-05-01T01:30:00Z"), rawIso: "" },
+    { value: 0.6, timestamp: new Date("2024-05-01T01:45:00Z"), rawIso: "" }, // +0.2
+  ];
+  const { perBucket, total } = computeBucketDeltas(points, start.getTime(), intervalMs, 2);
+  assertEquals(perBucket[0], 0);
+  // Bucket 1 = reset's 0.4 + the +0.2 step = 0.6
+  assertEquals(Math.round(perBucket[1] * 100) / 100, 0.6);
+  assertEquals(Math.round(total * 100) / 100, 0.6);
+});
+
+Deno.test("formatCumulativeHistorySummary — header has total + peak, body has +delta lines", () => {
+  const start = new Date("2024-05-01T00:00:00Z");
+  const end = new Date("2024-05-01T03:00:00Z");
+  const points = [
+    { value: 0.0, timestamp: new Date("2024-05-01T00:00:00Z"), rawIso: "" },
+    { value: 0.5, timestamp: new Date("2024-05-01T00:30:00Z"), rawIso: "" }, // bucket 0: +0.5
+    { value: 2.0, timestamp: new Date("2024-05-01T01:30:00Z"), rawIso: "" }, // bucket 1: +1.5 (peak)
+    { value: 2.1, timestamp: new Date("2024-05-01T02:45:00Z"), rawIso: "" }, // bucket 2: +0.1
+  ];
+  const out = formatCumulativeHistorySummary("sensor.energy", points, start, end, 60, "UTC", "kWh");
+  assertEquals(out.includes("[cumulative kWh]"), true);
+  assertEquals(/Total increase: 2\.1 kWh/.test(out), true);
+  assertEquals(/Peak: 2024-05-01 01:00 \(\+1\.5 kWh\)/.test(out), true);
+  assertEquals(/2024-05-01 00:00 \+0\.5/.test(out), true);
+  assertEquals(/2024-05-01 01:00 \+1\.5/.test(out), true);
+  assertEquals(/2024-05-01 02:00 \+0\.1/.test(out), true);
+});
+
+Deno.test("formatCumulativeHistorySummary — collapses runs of zero buckets", () => {
+  const start = new Date("2024-05-01T00:00:00Z");
+  const end = new Date("2024-05-01T05:00:00Z");
+  const points = [
+    { value: 100.0, timestamp: new Date("2024-05-01T00:30:00Z"), rawIso: "" },
+    { value: 100.0, timestamp: new Date("2024-05-01T03:30:00Z"), rawIso: "" }, // no change
+    { value: 100.5, timestamp: new Date("2024-05-01T04:30:00Z"), rawIso: "" }, // +0.5 in bucket 4
+  ];
+  const out = formatCumulativeHistorySummary("sensor.water", points, start, end, 60, "UTC", "m³");
+  // Only one "+0" line should survive between non-zero entries.
+  const zeroLines = out.split("\n").filter((l) => / \+0$/.test(l));
+  assertEquals(zeroLines.length, 1);
+  assertEquals(/2024-05-01 04:00 \+0\.5/.test(out), true);
 });
 
 Deno.test("pickAutoInterval — duration thresholds", () => {

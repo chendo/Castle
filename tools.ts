@@ -565,6 +565,101 @@ export function formatHistorySummary(
   return lines.join("\n");
 }
 
+/**
+ * Cumulative sensors (state_class total_increasing / total) read as a running
+ * total, not an instantaneous value. Showing min/max/avg of that running
+ * total is meaningless — the user wants to know how much it INCREASED in
+ * each bucket. Walk consecutive numeric points; the delta between adjacent
+ * samples is allocated to whichever bucket the LATER sample falls in. A
+ * negative delta is treated as a meter reset and counted as the new value
+ * (i.e. the accumulation since reset).
+ */
+export function isCumulativeStateClass(stateClass: unknown): boolean {
+  return stateClass === "total_increasing" || stateClass === "total";
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+export function computeBucketDeltas(
+  points: HistoryPoint[],
+  alignedStartMs: number,
+  intervalMs: number,
+  numBuckets: number,
+): { perBucket: number[]; total: number } {
+  const perBucket = new Array(numBuckets).fill(0);
+  let total = 0;
+  for (let i = 1; i < points.length; i++) {
+    const prev = points[i - 1];
+    const cur = points[i];
+    let inc = cur.value - prev.value;
+    // Negative delta → meter reset between samples. Treat the new reading as
+    // accumulation since the reset (i.e., `cur.value` post-reset is itself
+    // the increase). Edge case: if cur.value is also negative (shouldn't
+    // happen for total_increasing but possible for `total`), clamp to 0.
+    if (inc < 0) inc = Math.max(0, cur.value);
+    if (inc <= 0) continue;
+    const idx = Math.floor((cur.timestamp.getTime() - alignedStartMs) / intervalMs);
+    if (idx >= 0 && idx < numBuckets) {
+      perBucket[idx] += inc;
+      total += inc;
+    }
+  }
+  return { perBucket, total };
+}
+
+export function formatCumulativeHistorySummary(
+  entityId: string,
+  points: HistoryPoint[],
+  rangeStart: Date,
+  rangeEnd: Date,
+  intervalMin: number,
+  tz: string,
+  unit?: string,
+): string {
+  const durationMs = rangeEnd.getTime() - rangeStart.getTime();
+  const intervalMs = intervalMin * 60_000;
+  const alignedStartMs = alignBucketStart(rangeStart, intervalMs).getTime();
+  const numBuckets = Math.max(0, Math.ceil((rangeEnd.getTime() - alignedStartMs) / intervalMs));
+  const { perBucket, total } = computeBucketDeltas(points, alignedStartMs, intervalMs, numBuckets);
+
+  const lines: string[] = [];
+  const unitSuffix = unit ? ` ${unit}` : "";
+  lines.push(entityId);
+  lines.push(`${formatYMDHM(rangeStart, tz)} → ${formatYMDHM(rangeEnd, tz)} (${formatHumanDuration(durationMs)} @ ${intervalMin}min, ${numBuckets} buckets, ${points.length} samples) [cumulative${unitSuffix}]`);
+  lines.push(`Total increase: ${round2(total)}${unitSuffix}`);
+
+  // Peak bucket — useful for "when was the highest usage hour".
+  let peakIdx = -1;
+  let peakVal = 0;
+  for (let i = 0; i < perBucket.length; i++) {
+    if (perBucket[i] > peakVal) { peakVal = perBucket[i]; peakIdx = i; }
+  }
+  if (peakIdx >= 0) {
+    const peakStart = new Date(alignedStartMs + peakIdx * intervalMs);
+    lines.push(`Peak: ${formatYMDHM(peakStart, tz)} (+${round2(peakVal)}${unitSuffix})`);
+  }
+  lines.push("");
+
+  // Per-bucket deltas; collapse runs of zero so long quiet stretches don't
+  // dominate the output. Non-zero buckets always render so spikes stand out.
+  let lastWasZero = false;
+  for (let i = 0; i < perBucket.length; i++) {
+    const v = round2(perBucket[i]);
+    const bucketStart = new Date(alignedStartMs + i * intervalMs);
+    if (v === 0) {
+      if (lastWasZero) continue;
+      lines.push(`${formatYMDHM(bucketStart, tz)} +0`);
+      lastWasZero = true;
+    } else {
+      lines.push(`${formatYMDHM(bucketStart, tz)} +${v}`);
+      lastWasZero = false;
+    }
+  }
+  return lines.join("\n");
+}
+
 function splitPath(path: string): string[] {
   return path.split(".").filter((s) => s.length > 0);
 }
@@ -1897,7 +1992,7 @@ export function buildTools(
     {
       name: "ha_get_history",
       label: "Get History",
-      description: "Entity history. For numeric sensors: bucketed min/max at a chosen granularity (lines like '14:05=20.3/20.7'). For binary/enum entities (door, motion, lights, selects, etc.): a list of state changes with HH:MM:SS timestamps, batched per hour when very dense. interval_minutes only applies to the numeric path. Pass either `hours` (relative to now) OR start_time+end_time (ISO 8601).",
+      description: "Entity history. For instantaneous numeric sensors (temperature, power): bucketed min/max/avg at a chosen granularity. For cumulative sensors (energy in kWh, water in m3 — anything with state_class total_increasing / total): per-bucket increase amount and total over the window, with meter resets handled. For binary/enum entities (door, motion, lights, selects, etc.): a list of state changes with HH:MM:SS timestamps, batched per hour when very dense. interval_minutes only applies to numeric paths. Pass either `hours` (relative to now) OR start_time+end_time (ISO 8601).",
       parameters: Type.Object({
         entity_id: Type.String({ description: "Entity to get history for" }),
         hours: Type.Optional(Type.Number({ description: "Hours of history ending now. Ignored if start_time/end_time are set. Default 24." })),
@@ -1951,6 +2046,17 @@ export function buildTools(
             points.push({ value: parseFloat(c.state), timestamp: c.timestamp, rawIso: c.rawIso });
           }
           if (points.length === 0) return ok(`No history data for ${params.entity_id}`);
+          // history_during_period strips attributes, so check the live state
+          // cache for state_class. It's a config-time attribute that shouldn't
+          // change across the window, so the current value is authoritative.
+          const stateRow = ha.getState(params.entity_id);
+          const stateClass = stateRow?.attributes?.state_class;
+          const unit = typeof stateRow?.attributes?.unit_of_measurement === "string"
+            ? stateRow.attributes.unit_of_measurement as string
+            : undefined;
+          if (isCumulativeStateClass(stateClass)) {
+            return okText(formatCumulativeHistorySummary(params.entity_id, points, start, end, intervalMin, tz, unit), { maxBytes: 16 * 1024 });
+          }
           return okText(formatHistorySummary(params.entity_id, points, changes, start, end, intervalMin, tz), { maxBytes: 16 * 1024 });
         }
         return okText(formatStateChangeSummary(params.entity_id, changes, start, end, tz), { maxBytes: 16 * 1024 });
