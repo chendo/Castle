@@ -110,12 +110,35 @@ Deno.test("formatAutomationTrace — surfaces trigger, steps, and errors", () =>
       }],
     },
   };
-  const out = formatAutomationTrace(trace);
+  const out = formatAutomationTrace(trace, "UTC");
   assert(out.includes("Automation 1234 run abc"));
   assert(out.includes("State: stopped"));
   assert(/Trigger: state of binary_sensor\.front_door/.test(out));
-  assert(out.includes("trigger/0"));
-  assert(/condition\/0\s+condition=true/.test(out));
-  assert(/action\/0\s+called/.test(out));
-  assert(/action\/1.*ERROR=service unavailable/.test(out));
+  // Header timestamps are rendered through formatYMDHMS in the requested tz.
+  assert(out.includes("Started: 2026-05-04 09:00:00"));
+  assert(out.includes("Finished: 2026-05-04 09:00:01"));
+  assert(out.includes("(UTC)"));
+  // Step timestamps include milliseconds (HA→UTC tz, so 09:00:…).
+  assert(/09:00:00\.010 trigger\/0/.test(out));
+  assert(/09:00:00\.020 condition\/0/.test(out));
+  assert(/09:00:00\.040 action\/1.*ERROR=service unavailable/.test(out));
+});
+
+Deno.test("formatAutomationTrace — renders timestamps in the requested timezone", () => {
+  const trace = {
+    item_id: "x",
+    run_id: "y",
+    state: "stopped",
+    timestamp: { start: "2026-05-04T09:00:00.000Z" },
+    trigger: "manual",
+    trace: {
+      "action/0": [{ timestamp: "2026-05-04T09:00:00.010Z", result: { params: {} } }],
+    },
+  };
+  // 09:00 UTC is 19:00 in Australia/Sydney (no DST in May).
+  const out = formatAutomationTrace(trace, "Australia/Sydney");
+  assert(out.includes("(Australia/Sydney)"));
+  assert(out.includes("Started: 2026-05-04 19:00:00"));
+  // And the per-step timestamp is also tz-shifted.
+  assert(/19:00:00\.010 action\/0/.test(out));
 });

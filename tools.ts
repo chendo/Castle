@@ -685,15 +685,25 @@ export function validateAutomationConfig(
  *   - What triggered it (variables.trigger.platform / .description).
  *   - The ordered step list with each step's path, timestamp, and result/error.
  */
-export function formatAutomationTrace(trace: Record<string, unknown>): string {
+export function formatAutomationTrace(trace: Record<string, unknown>, tz: string = "UTC"): string {
   const lines: string[] = [];
   const ts = (trace.timestamp as { start?: string; finish?: string } | undefined) ?? {};
   const state = (trace.state as string | undefined) ?? "(unknown)";
   const scriptExec = (trace.script_execution as string | undefined) ?? "";
   const trigger = (trace.trigger as string | undefined) ?? "(unknown trigger)";
 
+  // Render every timestamp in HA's timezone so the agent and user can correlate
+  // a trace timeline with whatever else they're looking at (states, history,
+  // log lines). HA returns timestamps as UTC ISO strings.
+  const fmt = (iso: string | undefined): string => {
+    if (!iso) return "?";
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    return formatYMDHMS(d, tz);
+  };
+
   lines.push(`Automation ${trace.item_id ?? "?"} run ${trace.run_id ?? "?"}`);
-  lines.push(`Started: ${ts.start ?? "?"}${ts.finish ? `  Finished: ${ts.finish}` : ""}`);
+  lines.push(`Started: ${fmt(ts.start)}${ts.finish ? `  Finished: ${fmt(ts.finish)}` : ""}  (${tz})`);
   lines.push(`State: ${state}${scriptExec ? `  ScriptExecution: ${scriptExec}` : ""}`);
   lines.push(`Trigger: ${trigger}`);
   if (trace.error) lines.push(`Error: ${String(trace.error)}`);
@@ -727,7 +737,20 @@ export function formatAutomationTrace(trace: Record<string, unknown>): string {
       const error = step.error as string | undefined;
       const changedVars = step.changed_variables as Record<string, unknown> | undefined;
 
-      const tsLabel = stepTs ? stepTs.slice(11, 23) : "?"; // HH:MM:SS.SSS
+      // HA emits step timestamps as UTC ISO strings. Convert to HA's tz +
+      // append .SSS milliseconds (Intl APIs don't surface fractional seconds,
+      // so pull them off the original string).
+      let tsLabel = "?";
+      if (stepTs) {
+        const d = new Date(stepTs);
+        if (!isNaN(d.getTime())) {
+          const ms = /\.(\d{3})/.exec(stepTs)?.[1] ?? "000";
+          const p = tzParts(d, tz, true);
+          tsLabel = `${p.hour}:${p.minute}:${p.second}.${ms}`;
+        } else {
+          tsLabel = stepTs.slice(11, 23);
+        }
+      }
       const idxLabel = steps.length > 1 ? `[${i}]` : "";
       const resultBits: string[] = [];
       if (result) {
@@ -1138,10 +1161,16 @@ export function buildTools(
         try {
           const result = await ha.call<Array<Record<string, unknown>>>({ type: "system_log/list" });
           const items = Array.isArray(result) ? result : [];
+          const tz = await getHATimezone(ha);
           const formatted = items.map((e) => {
-            const ts = typeof e.timestamp === "number"
-              ? new Date(e.timestamp * 1000).toISOString()
-              : String(e.timestamp ?? "");
+            // HA's system_log entries carry timestamp as a Unix-seconds number.
+            // Render in HA's timezone so log lines line up with state history.
+            let ts: string;
+            if (typeof e.timestamp === "number") {
+              ts = formatYMDHMS(new Date(e.timestamp * 1000), tz);
+            } else {
+              ts = String(e.timestamp ?? "");
+            }
             return `[${e.level ?? "?"}] ${ts} ${e.name ?? ""}: ${e.message ?? ""}`;
           });
           const filtered = f ? formatted.filter((l) => f!.test(l)) : formatted;
@@ -1358,7 +1387,8 @@ export function buildTools(
             item_id: params.automation_id,
             run_id: runId,
           });
-          return okText(formatAutomationTrace(trace), { maxBytes: 16 * 1024, hint: "raw trace JSON has more detail; ask for run_id=... to fetch a specific run" });
+          const tz = await getHATimezone(ha);
+          return okText(formatAutomationTrace(trace, tz), { maxBytes: 16 * 1024, hint: "raw trace JSON has more detail; ask for run_id=... to fetch a specific run" });
         } catch (err) {
           return ok(`Failed to fetch trace for automation ${params.automation_id}: ${(err as Error).message}`);
         }
