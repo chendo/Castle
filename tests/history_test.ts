@@ -3,6 +3,7 @@ import {
   buildBuckets,
   classifyHistory,
   computeStats,
+  formatHistorySummary,
   formatStateChangeSummary,
   isNumericState,
   parseHistoryPoints,
@@ -194,7 +195,7 @@ Deno.test("classifyHistory — only sentinels falls back to state", () => {
   assertEquals(classifyHistory(cs), "state");
 });
 
-Deno.test("formatStateChangeSummary — sparse list shows HH:MM:SS for every change", () => {
+Deno.test("formatStateChangeSummary — sparse list emits prev → new with full date timestamps", () => {
   const start = new Date("2024-05-01T00:00:00Z");
   const end = new Date("2024-05-01T01:00:00Z");
   const changes = [
@@ -203,16 +204,17 @@ Deno.test("formatStateChangeSummary — sparse list shows HH:MM:SS for every cha
     { state: "off", timestamp: new Date("2024-05-01T00:05:12Z"), rawIso: "" },
   ];
   const out = formatStateChangeSummary("binary_sensor.door", changes, start, end, "UTC");
-  // Header + count
   assertEquals(out.includes("binary_sensor.door"), true);
-  assertEquals(out.includes("3 changes"), true);
+  // 3 records → 2 transitions (off→on, on→off). compact[0]=off is the entering state.
+  assertEquals(out.includes("2 transitions"), true);
   assertEquals(out.includes("last=off"), true);
-  // Distribution
   assertEquals(out.includes("Distribution: off=2 on=1"), true);
-  // Each event has seconds
-  assertEquals(/00:00:30 off/.test(out), true);
-  assertEquals(/00:00:45 on/.test(out), true);
-  assertEquals(/00:05:12 off/.test(out), true);
+  // Transitions with full date + seconds + arrow form
+  assertEquals(/2024-05-01 00:00:45 off → on/.test(out), true);
+  assertEquals(/2024-05-01 00:05:12 on → off/.test(out), true);
+  // The very first record (off) is NOT emitted as a transition — only as the
+  // entering state via the header — so there should be no "2024-05-01 00:00:30" line.
+  assertEquals(out.includes("00:00:30 "), false);
 });
 
 Deno.test("formatStateChangeSummary — collapses consecutive duplicates", () => {
@@ -225,28 +227,121 @@ Deno.test("formatStateChangeSummary — collapses consecutive duplicates", () =>
     { state: "on",  timestamp: new Date("2024-05-01T00:03:00Z"), rawIso: "" },
   ];
   const out = formatStateChangeSummary("binary_sensor.door", changes, start, end, "UTC");
-  // Only 2 actual transitions kept
-  assertEquals(out.includes("2 changes"), true);
+  // 4 records → 2 distinct states → 1 transition (off→on)
+  assertEquals(out.includes("1 transition"), true);
 });
 
-Deno.test("formatStateChangeSummary — dense series batches by hour", () => {
+Deno.test("formatStateChangeSummary — held-throughout window has no transition lines", () => {
+  const start = new Date("2024-05-01T00:00:00Z");
+  const end = new Date("2024-05-01T01:00:00Z");
+  const changes = [
+    { state: "off", timestamp: new Date("2024-05-01T00:00:00Z"), rawIso: "" },
+  ];
+  const out = formatStateChangeSummary("binary_sensor.door", changes, start, end, "UTC");
+  assertEquals(out.includes("0 transitions"), true);
+  assertEquals(out.includes("held at off throughout"), true);
+});
+
+Deno.test("formatStateChangeSummary — dense series hour-buckets and skips 0-transition hours", () => {
   const start = new Date("2024-05-01T00:00:00Z");
   const end = new Date("2024-05-01T03:00:00Z");
-  const changes = [];
-  // Generate alternating on/off changes, more than the per-line cap, spread across 3 hours.
+  const changes: Array<{ state: string; timestamp: Date; rawIso: string }> = [];
   const total = STATE_CHANGE_PER_LINE_LIMIT + 30;
   for (let i = 0; i < total; i++) {
-    const ts = new Date(start.getTime() + i * 60_000); // 1/min
+    const ts = new Date(start.getTime() + i * 60_000);
     changes.push({ state: i % 2 === 0 ? "off" : "on", timestamp: ts, rawIso: "" });
   }
   const out = formatStateChangeSummary("binary_sensor.dense", changes, start, end, "UTC");
-  assertEquals(out.includes("(many changes — batched by hour"), true);
-  // Should have at most 3 hour-bucket lines (00, 01, 02 UTC).
-  const bucketLines = out.split("\n").filter((l) => /\d+× → /.test(l));
-  // Either 2 or 3 hours covered depending on where the last sample lands; just
-  // assert that batching collapsed the per-line render.
-  assertEquals(bucketLines.length <= 3, true);
+  assertEquals(out.includes("(many transitions — hour-bucketed"), true);
+  // Bucket lines look like: "2024-05-01 00:00–01:00  N changes, ended <state>"
+  const bucketLines = out.split("\n").filter((l) => /\d+ changes?, ended /.test(l));
   assertEquals(bucketLines.length >= 1, true);
+  assertEquals(bucketLines.length <= 3, true);
+  // Sanity: timestamps include the date prefix so cross-midnight ranges are unambiguous.
+  for (const l of bucketLines) {
+    assertEquals(/^2024-05-01 \d{2}:\d{2}–\d{2}:\d{2}/.test(l), true);
+  }
+});
+
+Deno.test("formatHistorySummary — single-value bucket vs varying min–max, avg", () => {
+  const start = new Date("2024-05-01T00:00:00Z");
+  const end = new Date("2024-05-01T01:00:00Z");
+  // Two 5-min buckets: [00:00] stable at 18.5; [00:05] varies 18.5→18.9.
+  const points = [
+    { value: 18.5, timestamp: new Date("2024-05-01T00:00:30Z"), rawIso: "" },
+    { value: 18.5, timestamp: new Date("2024-05-01T00:01:00Z"), rawIso: "" },
+    { value: 18.5, timestamp: new Date("2024-05-01T00:05:00Z"), rawIso: "" },
+    { value: 18.7, timestamp: new Date("2024-05-01T00:06:00Z"), rawIso: "" },
+    { value: 18.9, timestamp: new Date("2024-05-01T00:08:00Z"), rawIso: "" },
+  ];
+  const out = formatHistorySummary("sensor.t", points, [], start, end, 5, "UTC");
+  // Single-value bucket uses just the number
+  assertEquals(/2024-05-01 00:00=18\.5/.test(out), true);
+  // Varying bucket uses "min–max, avg X"
+  assertEquals(/2024-05-01 00:05=18\.5–18\.9, avg 18\.7/.test(out), true);
+});
+
+Deno.test("formatHistorySummary — collapses runs of identical bucket values", () => {
+  const start = new Date("2024-05-01T00:00:00Z");
+  const end = new Date("2024-05-01T00:30:00Z");
+  // 4 buckets all stable at 0, then a brief spike, then a second sample
+  // sustaining 0 — to confirm both leading runs and post-spike runs collapse.
+  const points = [
+    { value: 0, timestamp: new Date("2024-05-01T00:00:00Z"), rawIso: "" },
+    { value: 0, timestamp: new Date("2024-05-01T00:05:00Z"), rawIso: "" },
+    { value: 0, timestamp: new Date("2024-05-01T00:10:00Z"), rawIso: "" },
+    { value: 0, timestamp: new Date("2024-05-01T00:15:00Z"), rawIso: "" },
+    { value: 2400, timestamp: new Date("2024-05-01T00:20:00Z"), rawIso: "" },
+    { value: 0, timestamp: new Date("2024-05-01T00:25:00Z"), rawIso: "" },
+  ];
+  const out = formatHistorySummary("sensor.power", points, [], start, end, 5, "UTC");
+  const bucketLines = out.split("\n").filter((l) => /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}=/.test(l));
+  const valueLines = bucketLines.map((l) => l.split("=")[1]);
+  // 00:00=0 (initial), 00:20=2400 (spike), 00:25=0 (back to idle). The leading
+  // runs of "0" collapse to one line.
+  assertEquals(valueLines, ["0", "2400", "0"]);
+});
+
+Deno.test("formatHistorySummary — surfaces unavailable + unknown stretches in header", () => {
+  const start = new Date("2024-05-01T00:00:00Z");
+  const end = new Date("2024-05-01T01:00:00Z");
+  const points = [
+    { value: 20.0, timestamp: new Date("2024-05-01T00:00:00Z"), rawIso: "" },
+    { value: 21.0, timestamp: new Date("2024-05-01T00:30:00Z"), rawIso: "" },
+  ];
+  const changes = [
+    { state: "20.0", timestamp: new Date("2024-05-01T00:00:00Z"), rawIso: "" },
+    { state: "unavailable", timestamp: new Date("2024-05-01T00:10:00Z"), rawIso: "" },
+    { state: "20.5", timestamp: new Date("2024-05-01T00:25:00Z"), rawIso: "" },
+    { state: "unknown", timestamp: new Date("2024-05-01T00:40:00Z"), rawIso: "" },
+    { state: "21.0", timestamp: new Date("2024-05-01T00:45:00Z"), rawIso: "" },
+  ];
+  const out = formatHistorySummary("sensor.t", points, changes, start, end, 5, "UTC");
+  assertEquals(/Unavailable: 2024-05-01 00:10–2024-05-01 00:25 \(15min\)/.test(out), true);
+  assertEquals(/Unknown: 2024-05-01 00:40–2024-05-01 00:45 \(5min\)/.test(out), true);
+});
+
+Deno.test("formatHistorySummary — empty bucket inside an unavailable stretch renders 'unavail'", () => {
+  const start = new Date("2024-05-01T00:00:00Z");
+  const end = new Date("2024-05-01T00:30:00Z");
+  // Numeric data only at 00:00 and 00:25; the buckets in between have no
+  // numeric points but the changes list says we were unavailable across them.
+  const points = [
+    { value: 18.5, timestamp: new Date("2024-05-01T00:00:00Z"), rawIso: "" },
+    { value: 18.7, timestamp: new Date("2024-05-01T00:25:00Z"), rawIso: "" },
+  ];
+  const changes = [
+    { state: "18.5", timestamp: new Date("2024-05-01T00:00:00Z"), rawIso: "" },
+    { state: "unavailable", timestamp: new Date("2024-05-01T00:08:00Z"), rawIso: "" },
+    { state: "18.7", timestamp: new Date("2024-05-01T00:25:00Z"), rawIso: "" },
+  ];
+  const out = formatHistorySummary("sensor.t", points, changes, start, end, 5, "UTC");
+  // Bucket starting at 00:05 and 00:10 should mark unavail rather than `_`.
+  // (Skip-if-unchanged collapses them to a single line.)
+  assertEquals(/2024-05-01 00:05=unavail/.test(out), true);
+  // The 00:10/00:15/00:20 buckets are skipped because their rendered value
+  // ("unavail") matches the previous emitted bucket.
+  assertEquals((out.match(/=unavail/g) ?? []).length, 1);
 });
 
 Deno.test("pickAutoInterval — duration thresholds", () => {

@@ -135,30 +135,48 @@ async function getHATimezone(ha: HAClient): Promise<string> {
 }
 
 function formatTimestamp(iso: string, tz: string): string {
-  const d = new Date(iso);
-  return d.toLocaleString("en-US", { timeZone: tz, month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
+  return formatYMDHM(new Date(iso), tz);
 }
 
-function formatBucketTime(date: Date, tz: string, includeDate: boolean): string {
-  if (includeDate) {
-    return date.toLocaleString("en-US", {
-      timeZone: tz, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
-    }).replace(/,\s*/g, " ");
-  }
-  return date.toLocaleString("en-US", {
-    timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false,
-  });
+// Pull individual time parts in HA's timezone via Intl, so we get an
+// unambiguous YYYY-MM-DD HH:MM[:SS] regardless of the runtime's locale.
+function tzParts(date: Date, tz: string, includeSeconds: boolean): {
+  year: string; month: string; day: string; hour: string; minute: string; second: string;
+} {
+  const opts: Intl.DateTimeFormatOptions = {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  };
+  if (includeSeconds) opts.second = "2-digit";
+  const parts = new Intl.DateTimeFormat("en-CA", opts).formatToParts(date);
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
+  // Intl with `hour12:false` can return "24" for midnight in some locales; normalise.
+  const hour = get("hour") === "24" ? "00" : get("hour");
+  return {
+    year: get("year"),
+    month: get("month"),
+    day: get("day"),
+    hour,
+    minute: get("minute"),
+    second: get("second"),
+  };
 }
 
-function formatChangeTime(date: Date, tz: string, includeDate: boolean): string {
-  if (includeDate) {
-    return date.toLocaleString("en-US", {
-      timeZone: tz, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
-    }).replace(/,\s*/g, " ");
-  }
-  return date.toLocaleString("en-US", {
-    timeZone: tz, hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
-  });
+/** YYYY-MM-DD HH:MM in HA's timezone. */
+function formatYMDHM(date: Date, tz: string): string {
+  const p = tzParts(date, tz, false);
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
+}
+
+/** YYYY-MM-DD HH:MM:SS in HA's timezone. */
+function formatYMDHMS(date: Date, tz: string): string {
+  const p = tzParts(date, tz, true);
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}`;
 }
 
 const ALLOWED_INTERVALS = [1, 5, 10, 15, 30, 60];
@@ -311,10 +329,21 @@ export function buildBuckets(points: HistoryPoint[], rangeStart: Date, rangeEnd:
 // busy binary sensor (motion, door) over a day still fits comfortably.
 export const STATE_CHANGE_PER_LINE_LIMIT = 60;
 
+function formatHumanDuration(ms: number): string {
+  const min = Math.round(ms / 60_000);
+  if (min < 60) return `${min}min`;
+  const h = Math.floor(min / 60);
+  const rem = min % 60;
+  return rem === 0 ? `${h}h` : `${h}h${rem}min`;
+}
+
 /**
  * Render a state-change history (binary sensors, enums, anything non-numeric).
- * Per the roadmap: show timestamps with seconds for each change when there
- * aren't too many; otherwise batch by hour with a count and the ending state.
+ * Sparse case: emit one line per transition with `prev → new` so the agent
+ * sees the actual flip, not just "what state did it land on".
+ * Dense case: hour-bucket and report only buckets with at least one transition,
+ * so long quiet stretches collapse and the reader infers held state from the
+ * gap. Skip-if-unchanged is implicit in the "≥1 transition" rule.
  */
 export function formatStateChangeSummary(
   entityId: string,
@@ -324,7 +353,6 @@ export function formatStateChangeSummary(
   tz: string,
 ): string {
   const durationMs = rangeEnd.getTime() - rangeStart.getTime();
-  const includeDate = durationMs > 24 * 3_600_000;
 
   // Collapse consecutive duplicates — HA usually only stores real transitions,
   // but `last_updated`-driven entries can repeat when only attributes changed.
@@ -342,15 +370,19 @@ export function formatStateChangeSummary(
     .map(([s, n]) => `${s}=${n}`)
     .join(" ");
 
-  const dur = durationMs / 3_600_000;
-  const durLabel = dur < 1
-    ? `${Math.round(durationMs / 60_000)}min`
-    : Number.isInteger(dur) ? `${dur}h` : `${dur.toFixed(1)}h`;
-
   const lines: string[] = [];
   lines.push(entityId);
   const last = compact.length > 0 ? compact[compact.length - 1].state : "(none)";
-  lines.push(`${formatBucketTime(rangeStart, tz, true)} → ${formatBucketTime(rangeEnd, tz, true)} (${durLabel}, ${compact.length} change${compact.length === 1 ? "" : "s"}, last=${last})`);
+  // `compact[0]` is the first change INSIDE the window. Its predecessor is
+  // whatever state was active going into the window, which HA returns as the
+  // first record in the raw response. We pluck that from the un-collapsed
+  // changes list when present.
+  const initialState = changes.length > 0
+    ? changes[0].state
+    : "(unknown)";
+  lines.push(
+    `${formatYMDHM(rangeStart, tz)} → ${formatYMDHM(rangeEnd, tz)} (${formatHumanDuration(durationMs)}, ${compact.length - 1 < 0 ? 0 : compact.length - 1} transitions, last=${last})`,
+  );
   lines.push("");
   if (distribution) {
     lines.push(`Distribution: ${distribution}`);
@@ -359,41 +391,102 @@ export function formatStateChangeSummary(
 
   if (compact.length === 0) return lines.join("\n");
 
-  if (compact.length <= STATE_CHANGE_PER_LINE_LIMIT) {
-    for (const c of compact) {
-      lines.push(`${formatChangeTime(c.timestamp, tz, includeDate)} ${c.state}`);
+  // Sparse: one line per transition.
+  // The "transitions" the agent cares about are state[i-1] → state[i] for
+  // i >= 1 within `compact`. compact[0] is the entering state — already
+  // surfaced via the header — so we don't emit a row for it.
+  const transitionCount = Math.max(0, compact.length - 1);
+
+  if (transitionCount === 0) {
+    lines.push(`(no transitions in window; held at ${initialState} throughout)`);
+    return lines.join("\n");
+  }
+
+  if (transitionCount <= STATE_CHANGE_PER_LINE_LIMIT) {
+    for (let i = 1; i < compact.length; i++) {
+      const prev = compact[i - 1].state;
+      const cur = compact[i];
+      lines.push(`${formatYMDHMS(cur.timestamp, tz)} ${prev} → ${cur.state}`);
     }
     return lines.join("\n");
   }
 
-  // Hour batching for dense series. Bucket to wall-clock hours in the HA tz so
-  // labels line up with real hours instead of arbitrary offsets from rangeStart.
-  lines.push("(many changes — batched by hour: count → ending state)");
-  const buckets = new Map<string, { last: StateChange; count: number; bucketStart: Date }>();
-  for (const c of compact) {
-    // Normalize each timestamp down to the start of its hour in HA's timezone.
-    const parts = new Intl.DateTimeFormat("en-US", {
-      timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hour12: false,
-    }).formatToParts(c.timestamp);
-    const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
-    const key = `${get("year")}-${get("month")}-${get("day")}T${get("hour")}`;
+  // Dense: hour-bucket. Insertion order of the Map matches chronological order
+  // because `compact` is sorted ascending and we only insert on first sighting.
+  lines.push(`(many transitions — hour-bucketed; only hours with ≥1 transition shown, gaps mean state held)`);
+  type Bucket = { startMs: number; bucketStart: Date; count: number; ending: string };
+  const buckets = new Map<string, Bucket>();
+  // Walk transitions (i >= 1). Each transition belongs to the hour of cur.
+  for (let i = 1; i < compact.length; i++) {
+    const cur = compact[i];
+    const p = tzParts(cur.timestamp, tz, false);
+    const key = `${p.year}-${p.month}-${p.day}T${p.hour}`;
     const existing = buckets.get(key);
     if (existing) {
-      existing.last = c;
       existing.count++;
+      existing.ending = cur.state;
     } else {
-      buckets.set(key, { last: c, count: 1, bucketStart: c.timestamp });
+      // Truncate to the start of the hour for the displayed timestamp.
+      const startDate = new Date(cur.timestamp);
+      startDate.setUTCMilliseconds(0); startDate.setUTCSeconds(0); startDate.setUTCMinutes(0);
+      // Note: setUTCMinutes(0) is approximate when tz != UTC, but the displayed
+      // string comes back through tzParts so it's still correct in HA's tz.
+      buckets.set(key, { startMs: startDate.getTime(), bucketStart: startDate, count: 1, ending: cur.state });
     }
   }
-  for (const { last: l, count, bucketStart } of buckets.values()) {
-    lines.push(`${formatBucketTime(bucketStart, tz, includeDate)} ${count}× → ${l.state}`);
+  for (const b of buckets.values()) {
+    const startStr = formatYMDHM(b.bucketStart, tz);
+    // Bucket end = bucketStart + 1h, formatted as HH:MM only (date already on the start).
+    const endDate = new Date(b.bucketStart.getTime() + 60 * 60_000);
+    const endParts = tzParts(endDate, tz, false);
+    const endStr = `${endParts.hour}:${endParts.minute}`;
+    lines.push(`${startStr}–${endStr}  ${b.count} change${b.count === 1 ? "" : "s"}, ended ${b.ending}`);
   }
   return lines.join("\n");
 }
 
-function formatHistorySummary(
+/**
+ * Detect contiguous stretches in `changes` whose state matches `predicate`.
+ * Used to surface "Unavailable: 14:50–15:05 (15min)" lines in the numeric
+ * header, since sentinel periods are otherwise invisible once we drop them
+ * from the numeric points.
+ */
+function findSentinelStretches(
+  changes: StateChange[],
+  rangeStart: Date,
+  rangeEnd: Date,
+  predicate: (state: string) => boolean,
+): Array<{ start: Date; end: Date }> {
+  const out: Array<{ start: Date; end: Date }> = [];
+  let activeStart: Date | null = null;
+  for (let i = 0; i < changes.length; i++) {
+    const c = changes[i];
+    if (c.timestamp.getTime() < rangeStart.getTime()) continue;
+    if (c.timestamp.getTime() >= rangeEnd.getTime()) break;
+    if (predicate(c.state)) {
+      if (activeStart === null) activeStart = c.timestamp;
+    } else {
+      if (activeStart !== null) {
+        out.push({ start: activeStart, end: c.timestamp });
+        activeStart = null;
+      }
+    }
+  }
+  if (activeStart !== null) out.push({ start: activeStart, end: rangeEnd });
+  return out;
+}
+
+function summariseStretches(stretches: Array<{ start: Date; end: Date }>, tz: string): string {
+  return stretches.map((s) => {
+    const ms = s.end.getTime() - s.start.getTime();
+    return `${formatYMDHM(s.start, tz)}–${formatYMDHM(s.end, tz)} (${formatHumanDuration(ms)})`;
+  }).join(", ");
+}
+
+export function formatHistorySummary(
   entityId: string,
   points: HistoryPoint[],
+  changes: StateChange[],
   rangeStart: Date,
   rangeEnd: Date,
   intervalMin: number,
@@ -401,33 +494,58 @@ function formatHistorySummary(
 ): string {
   const durationMs = rangeEnd.getTime() - rangeStart.getTime();
   const intervalMs = intervalMin * 60_000;
-  const buckets = buildBuckets(points, rangeStart, rangeEnd, intervalMs);
+  const numericBuckets = buildBuckets(points, rangeStart, rangeEnd, intervalMs);
+
+  // Sentinel buckets — buckets whose period contained at least one
+  // unavailable / unknown event. Computed in parallel so we can mark a bucket
+  // as `unavail` / `unknown` instead of `_`.
+  const unavailBuckets = new Set<number>();
+  const unknownBuckets = new Set<number>();
+  for (const c of changes) {
+    if (c.timestamp.getTime() < rangeStart.getTime()) continue;
+    if (c.timestamp.getTime() >= rangeEnd.getTime()) continue;
+    const idx = Math.floor((c.timestamp.getTime() - rangeStart.getTime()) / intervalMs);
+    if (c.state === "unavailable") unavailBuckets.add(idx);
+    else if (c.state === "unknown") unknownBuckets.add(idx);
+  }
 
   const stats = computeStats(points);
   const lines: string[] = [];
-  const includeDate = durationMs > 24 * 3_600_000;
-
-  const dur = durationMs / 3_600_000;
-  const durLabel = dur < 1
-    ? `${Math.round(durationMs / 60_000)}min`
-    : Number.isInteger(dur) ? `${dur}h` : `${dur.toFixed(1)}h`;
 
   lines.push(`${entityId}`);
-  lines.push(`${formatBucketTime(rangeStart, tz, true)} → ${formatBucketTime(rangeEnd, tz, true)} (${durLabel} @ ${intervalMin}min, ${buckets.length} buckets, ${stats.count} samples)`);
-  lines.push("");
+  lines.push(`${formatYMDHM(rangeStart, tz)} → ${formatYMDHM(rangeEnd, tz)} (${formatHumanDuration(durationMs)} @ ${intervalMin}min, ${numericBuckets.length} buckets, ${stats.count} samples)`);
   lines.push(`Stats: min=${stats.min} max=${stats.max} avg=${stats.avg} last=${stats.last} ${stats.trendDelta >= 0 ? "+" : ""}${stats.trendDelta} (${stats.trendDir})`);
+
+  const unavailStretches = findSentinelStretches(changes, rangeStart, rangeEnd, (s) => s === "unavailable");
+  const unknownStretches = findSentinelStretches(changes, rangeStart, rangeEnd, (s) => s === "unknown");
+  if (unavailStretches.length > 0) lines.push(`Unavailable: ${summariseStretches(unavailStretches, tz)}`);
+  if (unknownStretches.length > 0) lines.push(`Unknown: ${summariseStretches(unknownStretches, tz)}`);
   lines.push("");
 
-  // Per-bucket lines: "HH:MM=v" if stable, "HH:MM=min/max" if varying, "HH:MM=_" if empty.
-  for (const b of buckets) {
-    const time = formatBucketTime(b.start, tz, includeDate);
+  // Render each bucket; collapse runs of identical values by skipping any
+  // bucket whose rendered string matches the previously-emitted one. The
+  // agent infers "value held since last shown timestamp."
+  let lastEmitted: string | null = null;
+  for (let i = 0; i < numericBuckets.length; i++) {
+    const b = numericBuckets[i];
+    let value: string;
     if (b.values.length === 0) {
-      lines.push(`${time}=_`);
+      if (unavailBuckets.has(i)) value = "unavail";
+      else if (unknownBuckets.has(i)) value = "unknown";
+      else value = "_";
     } else {
       const min = round1(Math.min(...b.values));
       const max = round1(Math.max(...b.values));
-      lines.push(`${time}=${min === max ? min : `${min}/${max}`}`);
+      if (min === max) {
+        value = String(min);
+      } else {
+        const avg = round1(b.values.reduce((s, v) => s + v, 0) / b.values.length);
+        value = `${min}–${max}, avg ${avg}`;
+      }
     }
+    if (value === lastEmitted) continue;
+    lines.push(`${formatYMDHM(b.start, tz)}=${value}`);
+    lastEmitted = value;
   }
   return lines.join("\n");
 }
@@ -1054,7 +1172,7 @@ export function buildTools(
             points.push({ value: parseFloat(c.state), timestamp: c.timestamp, rawIso: c.rawIso });
           }
           if (points.length === 0) return ok(`No history data for ${params.entity_id}`);
-          return okText(formatHistorySummary(params.entity_id, points, start, end, intervalMin, tz), { maxBytes: 16 * 1024 });
+          return okText(formatHistorySummary(params.entity_id, points, changes, start, end, intervalMin, tz), { maxBytes: 16 * 1024 });
         }
         return okText(formatStateChangeSummary(params.entity_id, changes, start, end, tz), { maxBytes: 16 * 1024 });
       },
