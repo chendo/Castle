@@ -1,6 +1,7 @@
 import type { AgentEvent, AgentMessage, AgentState, AgentTool } from "@mariozechner/pi-agent-core";
 import type { ImageContent, Model, TextContent } from "@mariozechner/pi-ai";
 import { recordEnd, recordStart } from "./ToolDurations";
+import { turnTimings } from "./TurnTimings";
 
 type Listener = (event: AgentEvent, signal: AbortSignal) => Promise<void> | void;
 
@@ -110,6 +111,7 @@ export class RemoteAgent {
   /** Receive a single AgentEvent forwarded from the server. */
   async ingestEvent(event: AgentEvent): Promise<void> {
     this.reduce(event);
+    turnTimings.onEvent(event);
     const signal = this.abortController?.signal ?? new AbortController().signal;
     for (const l of this.listeners) await l(event, signal);
     if (event.type === "agent_end") {
@@ -129,6 +131,11 @@ export class RemoteAgent {
     this.abortController = new AbortController();
     this._isStreaming = true;
     this._errorMessage = undefined;
+
+    // Stamp the submit instant *before* anything else: the live timing readout
+    // and per-message chips both anchor off this. Doing it inside the synthetic
+    // agent_start path would lose the few ms of optimistic UI work below.
+    turnTimings.noteSubmit();
 
     // Optimistically add the user message + push a synthetic agent_start so the
     // UI shows the new message and the progress pulse immediately, instead of

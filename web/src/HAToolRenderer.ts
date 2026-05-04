@@ -9,7 +9,8 @@ import {
 import { html } from "lit";
 import { createRef, ref } from "lit/directives/ref.js";
 import { Activity, Bell, Camera, FileText, History, Info, LayoutDashboard, ListChecks, Sparkles, Wrench, Zap } from "lucide";
-import { formatDuration, getDuration } from "./ToolDurations";
+import { getDuration } from "./ToolDurations";
+import { summaryWithDuration } from "./ToolHeader";
 
 type Icon = typeof Wrench;
 
@@ -208,14 +209,11 @@ class HACompactRenderer implements ToolRenderer {
     const chevronRef = createRef<HTMLElement>();
     const baseSummary = this.cfg.summarize(params);
     // Once a tool has finished, RemoteAgent has populated its duration via
-    // ToolDurations. Append it to the header so the user can see actual
-    // elapsed time per call (which makes parallel execution observable —
-    // multiple 50ms calls completing within one frame are demonstrably
-    // parallel rather than serialised).
+    // ToolDurations. The duration is rendered right-aligned in the header
+    // (via summaryWithDuration) so a column scan reveals which tools were the
+    // slow ones — parallel-executed calls of the same tool stack neatly.
     const durationMs = result?.toolCallId ? getDuration(result.toolCallId) : undefined;
-    const summary = durationMs !== undefined
-      ? `${baseSummary}  ·  ${formatDuration(durationMs)}`
-      : baseSummary;
+    const summary = summaryWithDuration(baseSummary, durationMs);
 
     const paramsJson = params ? safeStringify(params) : "";
     const outputText = result?.content?.filter((c) => c.type === "text")

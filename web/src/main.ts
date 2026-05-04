@@ -21,6 +21,7 @@ import { registerCameraRenderer } from "./CameraRenderer";
 import { buildTopbar } from "./Topbar";
 import { buildSidebar } from "./Sidebar";
 import { openModelPickerDialog } from "./ModelPickerDialog";
+import { mountTimingHud } from "./TimingHud";
 
 registerHAToolRenderers();
 registerChartRenderer();
@@ -100,8 +101,10 @@ layout.style.cssText = "flex: 1; min-height: 0; display: flex; overflow: hidden;
 layout.appendChild(sidebar.root);
 
 const chatWrap = document.createElement("div");
-chatWrap.style.cssText = "flex: 1; min-width: 0; min-height: 0;";
+chatWrap.style.cssText = "flex: 1; min-width: 0; min-height: 0; position: relative;";
 chatWrap.appendChild(chatPanel);
 layout.appendChild(chatWrap);
 
 app.appendChild(layout);
+
+mountTimingHud(chatWrap, chatPanel);

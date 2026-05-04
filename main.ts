@@ -581,6 +581,27 @@ async function handleSocket(socket: WebSocket): Promise<void> {
       return;
     }
 
+    if (msg.type === "regenerate_catalog") {
+      try {
+        await regenerateCatalog();
+        // Tear the agent down so the next prompt builds against the fresh
+        // .pi-agent/AGENTS.md system prompt — the running session has the
+        // old catalog cached in its message history otherwise.
+        await resetAgentSession();
+        await ensureAgentBroadcast();
+        const session = await getAgentSession(ha);
+        const snapshot = JSON.stringify({ type: "snapshot", state: serializeSnapshot(session) });
+        for (const ws of sockets) {
+          if (ws.readyState === WebSocket.OPEN) ws.send(snapshot);
+        }
+        socket.send(JSON.stringify({ type: "catalog_regenerated" }));
+        console.log("[ws] catalog manually regenerated");
+      } catch (err) {
+        socket.send(JSON.stringify({ type: "error", message: `regenerate_catalog failed: ${(err as Error).message}` }));
+      }
+      return;
+    }
+
     if (msg.type === "reset") {
       try {
         await resetAgentSession();

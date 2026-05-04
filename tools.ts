@@ -1165,7 +1165,7 @@ export function buildTools(
       parameters: Type.Object({
         domain: Type.String({ description: "e.g. light, switch, climate, cover, script, weather, calendar" }),
         service: Type.String({ description: "e.g. turn_on, turn_off, toggle, set_temperature, get_forecasts, get_events" }),
-        entity_id: Type.Optional(Type.String({ description: "Target entity ID from the entity list" })),
+        entity_id: Type.Optional(Type.String({ description: "Target entity ID. Any HA entity is callable, but writes to entities not exposed to assistants are refused unless the user has flipped that setting on. If you don't know the exact ID, find it with ha_get_states first." })),
         service_data: Type.Optional(Type.Record(Type.String(), Type.Unknown(), {
           description: "Extra data, e.g. {brightness_pct: 50} for lights, {type: 'daily'} for weather.get_forecasts",
         })),
@@ -1228,7 +1228,7 @@ export function buildTools(
     {
       name: "ha_get_states",
       label: "Get States",
-      description: "Look up entity states. Prefer the narrowest call possible: `entity_id` for one specific entity (returns full attributes), `filter` for a case-insensitive regex search across entity_id + friendly_name, `domain` to scope to one domain. Combine `filter` with `domain` to narrow further. Calling with no parameters dumps every exposed entity and is almost never what you want — always reach for `filter` first when you know roughly what you're looking for.",
+      description: "Look up entity states. Searches across EVERY entity Home Assistant knows about — not only the ones in the catalog above. Use this whenever the user mentions something you don't see in the catalog: it might just be unexposed, not absent. Prefer the narrowest call possible: `entity_id` for one specific entity (returns full attributes), `filter` for a case-insensitive regex search across entity_id + friendly_name, `domain` to scope to one domain. Combine `filter` with `domain` to narrow further. Calling with no parameters dumps every entity and is almost never useful — reach for `filter` or `domain` first.",
       parameters: Type.Object({
         entity_id: Type.Optional(Type.String({ description: "Specific entity ID — returns state + every attribute" })),
         filter: Type.Optional(Type.String({
@@ -1270,7 +1270,15 @@ export function buildTools(
         });
         if (all.length === 0) {
           const scope = [params.domain && `domain=${params.domain}`, params.filter && `filter=/${params.filter}/i`].filter(Boolean).join(", ");
-          return ok(scope ? `No entities match (${scope})` : "No entities found");
+          if (!scope) return ok("No entities found");
+          // Nudge the agent to broaden — small models tend to give up here.
+          // The retry suggestions are concrete because abstract advice ("try a
+          // different filter") doesn't survive small-model context.
+          const tips: string[] = [];
+          if (params.filter) tips.push(`try a shorter or alternate filter (e.g. one word, or \`a|b\` to OR-match)`);
+          if (params.domain) tips.push(`drop \`domain\` and search with just \`filter\``);
+          if (!params.filter && params.domain) tips.push(`add a \`filter\` to search by friendly_name within ${params.domain}`);
+          return ok(`No entities match (${scope}). The catalog above is only exposed entities — this search covered every entity HA knows about, so this entity genuinely doesn't exist or your terms don't match it. Before giving up: ${tips.join("; ")}.`);
         }
         const lines = all.map((s) => {
           const friendly = s.attributes.friendly_name as string | undefined;
@@ -1350,7 +1358,7 @@ export function buildTools(
     {
       name: "ha_get_entity",
       label: "Get Entity",
-      description: "Get full detail for a single entity: state, every attribute, last_changed, last_updated. Use this to inspect an entity's capabilities (e.g. supported_color_modes for a light, hvac_modes for a climate). Does not include history.",
+      description: "Get full detail for a single entity: state, every attribute, last_changed, last_updated. Works for ANY HA entity, including ones not listed in the catalog above. Use this to inspect an entity's capabilities (e.g. supported_color_modes for a light, hvac_modes for a climate). Does not include history.",
       parameters: Type.Object({
         entity_id: Type.String({ description: "Entity to inspect" }),
       }),
@@ -1386,10 +1394,10 @@ export function buildTools(
 
     {
       name: "ha_get_camera_snapshot",
-      label: "Camera Snapshot (image input)",
+      label: "Camera Snapshot",
       description: isMultimodal
-        ? "Capture a camera snapshot AND feed the image to YOU so you can see and describe it. Use this whenever the user asks what's happening at a camera, to describe a scene, identify something, count objects, etc. — anything where you need to look at the image yourself. Pair with ha_show_camera if the user also wants to see the image inline."
-        : "Capture a camera snapshot. The current model is text-only, so the image is NOT fed back to you — only a size confirmation. Prefer ha_show_camera to actually display the image to the user.",
+        ? "Capture a camera snapshot. The image is BOTH fed to YOU (so you can describe / identify / count) AND displayed inline in the chat for the user. Use whenever the user asks what's happening at a camera. For a continuous live view (no LLM analysis), prefer ha_show_camera."
+        : "Capture a camera snapshot and display it inline in the chat for the user. The current model is text-only, so the image is NOT fed back to you. For a continuous live view, prefer ha_show_camera.",
       parameters: Type.Object({
         entity_id: Type.String({ description: "Camera entity ID (must start with camera.)" }),
       }),
@@ -1431,21 +1439,19 @@ export function buildTools(
     {
       name: "ha_show_camera",
       label: "Show Camera",
-      description: "Render a camera entity inline in the chat for the USER to view. live=false (default) shows a single snapshot; live=true shows a continuous MJPEG feed (the browser pauses it when it's offscreen). This does NOT let YOU see the image — if you also need to look at it (e.g. to describe contents), call ha_get_camera_snapshot. Use when the user asks to see/show/view a camera.",
+      description: "Render a continuous live MJPEG feed of a camera entity inline in the chat for the USER to view (the browser pauses it when offscreen / tab inactive). This does NOT let YOU see the image — if you also need to look at it (e.g. to describe contents), call ha_get_camera_snapshot, which both displays the image AND feeds it to you. Use when the user asks to see/show/view/watch a camera.",
       parameters: Type.Object({
         entity_id: Type.String({ description: "Camera entity ID (must start with camera.)" }),
-        live: Type.Optional(Type.Boolean({ description: "true for continuous feed, false for one-shot snapshot. Default false." })),
         title: Type.Optional(Type.String({ description: "Optional caption" })),
       }),
       execute(
         _id: string,
-        params: { entity_id: string; live?: boolean; title?: string },
+        params: { entity_id: string; title?: string },
       ): Promise<ToolResult> {
         if (!params.entity_id.startsWith("camera.")) {
           return Promise.resolve(ok(`Not a camera entity: ${params.entity_id}`));
         }
-        const mode = params.live ? "live feed" : "snapshot";
-        return Promise.resolve(ok(`Showing ${params.entity_id} ${mode} inline.`));
+        return Promise.resolve(ok(`Showing ${params.entity_id} live feed inline.`));
       },
     },
 

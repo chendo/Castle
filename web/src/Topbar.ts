@@ -92,6 +92,35 @@ export function buildTopbar(agent: WebSocketRemoteAgent, onToggleSidebar?: () =>
   `;
   right.append(promptBtn);
 
+  const regenBtn = document.createElement("button");
+  regenBtn.title = "Regenerate AGENTS.md from current Home Assistant state (also resets the conversation)";
+  regenBtn.textContent = "↻ rebuild";
+  regenBtn.style.cssText = `
+    padding: 4px 10px; font-size: 12px; cursor: pointer;
+    background: transparent; color: var(--foreground);
+    border: 1px solid var(--border); border-radius: 6px;
+  `;
+  regenBtn.onclick = () => {
+    if (regenBtn.disabled) return;
+    regenBtn.disabled = true;
+    const original = regenBtn.textContent;
+    regenBtn.textContent = "rebuilding…";
+    agent.regenerateCatalog();
+    // The server replies with a `catalog_regenerated` frame; restore the
+    // button when we see it (or after a 10s safety timeout).
+    const restore = () => {
+      regenBtn.disabled = false;
+      regenBtn.textContent = original;
+    };
+    const timeout = window.setTimeout(restore, 10_000);
+    const off = agent.onCatalogRegenerated(() => {
+      window.clearTimeout(timeout);
+      off();
+      restore();
+    });
+  };
+  right.append(regenBtn);
+
   // <theme-toggle> is registered by importing @mariozechner/mini-lit/dist/ThemeToggle.js
   // in main.ts. includeSystem=true cycles light → dark → system; default is system.
   const themeToggle = document.createElement("theme-toggle") as HTMLElement & { includeSystem?: boolean };
@@ -117,11 +146,7 @@ export function buildTopbar(agent: WebSocketRemoteAgent, onToggleSidebar?: () =>
     background: transparent; color: var(--foreground);
     border: 1px solid var(--border); border-radius: 6px;
   `;
-  resetBtn.onclick = () => {
-    if (confirm("Start a new chat? Current conversation will be cleared.")) {
-      agent.reset();
-    }
-  };
+  resetBtn.onclick = () => agent.reset();
   right.append(resetBtn);
 
   root.append(left, right);

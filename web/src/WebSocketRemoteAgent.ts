@@ -49,6 +49,7 @@ type Frame =
   | { type: "states_snapshot"; states: EntityState[] }
   | { type: "state_change"; entity: EntityStateChange }
   | { type: "health"; health: HealthSnapshot }
+  | { type: "catalog_regenerated" }
   | { type: "error"; message: string };
 
 /**
@@ -71,6 +72,17 @@ export class WebSocketRemoteAgent extends RemoteAgent {
   public onStateChange?: (change: EntityStateChange) => void;
   /** Server health snapshot — pushed on hello and on HA / ws-client / query changes. */
   public onHealth?: (health: HealthSnapshot) => void;
+  private catalogListeners = new Set<() => void>();
+
+  /**
+   * Subscribe to the server's "catalog regenerated" ack. Returns an unsubscribe
+   * fn so the caller (e.g. a topbar button waiting to flip back from "rebuilding…")
+   * can clean itself up after one shot.
+   */
+  onCatalogRegenerated(listener: () => void): () => void {
+    this.catalogListeners.add(listener);
+    return () => this.catalogListeners.delete(listener);
+  }
 
   constructor(url: string) {
     super({ model: PLACEHOLDER_MODEL });
@@ -93,6 +105,12 @@ export class WebSocketRemoteAgent extends RemoteAgent {
   /** Switch the active model. Server validates, swaps, and broadcasts a fresh snapshot. */
   setModel(modelId: string): void {
     this.send({ type: "set_model", model_id: modelId });
+  }
+
+  /** Force regeneration of `.pi-agent/AGENTS.md` and tear down the agent session
+   * so the next prompt picks up the new system prompt. */
+  regenerateCatalog(): void {
+    this.send({ type: "regenerate_catalog" });
   }
 
   /** Send any custom frame (used by SettingsDialog and friends). */
@@ -135,6 +153,10 @@ export class WebSocketRemoteAgent extends RemoteAgent {
         this.onStateChange?.(frame.entity);
       } else if (frame.type === "health") {
         this.onHealth?.(frame.health);
+      } else if (frame.type === "catalog_regenerated") {
+        for (const l of this.catalogListeners) {
+          try { l(); } catch (err) { console.error("[ws] catalog listener:", err); }
+        }
       } else if (frame.type === "error") {
         console.error("[ws] server error:", frame.message);
         this.onError?.(frame.message);
