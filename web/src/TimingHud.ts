@@ -50,50 +50,67 @@ function describeTurnSuffix(t: TurnTiming): string {
   return parts.join(" · ");
 }
 
+// Per-message marker on the <assistant-message> element. Set after a successful
+// chip injection so subsequent decorate passes can short-circuit messages whose
+// chip is still attached and whose displayed value still matches the latest
+// timing data. Without this, every rAF tick during streaming re-walks every
+// assistant message in the chat — O(N) per frame as history grows.
+const DECORATED_MARKER = "data-castle-chip-state";
+
 function decorateMessages(root: HTMLElement): void {
   const msgs = root.querySelectorAll("assistant-message");
   if (msgs.length === 0) return;
   const lastTurn = turnTimings.getLastCompleted();
+  // Encode the relevant turn-headline state so we know to invalidate the
+  // last message's chip when a new turn lands and the headline shifts.
+  const turnSig = lastTurn?.endedAt !== undefined ? `${lastTurn.submitAt}|${lastTurn.endedAt}` : "";
+
   msgs.forEach((el, idx) => {
-    // Skip until pi-web-ui has rendered the tokens line — `usage` is undefined
-    // mid-stream, so there's nothing to attach to and re-trying on every
-    // streaming mutation just burns CPU.
+    const isLast = idx === msgs.length - 1;
     // deno-lint-ignore no-explicit-any
     const msg = (el as any).message;
-    if (!msg?.usage) return;
+    if (!msg?.usage) return; // pi-web-ui hasn't rendered the tokens line yet
     const ts = msg?.timestamp;
     if (typeof ts !== "number") return;
+
     const pm = turnTimings.getMessageTiming(ts);
+    const headline = isLast ? turnSig : "";
+    // Stamp combines the per-message timing fingerprint and the turn headline
+    // (only relevant on the last message). If the stamp matches what we wrote
+    // last time AND the chip is still in the DOM, nothing has changed — skip.
+    const sig = `${pm?.thinkingMs ?? 0}|${pm?.firstActivityAt ?? 0}|${pm?.endedAt ?? 0}|${headline}`;
+    const target = el as HTMLElement;
+    if (target.getAttribute(DECORATED_MARKER) === sig && target.querySelector(`span[${CHIP_MARKER}]`)) {
+      return;
+    }
+
     let tokensDiv: HTMLElement | null = null;
     el.querySelectorAll<HTMLElement>("div.text-muted-foreground").forEach((c) => {
       if (TOKENS_MATCH.test(c.textContent ?? "")) tokensDiv = c;
     });
     if (!tokensDiv) return;
-    const target = tokensDiv as unknown as HTMLElement;
-    let chip = target.querySelector<HTMLElement>(`span[${CHIP_MARKER}]`);
+    const tokensTarget = tokensDiv as unknown as HTMLElement;
+    let chip = tokensTarget.querySelector<HTMLElement>(`span[${CHIP_MARKER}]`);
     if (!chip) {
       chip = document.createElement("span");
       chip.setAttribute(CHIP_MARKER, "1");
       chip.setAttribute("style", chipStyle());
-      target.appendChild(chip);
+      tokensTarget.appendChild(chip);
     }
     const parts: string[] = [];
     if (pm) {
       const m = describeMessageChip(pm);
       if (m) parts.push(m);
     }
-    // Last assistant message of the latest completed turn carries the headline.
-    if (idx === msgs.length - 1 && lastTurn?.endedAt !== undefined) {
+    if (isLast && lastTurn?.endedAt !== undefined) {
       const tsum = describeTurnSuffix(lastTurn);
       if (tsum) parts.push(tsum);
     }
     const next = parts.join(" · ");
-    // Only mutate if the value would actually change — avoids needless
-    // characterData mutations the observer would see (childList: subtree
-    // doesn't catch text changes, but Lit might still notice).
     if (chip.textContent !== next) chip.textContent = next;
     const nextDisplay = parts.length ? "inline-block" : "none";
     if (chip.style.display !== nextDisplay) chip.style.display = nextDisplay;
+    target.setAttribute(DECORATED_MARKER, sig);
   });
 }
 
