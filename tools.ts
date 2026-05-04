@@ -550,6 +550,129 @@ export function formatHistorySummary(
   return lines.join("\n");
 }
 
+function splitPath(path: string): string[] {
+  return path.split(".").filter((s) => s.length > 0);
+}
+
+/**
+ * Walk to the PARENT of `path` and return that parent plus the final key.
+ * Used by set/delete to address a leaf inside a container.
+ *
+ * Returns null when the path is empty or the parent doesn't exist.
+ */
+// deno-lint-ignore no-explicit-any
+export function walkToParent(root: any, path: string): { parent: any; key: string } | null {
+  const segs = splitPath(path);
+  if (segs.length === 0) return null;
+  const key = segs[segs.length - 1];
+  let cur = root;
+  for (let i = 0; i < segs.length - 1; i++) {
+    const seg = segs[i];
+    if (cur == null || typeof cur !== "object") return null;
+    if (Array.isArray(cur)) {
+      const idx = Number(seg);
+      if (!Number.isInteger(idx) || idx < 0 || idx >= cur.length) return null;
+      cur = cur[idx];
+    } else {
+      if (!(seg in cur)) return null;
+      cur = cur[seg];
+    }
+  }
+  return { parent: cur, key };
+}
+
+/** A single mutation against a dashboard config tree. */
+export type DashboardOp =
+  | { op: "set"; path: string; value: unknown }
+  | { op: "delete"; path: string }
+  | { op: "insert"; path: string; value: unknown; index?: number };
+
+/**
+ * Apply one op in place. Throws Error with a path-prefixed message on
+ * any failure. Callers should pre-clone if they want atomicity across
+ * multiple ops; applyDashboardOps does this for them.
+ */
+function applyOp(root: unknown, op: DashboardOp): void {
+  if (op.op === "set") {
+    const target = walkToParent(root, op.path);
+    if (!target) throw new Error(`set: parent path "${parentPath(op.path)}" does not exist`);
+    if (Array.isArray(target.parent)) {
+      const idx = Number(target.key);
+      if (!Number.isInteger(idx) || idx < 0) throw new Error(`set: array index "${target.key}" is not a non-negative integer`);
+      // Allow setting at length to append; further out is rejected so we
+      // don't silently grow arrays with holes.
+      if (idx > target.parent.length) {
+        throw new Error(`set: array index ${idx} out of range (length=${target.parent.length}); use 'insert' to append`);
+      }
+      target.parent[idx] = op.value;
+    } else if (target.parent && typeof target.parent === "object") {
+      (target.parent as Record<string, unknown>)[target.key] = op.value;
+    } else {
+      throw new Error(`set: parent path "${parentPath(op.path)}" is not an object/array`);
+    }
+    return;
+  }
+  if (op.op === "delete") {
+    const target = walkToParent(root, op.path);
+    if (!target) throw new Error(`delete: path "${op.path}" does not exist`);
+    if (Array.isArray(target.parent)) {
+      const idx = Number(target.key);
+      if (!Number.isInteger(idx) || idx < 0 || idx >= target.parent.length) {
+        throw new Error(`delete: array index ${target.key} out of range (length=${target.parent.length})`);
+      }
+      target.parent.splice(idx, 1);
+    } else if (target.parent && typeof target.parent === "object") {
+      const obj = target.parent as Record<string, unknown>;
+      if (!(target.key in obj)) throw new Error(`delete: key "${target.key}" not present at parent`);
+      delete obj[target.key];
+    } else {
+      throw new Error(`delete: parent of "${op.path}" is not an object/array`);
+    }
+    return;
+  }
+  if (op.op === "insert") {
+    // `path` points at the array itself (not a leaf). Walk and validate.
+    const { value: arr, found } = walkPath(root, op.path);
+    if (!found) throw new Error(`insert: path "${op.path}" does not exist`);
+    if (!Array.isArray(arr)) throw new Error(`insert: path "${op.path}" is not an array`);
+    const idx = op.index ?? arr.length;
+    if (!Number.isInteger(idx) || idx < 0 || idx > arr.length) {
+      throw new Error(`insert: index ${idx} out of range (length=${arr.length})`);
+    }
+    arr.splice(idx, 0, op.value);
+    return;
+  }
+  // deno-lint-ignore no-explicit-any
+  throw new Error(`unknown op: ${(op as any).op}`);
+}
+
+function parentPath(path: string): string {
+  const segs = splitPath(path);
+  return segs.slice(0, -1).join(".") || "(root)";
+}
+
+/**
+ * Apply a sequence of ops to a dashboard config. Returns a NEW config object
+ * (deep-cloned before any mutation) so failures leave the original untouched.
+ * Errors are returned in `errors` instead of thrown so the caller can surface
+ * all problems at once.
+ */
+export function applyDashboardOps(
+  config: unknown,
+  ops: DashboardOp[],
+): { config: unknown; errors: string[] } {
+  const cloned = JSON.parse(JSON.stringify(config));
+  const errors: string[] = [];
+  for (let i = 0; i < ops.length; i++) {
+    try {
+      applyOp(cloned, ops[i]);
+    } catch (err) {
+      errors.push(`op[${i}] (${ops[i].op} ${("path" in ops[i] ? ops[i].path : "")}): ${(err as Error).message}`);
+    }
+  }
+  return { config: cloned, errors };
+}
+
 /**
  * Walk a dot-separated path into a JSON tree. Numeric segments index arrays.
  * Returns { value, found } so callers can distinguish "missing" from "null".
@@ -1331,6 +1454,69 @@ export function buildTools(
           return ok(`Dashboard "${params.name}" updated.`);
         } catch (err) {
           return ok(`Failed to update "${params.name}": ${(err as Error).message}`);
+        }
+      },
+    },
+
+    {
+      name: "ha_edit_dashboard",
+      label: "Edit Dashboard",
+      description: "Apply a list of partial edits to a dashboard. Use this instead of ha_modify_dashboard when you only want to change a few fields — saves the agent from regenerating the entire YAML. ALWAYS call ha_get_dashboard first so you know the current path layout. Each op uses the same dotted path syntax (e.g. `views.0.cards.3`) you used to drill in. Three op kinds:\n  - {op: 'set', path, value} — replace value at path; if parent is an array, key must be an existing index (use 'insert' to add).\n  - {op: 'delete', path} — remove the item at path. Object key, or array element (others shift down).\n  - {op: 'insert', path, value, index?} — insert into the array AT path (path itself points at the array). index defaults to end. Bounds: 0..array.length.\nOps apply in order, atomic — if any op fails, nothing is written. Top-level shape (must have at least one view) is checked after the ops apply. Entity_ids and service names referenced in the post-edit config are validated against the live registry; unknowns produce warnings (saved anyway). Use '(default)' for the main dashboard.",
+      parameters: Type.Object({
+        name: Type.String({ description: "Dashboard url_path. Use '(default)' for the main dashboard." }),
+        ops: Type.Array(Type.Record(Type.String(), Type.Unknown()), { description: "Ordered list of edits (set/delete/insert)" }),
+      }),
+      async execute(
+        _id: string,
+        params: { name: string; ops: DashboardOp[] },
+      ): Promise<ToolResult> {
+        if (!Array.isArray(params.ops) || params.ops.length === 0) {
+          return ok("ops must be a non-empty list");
+        }
+        try {
+          // Always re-fetch so we apply against the freshest config; ignore any
+          // per-turn cache from ha_get_dashboard (which is for read drill-downs).
+          const config = await ha.call<unknown>({
+            type: "lovelace/config",
+            url_path: params.name === "(default)" ? null : params.name,
+          });
+          const { config: edited, errors } = applyDashboardOps(config, params.ops);
+          if (errors.length > 0) {
+            return ok(`Refused: ${errors.length} op error(s) — nothing written:\n- ${errors.join("\n- ")}`);
+          }
+          // Top-level sanity: dashboards need at least one view, otherwise HA
+          // renders a blank UI that's painful to recover from in chat.
+          // deno-lint-ignore no-explicit-any
+          const cfg = edited as any;
+          if (!Array.isArray(cfg?.views) || cfg.views.length === 0) {
+            return ok(`Refused: post-edit config has no views[]. Aborting.`);
+          }
+
+          // Cross-reference entity_ids + services (same validator as automations).
+          const knownEntityIds = new Set(ha.getAllStates().map((s) => s.entity_id));
+          const services = await ha.getServices();
+          const knownServices = new Set<string>();
+          for (const [domain, svcs] of Object.entries(services)) {
+            for (const name of Object.keys(svcs)) knownServices.add(`${domain}.${name}`);
+          }
+          const { warnings } = validateAutomationConfig(edited, knownEntityIds, knownServices);
+
+          await ha.call({
+            type: "lovelace/config/save",
+            url_path: params.name === "(default)" ? null : params.name,
+            config: edited,
+          });
+          dashboardCache.delete(params.name);
+
+          const lines = [`Dashboard "${params.name}" updated (${params.ops.length} op${params.ops.length === 1 ? "" : "s"} applied).`];
+          if (warnings.length > 0) {
+            lines.push("");
+            lines.push(`${warnings.length} validation warning(s):`);
+            for (const w of warnings) lines.push(`- ${w}`);
+          }
+          return ok(lines.join("\n"));
+        } catch (err) {
+          return ok(`Failed to edit "${params.name}": ${(err as Error).message}`);
         }
       },
     },

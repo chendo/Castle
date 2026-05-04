@@ -112,6 +112,23 @@ const CONFIGS: Record<string, RendererConfig> = {
       return `ha_modify_dashboard ${p.name} (${views} view${views === 1 ? "" : "s"})`;
     },
   },
+  ha_edit_dashboard: {
+    icon: LayoutDashboard,
+    summarize: (p) => {
+      if (!p?.name) return "ha_edit_dashboard";
+      const ops = Array.isArray(p.ops) ? p.ops : [];
+      // Surface the op verbs in order so the user can see what's about to change.
+      // e.g. "ha_edit_dashboard (default) [set views.0.title, insert views.0.cards@2]"
+      const parts = ops.slice(0, 4).map((o: any) => {
+        if (!o || typeof o !== "object") return "?";
+        const path = o.path ?? "";
+        if (o.op === "insert" && typeof o.index === "number") return `${o.op} ${path}@${o.index}`;
+        return `${o.op} ${path}`;
+      });
+      const more = ops.length > 4 ? `, +${ops.length - 4} more` : "";
+      return `ha_edit_dashboard ${p.name} [${parts.join(", ")}${more}]`;
+    },
+  },
   ha_get_automation: {
     icon: Sparkles,
     summarize: (p) => p?.automation_id ? `ha_get_automation ${p.automation_id}` : "ha_get_automation",
