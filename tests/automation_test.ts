@@ -1,5 +1,11 @@
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { collectConfigReferences, formatAutomationTrace, validateAutomationConfig } from "../tools.ts";
+import {
+  collectConfigReferences,
+  formatAutomationTrace,
+  renderTraceList,
+  type TraceListEntry,
+  validateAutomationConfig,
+} from "../tools.ts";
 
 Deno.test("collectConfigReferences — top-level entity_id and service strings", () => {
   const config = {
@@ -122,6 +128,39 @@ Deno.test("formatAutomationTrace — surfaces trigger, steps, and errors", () =>
   assert(/09:00:00\.010 trigger\/0/.test(out));
   assert(/09:00:00\.020 condition\/0/.test(out));
   assert(/09:00:00\.040 action\/1.*ERROR=service unavailable/.test(out));
+});
+
+Deno.test("renderTraceList — column-aligned table with key fields", () => {
+  const entries: TraceListEntry[] = [
+    {
+      run_id: "4b502ee29a2486b8d2003eb7f96e9353",
+      state: "stopped",
+      script_execution: "finished",
+      timestamp: { start: "2026-05-04T09:00:00.000Z", finish: "2026-05-04T09:00:01.700Z" },
+    },
+    {
+      run_id: "abc123",
+      state: "stopped",
+      script_execution: "failed_conditions",
+      timestamp: { start: "2026-05-03T20:00:00.000Z", finish: "2026-05-03T20:00:00.200Z" },
+    },
+  ];
+  const out = renderTraceList(entries, "UTC");
+  // Header line lists the columns
+  assert(/run_id\s+started\s+dur\s+state\s+execution/.test(out));
+  // Run ids are truncated when long (29 chars + ellipsis)
+  assert(out.includes("4b502ee29a2486b8d2003eb7f96e9…"));
+  // Short ids are kept verbatim
+  assert(out.includes("abc123"));
+  // Duration column reflects the two windows
+  assert(out.includes("1.7s"));
+  assert(out.includes("200ms"));
+  // execution column shows non-finished states
+  assert(out.includes("failed_conditions"));
+});
+
+Deno.test("renderTraceList — empty list", () => {
+  assertEquals(renderTraceList([], "UTC"), "(no runs)");
 });
 
 Deno.test("formatAutomationTrace — renders timestamps in the requested timezone", () => {

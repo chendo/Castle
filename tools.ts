@@ -676,6 +676,53 @@ export function validateAutomationConfig(
   return { warnings, entityIds, services };
 }
 
+export interface TraceListEntry {
+  run_id: string;
+  state?: string;
+  script_execution?: string;
+  trigger?: string;
+  timestamp?: { start?: string; finish?: string };
+  last_step?: string;
+}
+
+function shortRunId(id: string, max = 30): string {
+  return id.length <= max ? id : id.slice(0, max - 1) + "…";
+}
+
+function durationLabel(startIso: string | undefined, finishIso: string | undefined): string {
+  if (!startIso || !finishIso) return "—";
+  const s = new Date(startIso).getTime();
+  const f = new Date(finishIso).getTime();
+  if (isNaN(s) || isNaN(f) || f < s) return "—";
+  const ms = f - s;
+  if (ms < 1000) return `${ms}ms`;
+  const sec = ms / 1000;
+  return sec < 60 ? `${sec.toFixed(1)}s` : `${Math.round(sec)}s`;
+}
+
+/**
+ * Render a list of trace/list entries as a column-aligned table. Newest- /
+ * oldest-first ordering is the caller's responsibility.
+ */
+export function renderTraceList(entries: TraceListEntry[], tz: string): string {
+  if (entries.length === 0) return "(no runs)";
+  const rows = entries.map((e) => {
+    const start = e.timestamp?.start;
+    const startLabel = start ? formatYMDHMS(new Date(start), tz) : "—";
+    return [
+      shortRunId(e.run_id),
+      startLabel,
+      durationLabel(e.timestamp?.start, e.timestamp?.finish),
+      e.state ?? "—",
+      e.script_execution ?? "—",
+    ];
+  });
+  const headers = ["run_id", "started", "dur", "state", "execution"];
+  const widths = headers.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)));
+  const fmt = (cells: string[]) => "  " + cells.map((c, i) => c.padEnd(widths[i])).join("  ").trimEnd();
+  return [fmt(headers), ...rows.map(fmt)].join("\n");
+}
+
 /**
  * Render a trace/get response into a compact human-readable summary. The raw
  * trace tree is large (every condition+action step at every nesting level)
@@ -1356,39 +1403,124 @@ export function buildTools(
     {
       name: "ha_get_automation_trace",
       label: "Automation Trace",
-      description: "Fetch the most recent execution trace for an automation: when it triggered, what triggered it, which conditions evaluated, which actions ran with timing, and any errors. Pass run_id to fetch a specific run instead of the latest. Use after ha_get_automation when an automation isn't behaving as expected.",
+      description: "Inspect automation runs. Without run_id: lists up to 25 recent runs (run_id, start time, duration, state, script_execution) AND appends the full trace of the latest matching run. With run_id: returns just that run's trace. Use start_time/end_time (ISO 8601) to filter by window — list is then oldest-first (chronological reading of what happened in that window) and capped at 25; older matches above the cap are noted as elided. Without filters the list is newest-first.",
       parameters: Type.Object({
         automation_id: Type.String({ description: "Numeric automation id (from attributes.id)" }),
-        run_id: Type.Optional(Type.String({ description: "Specific run id; omit for the most recent run" })),
+        run_id: Type.Optional(Type.String({ description: "Specific run id; omit to get a list + the latest trace" })),
+        start_time: Type.Optional(Type.String({ description: "ISO 8601 start; only runs at-or-after are listed. Switches list ordering to oldest-first." })),
+        end_time: Type.Optional(Type.String({ description: "ISO 8601 end; only runs before are listed. Defaults to now if start_time is set without end_time." })),
       }),
-      async execute(_id: string, params: { automation_id: string; run_id?: string }): Promise<ToolResult> {
+      async execute(
+        _id: string,
+        params: { automation_id: string; run_id?: string; start_time?: string; end_time?: string },
+      ): Promise<ToolResult> {
         try {
-          // 1. Get the run id if not specified — list traces, pick the latest.
-          let runId = params.run_id;
-          if (!runId) {
-            const list = await ha.call<Array<{ run_id: string; timestamp: { start: string; finish?: string }; state: string; trigger?: string; script_execution?: string }>>({
-              type: "trace/list",
+          const tz = await getHATimezone(ha);
+
+          // Specific run requested — render that run only.
+          if (params.run_id) {
+            const trace = await ha.call<Record<string, unknown>>({
+              type: "trace/get",
               domain: "automation",
               item_id: params.automation_id,
+              run_id: params.run_id,
             });
-            if (!Array.isArray(list) || list.length === 0) {
-              return ok(`No traces found for automation ${params.automation_id}. (Traces only exist after the automation has run since HA last started.)`);
-            }
-            // Sort by start timestamp descending — HA usually returns newest first
-            // but we don't want to depend on that.
-            list.sort((a, b) => new Date(b.timestamp.start).getTime() - new Date(a.timestamp.start).getTime());
-            runId = list[0].run_id;
+            return okText(formatAutomationTrace(trace, tz), {
+              maxBytes: 16 * 1024,
+              hint: "drop run_id to see the recent runs list",
+            });
           }
 
-          // 2. Fetch the trace itself.
-          const trace = await ha.call<Record<string, unknown>>({
-            type: "trace/get",
+          // Otherwise — list view + most-recent trace appended.
+          const rawList = await ha.call<Array<TraceListEntry>>({
+            type: "trace/list",
             domain: "automation",
             item_id: params.automation_id,
-            run_id: runId,
           });
-          const tz = await getHATimezone(ha);
-          return okText(formatAutomationTrace(trace, tz), { maxBytes: 16 * 1024, hint: "raw trace JSON has more detail; ask for run_id=... to fetch a specific run" });
+          const list = Array.isArray(rawList) ? rawList : [];
+          if (list.length === 0) {
+            return ok(`No traces found for automation ${params.automation_id}. (Traces only exist after the automation has run since HA last started.)`);
+          }
+
+          // Resolve filter window if any.
+          const filtered: { startMs: number; entry: TraceListEntry }[] = [];
+          let startMs: number | undefined;
+          let endMs: number | undefined;
+          const filtering = params.start_time != null || params.end_time != null;
+          if (filtering) {
+            if (params.start_time) {
+              const d = new Date(params.start_time);
+              if (isNaN(d.getTime())) return ok(`Invalid start_time: ${params.start_time}`);
+              startMs = d.getTime();
+            }
+            if (params.end_time) {
+              const d = new Date(params.end_time);
+              if (isNaN(d.getTime())) return ok(`Invalid end_time: ${params.end_time}`);
+              endMs = d.getTime();
+            } else if (startMs !== undefined) {
+              endMs = Date.now();
+            }
+          }
+          for (const entry of list) {
+            const t = new Date(entry.timestamp?.start ?? "").getTime();
+            if (isNaN(t)) continue;
+            if (startMs !== undefined && t < startMs) continue;
+            if (endMs !== undefined && t >= endMs) continue;
+            filtered.push({ startMs: t, entry });
+          }
+
+          // Newest-first by default; oldest-first when filtering by window so
+          // the agent reads runs chronologically within its requested span.
+          filtered.sort((a, b) => filtering ? a.startMs - b.startMs : b.startMs - a.startMs);
+
+          const LIMIT = 25;
+          const matchedCount = filtered.length;
+          const visible = filtered.slice(0, LIMIT);
+          const elided = matchedCount - visible.length;
+
+          // Latest run for the trailing trace block. When filtering this is
+          // the most recent within the window; without filter, the most
+          // recent overall (which is also visible[0] of newest-first sort).
+          const latest = filtering
+            ? filtered.reduce((acc, cur) => (cur.startMs > acc.startMs ? cur : acc), filtered[0])
+            : visible[0];
+
+          const lines: string[] = [];
+          if (filtering) {
+            const headStart = formatYMDHM(new Date(startMs ?? 0), tz);
+            const headEnd = formatYMDHM(new Date(endMs ?? Date.now()), tz);
+            lines.push(`Automation ${params.automation_id} — runs ${headStart} → ${headEnd} (${tz})`);
+            if (matchedCount === 0) {
+              lines.push(`  0 runs matched the requested window.`);
+              lines.push("");
+              lines.push(`(No latest run to show.)`);
+              return okText(lines.join("\n"), { maxBytes: 16 * 1024 });
+            }
+            const showing = visible.length;
+            const elidedNote = elided > 0
+              ? `, showing ${showing} oldest first (${elided} newer runs elided — narrow start_time/end_time to see them)`
+              : `, showing all ${showing} oldest first`;
+            lines.push(`  matched ${matchedCount} run${matchedCount === 1 ? "" : "s"}${elidedNote}`);
+          } else {
+            lines.push(`Automation ${params.automation_id} — ${visible.length} most recent run${visible.length === 1 ? "" : "s"} (${tz})`);
+          }
+          lines.push("");
+          lines.push(renderTraceList(visible.map((v) => v.entry), tz));
+          lines.push("");
+
+          if (latest) {
+            lines.push(`Pass run_id=<id> for a different run. Latest${filtering ? " (in window)" : ""} run trace below:`);
+            lines.push("");
+            lines.push("--- latest run ---");
+            const trace = await ha.call<Record<string, unknown>>({
+              type: "trace/get",
+              domain: "automation",
+              item_id: params.automation_id,
+              run_id: latest.entry.run_id,
+            });
+            lines.push(formatAutomationTrace(trace, tz));
+          }
+          return okText(lines.join("\n"), { maxBytes: 32 * 1024 });
         } catch (err) {
           return ok(`Failed to fetch trace for automation ${params.automation_id}: ${(err as Error).message}`);
         }

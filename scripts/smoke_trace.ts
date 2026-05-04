@@ -2,7 +2,7 @@
 // Connects to HA, runs trace/list + trace/get, and prints what
 // formatAutomationTrace would render. Not part of the regular test suite.
 import { HAClient } from "../ha-client.ts";
-import { formatAutomationTrace } from "../tools.ts";
+import { formatAutomationTrace, renderTraceList } from "../tools.ts";
 
 const HA_URL = Deno.env.get("HA_URL") ?? "http://homeassistant.local:8123";
 const HA_TOKEN = Deno.env.get("HA_TOKEN") ?? "";
@@ -44,6 +44,10 @@ const trace = await ha.call<Record<string, unknown>>({
 // matches what the agent / web UI would actually see.
 const houseInfo = await ha.getHouseInfo();
 const tz = houseInfo.timezone || "UTC";
+
+console.log(`\n--- renderTraceList (newest first, ${list.length} runs) ---`);
+console.log(renderTraceList(list.slice(0, 25), tz));
+
 console.log(`\n--- formatAutomationTrace output (tz=${tz}) ---`);
 console.log(formatAutomationTrace(trace, tz));
 console.log("--- end ---");

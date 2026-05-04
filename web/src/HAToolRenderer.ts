@@ -130,7 +130,12 @@ const CONFIGS: Record<string, RendererConfig> = {
     icon: ListChecks,
     summarize: (p) => {
       if (!p?.automation_id) return "ha_get_automation_trace";
-      return `ha_get_automation_trace ${p.automation_id}${p.run_id ? ` :${p.run_id}` : " (latest)"}`;
+      if (p.run_id) return `ha_get_automation_trace ${p.automation_id} :${p.run_id}`;
+      if (p.start_time) {
+        const range = `${shortIso(p.start_time)}→${p.end_time ? shortIso(p.end_time) : "now"}`;
+        return `ha_get_automation_trace ${p.automation_id} (${range})`;
+      }
+      return `ha_get_automation_trace ${p.automation_id} (recent runs)`;
     },
   },
 };
