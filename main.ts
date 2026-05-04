@@ -118,6 +118,8 @@ async function connectWithRetry(): Promise<void> {
 
       // Regenerate catalog every 5 minutes to pick up area/entity changes
       setInterval(regenerateCatalog, 5 * 60 * 1000);
+      // Once HA is alive, fan state_changed events out to any WS clients.
+      wireStateBroadcast();
       return;
     } catch (err) {
       console.error(`[hai] connection attempt ${attempt} failed:`, (err as Error).message);
@@ -185,16 +187,8 @@ async function handler(req: Request): Promise<Response> {
     });
   }
 
-  if (url.pathname === "/states" && req.method === "GET") {
-    const states = ha.getAllStates();
-    return Response.json(states.map(s => ({
-      entity_id: s.entity_id,
-      state: s.state,
-      attributes: s.attributes,
-      domain: s.entity_id.split(".")[0],
-      exposed: ha.isExposed(s.entity_id),
-    })));
-  }
+  // /states used to be a polled endpoint; replaced by `states_snapshot` +
+  // `state_change` frames over the WS so the browser doesn't poll.
 
   if ((url.pathname.startsWith("/camera/") || url.pathname.startsWith("/camera_stream/")) && req.method === "GET") {
     const isStream = url.pathname.startsWith("/camera_stream/");
@@ -370,6 +364,47 @@ async function ensureAgentBroadcast(): Promise<void> {
   console.log("[ws] agent broadcast wired");
 }
 
+/** Convert HA state list to the entity shape the sidebar / entity-detail UIs use. */
+function serializeStates() {
+  return ha.getAllStates().map((s) => ({
+    entity_id: s.entity_id,
+    state: s.state,
+    attributes: s.attributes,
+    domain: s.entity_id.split(".")[0],
+    exposed: ha.isExposed(s.entity_id),
+  }));
+}
+
+/**
+ * Wire the HA state_changed → WS clients fan-out exactly once. Idempotent:
+ * subsequent calls are no-ops. Called from startup AFTER the HA connection
+ * lands so HAClient's listener registry is alive.
+ */
+let stateBroadcastWired = false;
+function wireStateBroadcast(): void {
+  if (stateBroadcastWired) return;
+  stateBroadcastWired = true;
+  ha.onStateChange((entityId, newState) => {
+    const payload = newState
+      ? {
+        entity_id: entityId,
+        state: newState.state,
+        attributes: newState.attributes,
+        domain: entityId.split(".")[0],
+        exposed: ha.isExposed(entityId),
+      }
+      // Removed entity — clients drop it from their local map.
+      : { entity_id: entityId, removed: true as const };
+    const frame = JSON.stringify({ type: "state_change", entity: payload });
+    for (const ws of sockets) {
+      if (ws.readyState === WebSocket.OPEN) {
+        try { ws.send(frame); } catch (err) { console.error("[ws] state push failed:", err); }
+      }
+    }
+  });
+  console.log("[ws] state_change broadcast wired");
+}
+
 function serializeSnapshot(session: Awaited<ReturnType<typeof getAgentSession>>) {
   const s = session.agent.state;
   return {
@@ -412,6 +447,10 @@ async function handleSocket(socket: WebSocket): Promise<void> {
         await ensureAgentBroadcast();
         const session = await getAgentSession(ha);
         socket.send(JSON.stringify({ type: "snapshot", state: serializeSnapshot(session) }));
+        // Bootstrap the entity catalog over the WS too, so the browser never
+        // has to poll /states. After this the broadcast loop sends a
+        // state_change frame for every HA state_changed event.
+        socket.send(JSON.stringify({ type: "states_snapshot", states: serializeStates() }));
       } catch (err) {
         socket.send(JSON.stringify({ type: "error", message: (err as Error).message }));
       }

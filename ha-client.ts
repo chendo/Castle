@@ -101,10 +101,27 @@ export class HAClient {
     return this.call({ type: "subscribe_events", event_type: "state_changed" });
   }
 
+  /**
+   * External listeners notified on every HA state_changed event AFTER the
+   * internal state map is updated. Used by main.ts to fan out to WS clients.
+   */
+  private stateChangeListeners = new Set<(entityId: string, newState: HAState | null) => void>();
+
+  onStateChange(listener: (entityId: string, newState: HAState | null) => void): () => void {
+    this.stateChangeListeners.add(listener);
+    return () => { this.stateChangeListeners.delete(listener); };
+  }
+
   private handleEvent(msg: EventMsg): void {
     const { entity_id, new_state } = msg.event.data;
     if (new_state) this.states.set(entity_id, new_state);
     else this.states.delete(entity_id);
+    // Notify listeners after the local map update so anyone reading from
+    // getAllStates() during the callback sees the new value.
+    for (const l of this.stateChangeListeners) {
+      try { l(entity_id, new_state ?? null); }
+      catch (err) { console.warn("[ha] state_change listener threw:", (err as Error).message); }
+    }
   }
 
   private handleResult(msg: Result): void {

@@ -1,14 +1,7 @@
 import { showEntityDetail } from "./EntityDetail";
-import type { WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
+import type { EntityState, EntityStateChange, WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
 
-interface State {
-  entity_id: string;
-  state: string;
-  // deno-lint-ignore no-explicit-any
-  attributes: Record<string, any>;
-  domain: string;
-  exposed?: boolean;
-}
+type State = EntityState;
 
 const SKIP_DOMAINS = new Set([
   "update", "device_tracker", "persistent_notification",
@@ -53,9 +46,12 @@ function saveHideUnexposed(v: boolean): void {
 
 /**
  * Collapsible left sidebar listing entities grouped by domain.
- * Polls /states every 10s without losing search input or domain expansion state.
- * Click an entity to open a rich detail view; click the eye icon to flip its
- * exposure (whether the agent can see/control it).
+ *
+ * Bootstraps from the WebSocket `states_snapshot` frame the server sends
+ * after `hello`, then applies incremental `state_change` frames as HA emits
+ * `state_changed` events. No polling — re-renders are throttled via a single
+ * RAF coalesce so a burst of 50 motion-sensor changes doesn't repaint the
+ * sidebar 50 times.
  */
 export function buildSidebar(agent: WebSocketRemoteAgent): { root: HTMLElement; toggle: () => void } {
   const root = document.createElement("aside");
@@ -96,16 +92,28 @@ export function buildSidebar(agent: WebSocketRemoteAgent): { root: HTMLElement; 
 
   root.append(searchWrap, list);
 
-  let allStates: State[] = [];
+  // Keep entities by id for O(1) updates from state_change frames.
+  const entities = new Map<string, State>();
   const openDomains = loadOpenDomains();
   let hideUnexposed = loadHideUnexposed();
+
+  // Coalesce a burst of state changes into one repaint per animation frame.
+  let renderQueued = false;
+  const requestRender = () => {
+    if (renderQueued) return;
+    renderQueued = true;
+    requestAnimationFrame(() => {
+      renderQueued = false;
+      render();
+    });
+  };
 
   const render = () => {
     const q = search.value.toLowerCase().trim();
 
     // Group by domain
     const grouped = new Map<string, State[]>();
-    for (const s of allStates) {
+    for (const s of entities.values()) {
       if (SKIP_DOMAINS.has(s.domain)) continue;
       if (hideUnexposed && s.exposed === false) continue;
       const name = (s.attributes?.friendly_name as string ?? s.entity_id.split(".").pop() ?? "").toLowerCase();
@@ -185,10 +193,13 @@ export function buildSidebar(agent: WebSocketRemoteAgent): { root: HTMLElement; 
         eyeBtn.onclick = (ev) => {
           ev.stopPropagation();
           const next = !exposed;
-          // Optimistic update — flip locally so the UI is responsive, the
-          // server poll will reconcile on the next /states refresh.
+          // Optimistic update — flip locally so the UI is responsive. The
+          // server doesn't push exposure changes back through state_change
+          // (HA's state_changed event doesn't fire for the conversation-
+          // expose flag), so the local flip is the source of truth until
+          // the next reconnect / hello bootstrap.
           e.exposed = next;
-          render();
+          requestRender();
           agent.sendRaw({ type: "set_exposure", entity_ids: [e.entity_id], expose: next });
         };
 
@@ -222,17 +233,22 @@ export function buildSidebar(agent: WebSocketRemoteAgent): { root: HTMLElement; 
     render();
   };
 
-  const poll = async () => {
-    try {
-      const res = await fetch("/states");
-      if (res.ok) {
-        allStates = await res.json();
-        render();
-      }
-    } catch { /* ignore */ }
+  // Bootstrap + live updates over the WS. The server sends a full
+  // states_snapshot after hello, then a state_change frame for every HA
+  // state_changed event. On reconnect a fresh snapshot rebases the map.
+  agent.onStatesSnapshot = (states) => {
+    entities.clear();
+    for (const s of states) entities.set(s.entity_id, s);
+    requestRender();
   };
-  poll();
-  setInterval(poll, 10000);
+  agent.onStateChange = (change: EntityStateChange) => {
+    if ("removed" in change && change.removed) {
+      entities.delete(change.entity_id);
+    } else {
+      entities.set(change.entity_id, change as State);
+    }
+    requestRender();
+  };
 
   return {
     root,

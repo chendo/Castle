@@ -21,10 +21,25 @@ export interface ServerSettings {
   allowUnexposedWrites: boolean;
 }
 
+export interface EntityState {
+  entity_id: string;
+  state: string;
+  // deno-lint-ignore no-explicit-any
+  attributes: Record<string, any>;
+  domain: string;
+  exposed: boolean;
+}
+
+export type EntityStateChange =
+  | EntityState
+  | { entity_id: string; removed: true };
+
 type Frame =
   | { type: "snapshot"; state: any }
   | { type: "event"; event: AgentEvent }
   | { type: "settings"; settings: ServerSettings; all_tools: string[] }
+  | { type: "states_snapshot"; states: EntityState[] }
+  | { type: "state_change"; entity: EntityStateChange }
   | { type: "error"; message: string };
 
 /**
@@ -41,6 +56,10 @@ export class WebSocketRemoteAgent extends RemoteAgent {
   public onConnectionChange?: (connected: boolean) => void;
   public onError?: (message: string) => void;
   public onSettings?: (settings: ServerSettings, allTools: string[]) => void;
+  /** Full state map sent on hello and after reconnects. */
+  public onStatesSnapshot?: (states: EntityState[]) => void;
+  /** Single entity update streamed as HA emits state_changed. */
+  public onStateChange?: (change: EntityStateChange) => void;
 
   constructor(url: string) {
     super({ model: PLACEHOLDER_MODEL });
@@ -94,6 +113,10 @@ export class WebSocketRemoteAgent extends RemoteAgent {
         await this.ingestEvent(frame.event);
       } else if (frame.type === "settings") {
         this.onSettings?.(frame.settings, frame.all_tools);
+      } else if (frame.type === "states_snapshot") {
+        this.onStatesSnapshot?.(frame.states);
+      } else if (frame.type === "state_change") {
+        this.onStateChange?.(frame.entity);
       } else if (frame.type === "error") {
         console.error("[ws] server error:", frame.message);
         this.onError?.(frame.message);
