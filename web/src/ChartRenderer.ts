@@ -69,6 +69,12 @@ async function fetchSeries(args: ChartArgs): Promise<Record<string, HistoryPoint
 // The theme system in main.ts always reflects the resolved theme as a `.dark` class
 // on <html> (handling "system" = OS preference internally). Reading the class here
 // keeps charts in sync with the rest of the app instead of double-detecting.
+// Trim full ISO timestamps to date+HH:MM portion for compact chip display.
+function shortIso(s: string): string {
+  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/.exec(s);
+  return m ? `${m[1]} ${m[2]}` : s;
+}
+
 function isDarkMode(): boolean {
   return document.documentElement.classList.contains("dark");
 }
@@ -150,9 +156,19 @@ class ChartToolRenderer implements ToolRenderer {
       ? (result.isError ? "error" : "complete")
       : isStreaming ? "inprogress" : "complete";
 
-    const summary = args
-      ? `Chart: ${args.entity_ids.join(", ")} (${args.start_time ? `${args.start_time} → ${args.end_time ?? "now"}` : `${args.hours ?? 24}h`})`
-      : "ha_render_chart";
+    // Compact title — same args the agent saw, but trimmed to fit a chip:
+    //   "Chart: light.kitchen, light.lounge (24h) — Title"
+    //   "Chart: 5 entities (2026-05-04 09:00 → now)"
+    const summary = (() => {
+      if (!args) return "ha_render_chart";
+      const ids = args.entity_ids;
+      const idLabel = ids.length <= 3 ? ids.join(", ") : `${ids.length} entities`;
+      const range = args.start_time
+        ? `${shortIso(args.start_time)} → ${args.end_time ? shortIso(args.end_time) : "now"}`
+        : `${args.hours ?? 24}h`;
+      const title = args.title ? ` — ${args.title}` : "";
+      return `Chart: ${idLabel} (${range})${title}`;
+    })();
 
     const container = createRef<HTMLDivElement>();
 

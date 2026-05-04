@@ -124,9 +124,11 @@ class CameraToolRenderer implements ToolRenderer {
       : isStreaming ? "inprogress" : "complete";
 
     const live = args?.live === true;
-    const summary = args
-      ? `${live ? "Live: " : "Snapshot: "}${args.entity_id}`
-      : "ha_show_camera";
+    const summary = (() => {
+      if (!args) return "ha_show_camera";
+      const head = `${live ? "Live" : "Snapshot"}: ${args.entity_id}`;
+      return args.title ? `${head} — ${args.title}` : head;
+    })();
 
     const container = createRef<HTMLDivElement>();
 

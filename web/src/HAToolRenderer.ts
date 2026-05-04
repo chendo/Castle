@@ -8,7 +8,7 @@ import {
 } from "@mariozechner/pi-web-ui";
 import { html } from "lit";
 import { createRef, ref } from "lit/directives/ref.js";
-import { Activity, Bell, FileText, History, LayoutDashboard, ListChecks, Sparkles, Wrench, Zap } from "lucide";
+import { Activity, Bell, Camera, FileText, History, Info, LayoutDashboard, ListChecks, Sparkles, Wrench, Zap } from "lucide";
 
 type Icon = typeof Wrench;
 
@@ -26,9 +26,10 @@ const CONFIGS: Record<string, RendererConfig> = {
       const head = p.domain && p.service ? `${p.domain}.${p.service}` : "ha_call_service";
       const target = p.entity_id ? ` → ${p.entity_id}` : "";
       const sd = p.service_data && Object.keys(p.service_data).length
-        ? ` (${Object.entries(p.service_data).map(([k, v]) => `${k}=${formatValue(v)}`).join(", ")})`
+        ? ` (${formatArgs(p.service_data)})`
         : "";
-      return head + target + sd;
+      const resp = p.return_response ? " ← returns" : "";
+      return head + target + sd + resp;
     },
   },
   ha_get_states: {
@@ -41,6 +42,10 @@ const CONFIGS: Record<string, RendererConfig> = {
       if (p.domain) args.push(`domain=${p.domain}`);
       return args.length ? `ha_get_states (${args.join(", ")})` : "ha_get_states (all)";
     },
+  },
+  ha_get_entity: {
+    icon: Info,
+    summarize: (p) => p?.entity_id ? `ha_get_entity ${p.entity_id}` : "ha_get_entity",
   },
   ha_get_history: {
     icon: History,
@@ -55,11 +60,27 @@ const CONFIGS: Record<string, RendererConfig> = {
   },
   ha_fire_event: {
     icon: Zap,
-    summarize: (p) => p?.event_type ? `ha_fire_event ${p.event_type}` : "ha_fire_event",
+    summarize: (p) => {
+      if (!p?.event_type) return "ha_fire_event";
+      const data = p.event_data && Object.keys(p.event_data).length
+        ? ` (${formatArgs(p.event_data)})`
+        : "";
+      return `ha_fire_event ${p.event_type}${data}`;
+    },
   },
   ha_set_state: {
     icon: Wrench,
-    summarize: (p) => p?.entity_id ? `ha_set_state ${p.entity_id} = ${p.state}` : "ha_set_state",
+    summarize: (p) => {
+      if (!p?.entity_id) return "ha_set_state";
+      const attrs = p.attributes && Object.keys(p.attributes).length
+        ? ` [${formatArgs(p.attributes)}]`
+        : "";
+      return `ha_set_state ${p.entity_id} = ${formatValue(p.state)}${attrs}`;
+    },
+  },
+  ha_get_camera_snapshot: {
+    icon: Camera,
+    summarize: (p) => p?.entity_id ? `ha_get_camera_snapshot ${p.entity_id}` : "ha_get_camera_snapshot",
   },
   ha_get_logs: {
     icon: FileText,
@@ -83,7 +104,12 @@ const CONFIGS: Record<string, RendererConfig> = {
   },
   ha_modify_dashboard: {
     icon: LayoutDashboard,
-    summarize: (p) => `ha_modify_dashboard ${p?.name ?? "?"} (replace full config)`,
+    summarize: (p) => {
+      if (!p?.name) return "ha_modify_dashboard";
+      const cfg = p.config && typeof p.config === "object" ? p.config : null;
+      const views = Array.isArray(cfg?.views) ? cfg.views.length : 0;
+      return `ha_modify_dashboard ${p.name} (${views} view${views === 1 ? "" : "s"})`;
+    },
   },
   ha_get_automation: {
     icon: Sparkles,
@@ -93,8 +119,10 @@ const CONFIGS: Record<string, RendererConfig> = {
     icon: Sparkles,
     summarize: (p) => {
       if (!p?.automation_id) return "ha_update_automation";
+      const cfg = p.config && typeof p.config === "object" ? p.config : null;
+      const alias = cfg?.alias ? ` "${truncate(String(cfg.alias), 30)}"` : "";
       const strict = p.strict ? " strict" : "";
-      return `ha_update_automation ${p.automation_id}${strict}`;
+      return `ha_update_automation ${p.automation_id}${alias}${strict}`;
     },
   },
   ha_get_automation_trace: {
@@ -105,6 +133,22 @@ const CONFIGS: Record<string, RendererConfig> = {
     },
   },
 };
+
+// Render an arbitrary param object as `k=v, k2=v2` truncated to a safe length.
+// Used for service_data / event_data / attributes which can be arbitrary JSON.
+function formatArgs(obj: unknown): string {
+  if (!obj || typeof obj !== "object") return "";
+  const pairs = Object.entries(obj as Record<string, unknown>)
+    .slice(0, 4)
+    .map(([k, v]) => `${k}=${formatValue(v)}`);
+  const all = Object.keys(obj as Record<string, unknown>).length;
+  const overflow = all > 4 ? `, +${all - 4} more` : "";
+  return truncate(pairs.join(", "), 80) + overflow;
+}
+
+function truncate(s: string, max: number): string {
+  return s.length <= max ? s : s.slice(0, max - 1) + "…";
+}
 
 function quote(s: unknown): string {
   if (typeof s !== "string") return String(s);
@@ -121,6 +165,11 @@ function shortIso(s: string): string {
 function formatValue(v: unknown): string {
   if (typeof v === "string") return v;
   if (typeof v === "number" || typeof v === "boolean") return String(v);
+  if (Array.isArray(v)) {
+    // [a, b, c] or [a, b, c, +2 more] — keep titles compact for entity lists.
+    const head = v.slice(0, 3).map((x) => formatValue(x)).join(", ");
+    return v.length > 3 ? `[${head}, +${v.length - 3}]` : `[${head}]`;
+  }
   return JSON.stringify(v);
 }
 
