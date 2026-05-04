@@ -348,3 +348,33 @@ export function submitPrompt(text: string, ha: HAClient): void {
   });
   drainQueue();
 }
+
+/**
+ * Send a one-shot prompt at startup so the upstream LLM caches our system
+ * prompt + tool schema prefix. The first real user prompt then hits the cache
+ * and time-to-first-token drops from cold (full prefix processing) to warm.
+ *
+ * Goes through the same prompt queue as user input so a real prompt arriving
+ * mid-warmup just waits its turn rather than racing. After waitForIdle, we
+ * agent.reset() so the warmup turn never appears in any UI snapshot — the
+ * SessionManager is in-memory, so there's no on-disk trace either.
+ */
+export async function warmupPromptCache(ha: HAClient): Promise<void> {
+  const t0 = performance.now();
+  await new Promise<void>((resolve) => {
+    queue.push(async () => {
+      try {
+        const session = await getAgentSession(ha);
+        await session.prompt("Do not respond, prompt cache");
+        await session.agent.waitForIdle();
+        session.agent.reset();
+        console.log(`[castle] prompt cache warmed in ${Math.round(performance.now() - t0)}ms`);
+      } catch (err) {
+        console.warn("[castle] warmup failed:", (err as Error).message);
+      } finally {
+        resolve();
+      }
+    });
+    drainQueue();
+  });
+}

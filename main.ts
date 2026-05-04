@@ -7,6 +7,7 @@ import {
   resetAgentSession,
   setActiveModel,
   submitPrompt,
+  warmupPromptCache,
   writeModelsJson,
 } from "./agent.ts";
 import { parseHistoryPoints } from "./tools.ts";
@@ -57,6 +58,8 @@ async function regenerateCatalog(): Promise<void> {
  * loop continues in the background indefinitely. Every successful (re)connect
  * triggers a catalog refresh; transitions also flush a health frame to the UI.
  */
+let warmupKicked = false;
+
 function setupHaSupervisor(): void {
   let firstReady = false;
   let catalogTimer: number | undefined;
@@ -81,6 +84,14 @@ function setupHaSupervisor(): void {
         if (!firstReady) {
           console.log(`[castle] ready (${n} entities)`);
           firstReady = true;
+          // Warm the LLM prompt cache once HA is up and AGENTS.md (the system
+          // prompt) is fresh. Idempotent across HA reconnects — only the
+          // first-ever connect kicks it. Fire-and-forget so the supervisor
+          // loop doesn't block on the LLM call.
+          if (!warmupKicked) {
+            warmupKicked = true;
+            void warmupPromptCache(ha);
+          }
         } else {
           console.log(`[castle] reconnected (${n} entities)`);
         }
