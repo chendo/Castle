@@ -35,89 +35,125 @@ function buildSnapshot(args: CameraArgs, container: HTMLElement, captureTs?: num
   container.appendChild(img);
 }
 
-function buildLiveFeed(args: CameraArgs, container: HTMLElement): void {
-  const wrap = document.createElement("div");
-  wrap.style.cssText = "position: relative; border-radius: 8px; overflow: hidden; background: var(--muted);";
+// Inject the pulse keyframes once.
+function ensurePulseStyle(): void {
+  if (document.getElementById("castle-pulse-style")) return;
+  const style = document.createElement("style");
+  style.id = "castle-pulse-style";
+  style.textContent = "@keyframes castle-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }";
+  document.head.appendChild(style);
+}
 
-  const img = document.createElement("img");
-  img.alt = args.entity_id;
-  img.style.cssText = "width: 100%; display: block;";
+/**
+ * Custom element wrapping the MJPEG live feed. Replaces an earlier hand-rolled
+ * teardown via a `MutationObserver` on `document.body` — that observer fired
+ * on every DOM mutation in the entire app per camera widget, which compounded
+ * with pi-web-ui's per-token chat re-renders into a steady CPU floor and held
+ * the wrap (+ its observers/listeners) in memory after Lit detached the widget.
+ *
+ * connectedCallback / disconnectedCallback give us the lifecycle for free —
+ * no global observer required.
+ */
+class CastleLiveCamera extends HTMLElement {
+  private wrap?: HTMLDivElement;
+  private img?: HTMLImageElement;
+  private badge?: HTMLDivElement;
+  private intersectionObserver?: IntersectionObserver;
+  private onVisibility?: () => void;
+  private isLive = false;
+  private streamUrl = "";
+  private entityId = "";
 
-  // Status badge
-  const badge = document.createElement("div");
-  badge.style.cssText = `
-    position: absolute; top: 8px; left: 8px;
-    padding: 2px 8px; border-radius: 4px;
-    font-size: 11px; font-weight: 500;
-    color: white; pointer-events: none;
-    display: flex; align-items: center; gap: 4px;
-  `;
-  const renderBadge = (live: boolean) => {
-    if (live) {
-      badge.style.background = "rgba(220, 38, 38, 0.85)";
-      badge.innerHTML = `<span style="width:6px;height:6px;border-radius:50%;background:white;display:inline-block;animation:castle-pulse 1.4s infinite;"></span>LIVE`;
-    } else {
-      badge.style.background = "rgba(0,0,0,0.6)";
-      badge.textContent = "PAUSED";
-    }
-  };
+  connectedCallback(): void {
+    if (this.wrap) return; // already initialised; reuse on re-attach
+    this.entityId = this.getAttribute("entity-id") ?? "";
+    if (!this.entityId) return;
+    this.streamUrl = `/camera_stream/${encodeURIComponent(this.entityId)}`;
+    ensurePulseStyle();
 
-  // Inject the pulse keyframes once.
-  if (!document.getElementById("castle-pulse-style")) {
-    const style = document.createElement("style");
-    style.id = "castle-pulse-style";
-    style.textContent = "@keyframes castle-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }";
-    document.head.appendChild(style);
+    this.wrap = document.createElement("div");
+    this.wrap.style.cssText = "position: relative; border-radius: 8px; overflow: hidden; background: var(--muted);";
+
+    this.img = document.createElement("img");
+    this.img.alt = this.entityId;
+    this.img.style.cssText = "width: 100%; display: block;";
+    this.img.onerror = () => {
+      if (this.wrap) this.wrap.innerHTML = `<div style="font-size:12px;color:var(--destructive);">Live feed unavailable for ${this.entityId}</div>`;
+    };
+
+    this.badge = document.createElement("div");
+    this.badge.style.cssText = `
+      position: absolute; top: 8px; left: 8px;
+      padding: 2px 8px; border-radius: 4px;
+      font-size: 11px; font-weight: 500;
+      color: white; pointer-events: none;
+      display: flex; align-items: center; gap: 4px;
+    `;
+
+    this.wrap.append(this.img, this.badge);
+    this.appendChild(this.wrap);
+    this.renderBadge(false);
+
+    this.intersectionObserver = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (e.isIntersecting && !document.hidden) this.start();
+        else this.stop();
+      }
+    }, { threshold: 0.1 });
+    this.intersectionObserver.observe(this.wrap);
+
+    this.onVisibility = () => {
+      if (!this.wrap) return;
+      if (document.hidden) this.stop();
+      else if (this.wrap.getBoundingClientRect().top < innerHeight && this.wrap.getBoundingClientRect().bottom > 0) this.start();
+    };
+    document.addEventListener("visibilitychange", this.onVisibility);
   }
 
-  img.onerror = () => {
-    container.innerHTML = `<div style="font-size:12px;color:var(--destructive);">Live feed unavailable for ${args.entity_id}</div>`;
-  };
-
-  wrap.append(img, badge);
-  container.appendChild(wrap);
-
-  const streamUrl = `/camera_stream/${encodeURIComponent(args.entity_id)}`;
-  let isLive = false;
-
-  const start = () => {
-    if (isLive) return;
-    img.src = streamUrl + `?ts=${Date.now()}`; // cache-bust to force a fresh stream
-    isLive = true;
-    renderBadge(true);
-  };
-  const stop = () => {
-    if (!isLive) return;
-    img.src = ""; // detach to halt the MJPEG stream and free the connection
-    isLive = false;
-    renderBadge(false);
-  };
-
-  // Auto pause/resume based on viewport visibility and tab visibility.
-  const observer = new IntersectionObserver((entries) => {
-    for (const e of entries) {
-      if (e.isIntersecting && !document.hidden) start();
-      else stop();
+  disconnectedCallback(): void {
+    this.stop();
+    this.intersectionObserver?.disconnect();
+    this.intersectionObserver = undefined;
+    if (this.onVisibility) {
+      document.removeEventListener("visibilitychange", this.onVisibility);
+      this.onVisibility = undefined;
     }
-  }, { threshold: 0.1 });
-  observer.observe(wrap);
+  }
 
-  const onVisibility = () => {
-    if (document.hidden) stop();
-    else if (wrap.getBoundingClientRect().top < innerHeight && wrap.getBoundingClientRect().bottom > 0) start();
-  };
-  document.addEventListener("visibilitychange", onVisibility);
+  private start(): void {
+    if (this.isLive || !this.img) return;
+    this.img.src = this.streamUrl + `?ts=${Date.now()}`;
+    this.isLive = true;
+    this.renderBadge(true);
+  }
 
-  // Stop if the chat removes the element (cleanup safety net).
-  const cleanupObserver = new MutationObserver(() => {
-    if (!document.body.contains(wrap)) {
-      stop();
-      observer.disconnect();
-      document.removeEventListener("visibilitychange", onVisibility);
-      cleanupObserver.disconnect();
+  private stop(): void {
+    if (!this.isLive || !this.img) return;
+    this.img.src = ""; // detaching the src halts the MJPEG connection
+    this.isLive = false;
+    this.renderBadge(false);
+  }
+
+  private renderBadge(live: boolean): void {
+    if (!this.badge) return;
+    if (live) {
+      this.badge.style.background = "rgba(220, 38, 38, 0.85)";
+      this.badge.innerHTML = `<span style="width:6px;height:6px;border-radius:50%;background:white;display:inline-block;animation:castle-pulse 1.4s infinite;"></span>LIVE`;
+    } else {
+      this.badge.style.background = "rgba(0,0,0,0.6)";
+      this.badge.textContent = "PAUSED";
     }
-  });
-  cleanupObserver.observe(document.body, { childList: true, subtree: true });
+  }
+}
+
+if (!customElements.get("castle-live-camera")) {
+  customElements.define("castle-live-camera", CastleLiveCamera);
+}
+
+function buildLiveFeed(args: CameraArgs, container: HTMLElement): void {
+  const el = document.createElement("castle-live-camera");
+  el.setAttribute("entity-id", args.entity_id);
+  container.appendChild(el);
 }
 
 /**
