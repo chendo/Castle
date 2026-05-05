@@ -478,30 +478,43 @@ export function submitPrompt(text: string, ha: HAClient): void {
   drainQueue();
 }
 
+export interface WarmupResult { at: number; durationMs: number }
+
+let lastWarmup: WarmupResult | null = null;
+
+export function getLastWarmup(): WarmupResult | null {
+  return lastWarmup;
+}
+
 /**
- * Send a one-shot prompt at startup so the upstream LLM caches our system
- * prompt + tool schema prefix. The first real user prompt then hits the cache
- * and time-to-first-token drops from cold (full prefix processing) to warm.
+ * Send a one-shot prompt so the upstream LLM caches our system prompt + tool
+ * schema prefix. The first real user prompt then hits the cache and
+ * time-to-first-token drops from cold (full prefix processing) to warm.
  *
  * Goes through the same prompt queue as user input so a real prompt arriving
  * mid-warmup just waits its turn rather than racing. After waitForIdle, we
  * agent.reset() so the warmup turn never appears in any UI snapshot — the
  * SessionManager is in-memory, so there's no on-disk trace either.
+ *
+ * Resolves with the wall-clock timestamp and duration on success, or null on
+ * failure. Caller decides whether to broadcast.
  */
-export async function warmupPromptCache(ha: HAClient): Promise<void> {
+export async function warmupPromptCache(ha: HAClient): Promise<WarmupResult | null> {
   const t0 = performance.now();
-  await new Promise<void>((resolve) => {
+  return await new Promise<WarmupResult | null>((resolve) => {
     queue.push(async () => {
       try {
         const session = await getAgentSession(ha);
         await session.prompt("Do not respond, prompt cache");
         await session.agent.waitForIdle();
         session.agent.reset();
-        console.log(`[castle] prompt cache warmed in ${Math.round(performance.now() - t0)}ms`);
+        const result: WarmupResult = { at: Date.now(), durationMs: Math.round(performance.now() - t0) };
+        lastWarmup = result;
+        console.log(`[castle] prompt cache warmed in ${result.durationMs}ms`);
+        resolve(result);
       } catch (err) {
         console.warn("[castle] warmup failed:", (err as Error).message);
-      } finally {
-        resolve();
+        resolve(null);
       }
     });
     drainQueue();

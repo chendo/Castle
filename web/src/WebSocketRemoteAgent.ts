@@ -57,6 +57,7 @@ type Frame =
   | { type: "state_change"; entity: EntityStateChange }
   | { type: "health"; health: HealthSnapshot }
   | { type: "catalog_regenerated" }
+  | { type: "cache_warmed"; at: number; durationMs: number }
   | { type: "sessions_list"; sessions: SessionInfo[] }
   | { type: "session_resumed"; path: string }
   | { type: "session_deleted"; path: string }
@@ -86,6 +87,8 @@ export class WebSocketRemoteAgent extends RemoteAgent {
   public onSessionsList?: (sessions: SessionInfo[]) => void;
   /** Session deletion confirmation. */
   public onDeleteSession?: (path: string) => void;
+  /** Most recent prompt-cache warmup (sent on hello and after every warm). */
+  public onCacheWarmed?: (at: number, durationMs: number) => void;
   private catalogListeners = new Set<() => void>();
 
   /**
@@ -125,6 +128,12 @@ export class WebSocketRemoteAgent extends RemoteAgent {
     * so the next prompt picks up the new system prompt. */
   regenerateCatalog(): void {
     this.send({ type: "regenerate_catalog" });
+  }
+
+  /** Manually trigger a prompt-cache warmup. Server broadcasts a `cache_warmed`
+    * frame on success that flows to `onCacheWarmed`. */
+  warmCache(): void {
+    this.send({ type: "warm_cache" });
   }
 
   /** Request the list of saved sessions. Response arrives via `onSessionsList`. */
@@ -177,6 +186,8 @@ export class WebSocketRemoteAgent extends RemoteAgent {
         this.onStateChange?.(frame.entity);
       } else if (frame.type === "health") {
         this.onHealth?.(frame.health);
+      } else if (frame.type === "cache_warmed") {
+        this.onCacheWarmed?.(frame.at, frame.durationMs);
       } else if (frame.type === "catalog_regenerated") {
         for (const l of this.catalogListeners) {
           try { l(); } catch (err) { console.error("[ws] catalog listener:", err); }

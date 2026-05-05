@@ -93,6 +93,74 @@ export function buildTopbar(agent: WebSocketRemoteAgent, onToggleSidebar?: () =>
   `;
   right.append(promptBtn);
 
+  const warmBtn = document.createElement("button");
+  warmBtn.textContent = "🔥 warm cache";
+  warmBtn.style.cssText = `
+    padding: 4px 10px; font-size: 12px; cursor: pointer;
+    background: transparent; color: var(--foreground);
+    border: 1px solid var(--border); border-radius: 6px;
+  `;
+  const warmStatus = document.createElement("span");
+  warmStatus.style.cssText = "font-size: 11px; color: var(--muted-foreground); white-space: nowrap;";
+  warmStatus.textContent = "never warmed";
+  let lastWarmAt: number | null = null;
+  let lastWarmDurationMs: number | null = null;
+  const fmtAgo = (ms: number): string => {
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return `${s}s ago`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h}h ago`;
+    return `${Math.floor(h / 24)}d ago`;
+  };
+  const fmtDuration = (ms: number): string => {
+    if (ms < 1000) return `${ms}ms`;
+    return `${(ms / 1000).toFixed(1)}s`;
+  };
+  const renderWarmStatus = () => {
+    if (lastWarmAt === null || lastWarmDurationMs === null) {
+      warmStatus.textContent = "never warmed";
+      warmBtn.title = "Warm the LLM prompt cache so the next prompt has a fast first token";
+      return;
+    }
+    const ago = fmtAgo(Date.now() - lastWarmAt);
+    const dur = fmtDuration(lastWarmDurationMs);
+    warmStatus.textContent = `warmed ${ago} (${dur})`;
+    warmBtn.title = `Last warmed at ${new Date(lastWarmAt).toLocaleTimeString()} — took ${dur}`;
+  };
+  let warming = false;
+  let warmTimeout: number | undefined;
+  const setWarmingUi = (on: boolean): void => {
+    warming = on;
+    warmBtn.disabled = on;
+    warmBtn.textContent = on ? "warming…" : "🔥 warm cache";
+  };
+  warmBtn.onclick = () => {
+    if (warming) return;
+    setWarmingUi(true);
+    agent.warmCache();
+    // 120s safety: if the server never replies (LLM stuck, ws dead), the button
+    // re-enables so the user can retry rather than being stuck. The persistent
+    // onCacheWarmed handler below clears this on the happy path.
+    if (warmTimeout) window.clearTimeout(warmTimeout);
+    warmTimeout = window.setTimeout(() => setWarmingUi(false), 120_000);
+  };
+  agent.onCacheWarmed = (at, durationMs) => {
+    lastWarmAt = at;
+    lastWarmDurationMs = durationMs;
+    if (warmTimeout) {
+      window.clearTimeout(warmTimeout);
+      warmTimeout = undefined;
+    }
+    if (warming) setWarmingUi(false);
+    renderWarmStatus();
+  };
+  // Refresh the relative "warmed Xs ago" label so it doesn't go stale while
+  // the topbar sits open. The topbar is page-lifetime so no teardown needed.
+  window.setInterval(renderWarmStatus, 15_000);
+  right.append(warmStatus, warmBtn);
+
   const regenBtn = document.createElement("button");
   regenBtn.title = "Regenerate AGENTS.md from current Home Assistant state (also resets the conversation)";
   regenBtn.textContent = "↻ rebuild";

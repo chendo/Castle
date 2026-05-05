@@ -3,6 +3,7 @@ import { buildAgentsMd, buildCatalogData, buildServicesData, extractDomains } fr
 import {
   getActiveModelId,
   getAgentSession,
+  getLastWarmup,
   listSessions,
   listUpstreamModels,
   newConversation,
@@ -95,7 +96,9 @@ function setupHaSupervisor(): void {
           // loop doesn't block on the LLM call.
           if (!warmupKicked) {
             warmupKicked = true;
-            void warmupPromptCache(ha);
+            void warmupPromptCache(ha).then((result) => {
+              if (result) broadcastCacheWarmed(result);
+            });
           }
         } else {
           console.log(`[castle] reconnected (${n} entities)`);
@@ -398,6 +401,15 @@ function broadcastHealth(): void {
   }
 }
 
+function broadcastCacheWarmed(result: { at: number; durationMs: number }): void {
+  const frame = JSON.stringify({ type: "cache_warmed", at: result.at, durationMs: result.durationMs });
+  for (const ws of sockets) {
+    if (ws.readyState === WebSocket.OPEN) {
+      try { ws.send(frame); } catch { /* ignore */ }
+    }
+  }
+}
+
 /** Convert HA state list to the entity shape the sidebar / entity-detail UIs use. */
 function serializeStates() {
   return ha.getAllStates().map((s) => ({
@@ -491,6 +503,10 @@ async function handleSocket(socket: WebSocket): Promise<void> {
         // Initial health frame; further updates are pushed when HA connection
         // state flips or the periodic LLM probe transitions ok ↔ bad.
         socket.send(JSON.stringify({ type: "health", health: buildHealth() }));
+        const warmup = getLastWarmup();
+        if (warmup) {
+          socket.send(JSON.stringify({ type: "cache_warmed", at: warmup.at, durationMs: warmup.durationMs }));
+        }
       } catch (err) {
         socket.send(JSON.stringify({ type: "error", message: (err as Error).message }));
       }
@@ -597,6 +613,20 @@ async function handleSocket(socket: WebSocket): Promise<void> {
         socket.send(JSON.stringify({ type: "exposure_updated", entity_ids: ids, expose: payload.expose }));
       } catch (err) {
         socket.send(JSON.stringify({ type: "error", message: `set_exposure failed: ${(err as Error).message}` }));
+      }
+      return;
+    }
+
+    if (msg.type === "warm_cache") {
+      if (!ha.isConnected) {
+        socket.send(JSON.stringify({ type: "error", message: "Not connected to Home Assistant" }));
+        return;
+      }
+      const result = await warmupPromptCache(ha);
+      if (result) {
+        broadcastCacheWarmed(result);
+      } else {
+        socket.send(JSON.stringify({ type: "error", message: "warm_cache failed" }));
       }
       return;
     }
