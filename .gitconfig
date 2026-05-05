@@ -1,0 +1,10 @@
+; Tracked author config for this repo. Wire it into your clone with:
+;   git config --local include.path ../.gitconfig
+; (path is relative to .git/config, so ../.gitconfig resolves to the repo root.)
+;
+; The pre-commit hook scrubs for tokens/PII, but commit identity is policy:
+; commits land as chendo via the GitHub no-reply address so the email isn't
+; harvestable from `git log`.
+[user]
+	name = chendo
+	email = chendo@users.noreply.github.com
