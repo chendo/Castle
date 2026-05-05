@@ -1,7 +1,7 @@
 // Integration tests: camera operations — snapshot capture, live feed display,
 // and context-based entity reference resolution.
 
-import { assert as _assert, assertEquals as _assertEquals } from "jsr:@std/assert@1";
+import { assert as _assert, assertEquals } from "jsr:@std/assert@1";
 import * as S from "./shared.ts";
 
 const HA_BASE = S.getHaBaseUrl();
