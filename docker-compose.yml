@@ -1,7 +1,7 @@
 services:
   castle:
     build: .
-    container_name: castle
+    container_name: ${CASTLE_CONTAINER_NAME:-castle}
     volumes:
       - .:/workspace
       - deno-cache:/root/.cache/deno
@@ -14,6 +14,10 @@ services:
     environment:
       - HA_URL=${HA_URL:-http://homeassistant.local:8123}
       - OPENAI_URL=${OPENAI_URL:-http://host.docker.internal:1234/v1}
+      # HA_TOKEN normally arrives via env_file (.env). Re-declaring it here
+      # lets the test runner override it from .env.test.compose without
+      # touching the dev .env, since `environment:` wins over `env_file:`.
+      - HA_TOKEN=${HA_TOKEN:-}
     # If your runtime needs a custom host alias (Lima, Podman, etc.), put it in
     # a local `docker-compose.override.yml` (gitignored) — for example:
     #   services:
@@ -29,7 +33,7 @@ services:
   # cameras, automations, dashboards, etc.) for reproducible integration tests.
   ha-demo:
     image: homeassistant/home-assistant:latest
-    container_name: ha-demo
+    container_name: ${HA_DEMO_CONTAINER_NAME:-ha-demo}
     volumes:
       - ./tests/integration/ha-demo-config:/config
       - /run/dbus:/run/dbus:ro
@@ -37,8 +41,10 @@ services:
       - TZ=UTC
     ports:
       - "127.0.0.1:${CASTLE_TEST_HA_PORT:-9123}:8123"
+    # /manifest.json is unauthenticated; /api/ returns 401 once HA is up,
+    # which curl -f treats as failure and the container never goes healthy.
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8123/api/"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:8123/manifest.json"]
       interval: 5s
       timeout: 5s
       retries: 30
