@@ -233,6 +233,18 @@ export function assertAllToolsCalled(
 
 // ── HA REST API Helpers ─────────────────────────────────────────────────────
 
+/** fetch() wrapper that injects HA's Bearer token from HA_TOKEN. ha-demo
+ *  rejects unauthenticated /api/* requests with 401 — every helper below
+ *  routes through this so a missing or stale token surfaces in one place. */
+function haFetch(input: string, init?: RequestInit): Promise<Response> {
+  const token = Deno.env.get("HA_TOKEN") ?? "";
+  const headers = new Headers(init?.headers);
+  if (token && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  return fetch(input, { ...init, headers });
+}
+
 /** Query an entity's current state via HA REST API. */
 export async function getEntityState(
   haBaseUrl: string,
@@ -240,7 +252,7 @@ export async function getEntityState(
 ): Promise<{ state: string; attributes: Record<string, unknown> } | null> {
   const url = `${haBaseUrl}/api/states/${encodeURIComponent(entityId)}`;
   try {
-    const res = await fetch(url);
+    const res = await haFetch(url);
     if (!res.ok) return null;
     const json = await res.json() as { state: string; attributes: Record<string, unknown> };
     return json;
@@ -253,7 +265,7 @@ export async function getEntityState(
 export async function getAllStates(haBaseUrl: string): Promise<Record<string, { state: string; attributes: Record<string, unknown> }>> {
   const url = `${haBaseUrl}/api/states`;
   try {
-    const res = await fetch(url);
+    const res = await haFetch(url);
     if (!res.ok) return {};
     const json = Array.isArray(await res.json()) ? await res.json() : {};
     const result: Record<string, { state: string; attributes: Record<string, unknown> }> = {};
@@ -340,7 +352,7 @@ export async function getSwitchEntityIds(haBaseUrl: string): Promise<string[]> {
 /** List dashboards via HA REST API. */
 export async function listDashboards(haBaseUrl: string): Promise<Array<{ slug: string; name: string }>> {
   try {
-    const res = await fetch(`${haBaseUrl}/api/config/dashboard/list`);
+    const res = await haFetch(`${haBaseUrl}/api/config/dashboard/list`);
     if (!res.ok) return [];
     const json = await res.json();
     return Array.isArray(json) ? json : (json.dashboards ?? []);
@@ -355,7 +367,7 @@ export async function getDashboardRaw(
   slugOrPath: string,
 ): Promise<string | null> {
   try {
-    const res = await fetch(`${haBaseUrl}/api/config/dashboard/raw/${slugOrPath}`);
+    const res = await haFetch(`${haBaseUrl}/api/config/dashboard/raw/${slugOrPath}`);
     if (!res.ok) return null;
     return await res.text();
   } catch {
@@ -369,7 +381,7 @@ export async function getDashboardConfig(
   slugOrPath: string,
 ): Promise<unknown | null> {
   try {
-    const res = await fetch(`${haBaseUrl}/api/config/dashboard/raw/${slugOrPath}`);
+    const res = await haFetch(`${haBaseUrl}/api/config/dashboard/raw/${slugOrPath}`);
     if (!res.ok) return null;
     const yamlText = await res.text();
     // Try to parse as JSON first (some dashboards store JSON)
@@ -387,7 +399,7 @@ export async function getDashboardConfig(
 /** List automations via HA REST API. */
 export async function listAutomations(haBaseUrl: string): Promise<Array<{ id: number | string; name: string; entity_id: string }>> {
   try {
-    const res = await fetch(`${haBaseUrl}/api/config/automation/list`);
+    const res = await haFetch(`${haBaseUrl}/api/config/automation/list`);
     if (!res.ok) return [];
     return (await res.json()) as Array<{ id: number | string; name: string; entity_id: string }>;
   } catch {
@@ -401,7 +413,7 @@ export async function getAutomationConfig(
   automationId: number | string,
 ): Promise<unknown | null> {
   try {
-    const res = await fetch(`${haBaseUrl}/api/config/automation/${encodeURIComponent(String(automationId))}`);
+    const res = await haFetch(`${haBaseUrl}/api/config/automation/${encodeURIComponent(String(automationId))}`);
     if (!res.ok) return null;
     return await res.json();
   } catch {
@@ -416,7 +428,7 @@ export async function updateAutomationConfig(
   config: Record<string, unknown>,
 ): Promise<boolean> {
   try {
-    const res = await fetch(
+    const res = await haFetch(
       `${haBaseUrl}/api/config/automation/${encodeURIComponent(String(automationId))}`,
       { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(config) },
     );
@@ -428,8 +440,14 @@ export async function updateAutomationConfig(
 
 // ── Port Resolution ─────────────────────────────────────────────────────────
 
-/** Resolve the HA base URL for tests. */
+/** Resolve the HA base URL for tests.
+ *
+ * Prefer HA_URL (set by the runner to http://ha-demo:8123 — the docker-network
+ * service name castle itself uses). Fall back to localhost:CASTLE_TEST_HA_PORT
+ * for cases where the harness runs on the host outside any container. */
 export function getHaBaseUrl(): string {
+  const url = Deno.env.get("HA_URL");
+  if (url) return url.replace(/\/$/, "");
   const port = Deno.env.get("CASTLE_TEST_HA_PORT") ?? "9123";
   return `http://localhost:${port}`;
 }
