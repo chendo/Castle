@@ -267,9 +267,10 @@ export async function getAllStates(haBaseUrl: string): Promise<Record<string, { 
   try {
     const res = await haFetch(url);
     if (!res.ok) return {};
-    const json = Array.isArray(await res.json()) ? await res.json() : {};
+    const json = await res.json();
+    const list = Array.isArray(json) ? json : [];
     const result: Record<string, { state: string; attributes: Record<string, unknown> }> = {};
-    for (const s of json as Array<{ entity_id: string; state: string; attributes: Record<string, unknown> }>) {
+    for (const s of list as Array<{ entity_id: string; state: string; attributes: Record<string, unknown> }>) {
       result[s.entity_id] = { state: s.state, attributes: s.attributes };
     }
     return result;
