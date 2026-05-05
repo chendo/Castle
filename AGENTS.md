@@ -87,27 +87,92 @@ Test files live in `tests/integration/`:
 Run integration tests after every notable change to agent behavior, tool definitions,
 or the WebSocket protocol. They are not part of the pre-commit hook (require a real LLM).
 
-## Rules for committing
+## Engineering standards
 
-These are non-negotiable; the pre-commit hook enforces some, but agents working on this repo must self-enforce all of them.
+Rules for every change. Optimize for whoever reads this commit in six months without context. The pre-commit hook enforces some of these; agents working on this repo must self-enforce all of them.
 
-**No dangling dead code after a delete or refactor.** When you remove or rename code, sweep the surrounding context for the wreckage: unused imports, now-unreferenced helpers, unread struct fields, dead branches that handled a removed case, comments describing behaviour that no longer exists, and tests for code that no longer exists. `deno lint` catches some of this but not all — eyeball the diff. A half-finished delete is worse than no delete.
+### Principles
+- Smallest change that solves the problem. Resist scope creep, especially your own.
+- Code says what; commits say why. Reasoning lives in commit messages and `git blame`.
+- Types are load-bearing. Make wrong states unrepresentable.
+- Dead code is debt. Delete it. Git remembers.
+- Read more than you write.
 
-**Update the docs alongside the code.** When you change something user- or agent-visible — routes, env vars, the protocol, the tool list, the architecture diagram — update `AGENTS.md`, `CLAUDE.md`, `README.md` (if present), and the relevant doc comments in the same commit. Stale docs are confidently wrong, which is worse than missing.
+### Before changing code
+- Read the relevant files in full. Surrounding code teaches conventions.
+- Find prior art and match it. Don't introduce a third way of doing the same thing.
+- For non-trivial changes, state the plan in one paragraph: what, why, what you won't touch.
+- If the request is ambiguous, ask. Always ask before irreversible operations.
 
-**Think about performance and lifecycles every time.** Every observer, listener, interval, timeout, subscription, or long-lived closure is a potential leak and a potential CPU drain. Before you ship code that adds one of those, answer two questions out loud: (1) what cleans this up when the owning element / session / turn ends? (2) how often does it run, and what's the cost per run × the worst-case rate? Specific shapes to watch for: `MutationObserver` scoped wider than necessary (especially `document.body` with `subtree: true`), per-instance global listeners with no removal path, intervals that don't self-cancel when their state goes away, growing maps with no pruning, and subscriptions taken inside render functions that re-take on every render. Lit elements with `connectedCallback` / `disconnectedCallback` are usually the right home for anything DOM-bound — they get the lifecycle hooks for free instead of you reinventing them with cleanup observers. Default to the cheapest mechanism that solves the problem, and re-check perf hotspots whenever they're touched.
+### Writing code
+- **Types.** Sum types over flags. `Result<T, E>` over thrown strings. Newtypes for ids that mustn't mix (`UserId` ≠ `OrgId`). No `any`, no unwrapping fallible values without a comment justifying it.
+- **Parse, don't validate.** Convert untrusted input to a typed value at the boundary, once.
+- **Errors are values.** Return them, type them. No empty catch. No rethrow without added context. Crash on programmer error, surface user error, retry transient error.
+- **Names describe intent, not type.** `pendingApprovals` not `items`. `cancelOrder` not `processOrder2`.
+- **One thing, one level of abstraction per function.** If you need "and" to describe it, split it.
+- **Pure core, imperative shell.** Push side effects to the edges.
+- **Comments justify non-obvious choices.** If a comment paraphrases the next line, delete one.
+- **Don't abstract for hypothetical futures.** Two call sites is a coincidence; three is a pattern. Until then, inline.
+- **Default to no shared mutable state.** Module-level buffers and singletons are concurrency hazards.
 
-**Run the test suite before every commit.** `./scripts/check.sh` (or at minimum `deno task test:unit`) must be green. If you added behavior, add a test for it in `tests/` first; if you changed behavior, update the existing test. Never commit with red or skipped tests "to fix later".
+### Size discipline
+- Files over 1000 lines should be split. If you're touching one, leave it smaller than you found it. Splits go in their own commit.
+- Target commits under ~100 lines diff. Over ~200, justify why it can't be split. Mechanical refactors (renames, formatter runs) excepted but should be obviously mechanical.
+- Each commit builds and passes tests on its own. `git bisect` only works when every commit is green.
 
-**Validate before you commit.** A commit means "this works." Either tests cover the change end-to-end, or you ran the code and verified the new/changed behaviour manually (pages render, tool calls succeed, the new flag actually flips the thing). Don't commit changes you haven't watched run. If something can only be checked by hand, do that before staging.
+### Refactoring and dead code
+- Refactors go in separate commits from feature work. A reviewer should never have to ask "is this a behaviour change or a rename?"
+- Pure refactors don't change behaviour. If tests fail after, it wasn't a refactor.
+- Refactor opportunistically, but bound it. Improve what's in your way; don't rewrite the module.
+- If you find a deeper problem, name it and stop. Surface it; let the human decide if it's in scope.
+- Delete unused code, exports, deps, flags. Don't comment out, don't `if (false)`. Removals in their own commit.
+- Resolve or delete stale TODOs.
 
-**One commit = one focused change.** Tight, single-purpose commits. A topbar UI tweak, a tool-description edit, and a server-side bugfix are three commits, not one — even when they all sit in the same dirty tree at the end of a session. If you find yourself listing five unrelated bullets in a commit message, stop and split. Mixed commits are hostile to bisection, review, and `git revert`.
+When deleting or renaming, sweep the diff for the wreckage: unused imports, now-unreferenced helpers, unread struct/interface fields, dead branches that handled a removed case, comments describing behaviour that no longer exists, and tests for code that no longer exists. `deno lint` catches some of this but not all — eyeball the diff. A half-finished delete is worse than no delete.
 
-**Never invoke `git` with `-C <path>`.** It re-targets the repo path explicitly, trips the harness's permission prompt on every call, and adds noise. If your shell is somewhere other than the repo root (e.g. `web/` after a `tsc` run), `cd` to the repo root once and then run plain `git status` / `git add …` / `git commit …`.
+### Tests
+- Test behaviour, not implementation. Assertions on observable outcomes survive refactors.
+- One reason to fail per test.
+- A failing test is a finished test. Watch it fail with a wrong expected value first.
+- Don't test what types prove. Don't test framework code.
+- Run the test suite before every commit. `./scripts/check.sh` (or at minimum `deno task test:unit`) must be green. If you added behaviour, add a test for it in `tests/` first; if you changed behaviour, update the existing test. Never commit with red or skipped tests "to fix later".
+- Run integration tests (`tests/integration/`) after notable changes to agent behaviour, tool definitions, or the WS protocol — they're not in the pre-commit hook because they need a real LLM.
 
-**Commit messages explain the why.** First line: a tight, scannable subject (≤ 72 chars, imperative mood, no trailing period) that's useful in `git log --oneline` to a human or agent skimming history. Bias toward "*what changed and why*" over "*how*" — `Fix camera widget memory leak from per-instance body observer` beats `Refactor CameraRenderer.ts`. Then a blank line, then the body: context (why this is needed, what was wrong before, the constraint that drove the choice), the approach in a sentence or two, and any non-obvious trade-offs. Future-you and future-agents will read these in `git log` and `git blame`; write them so they can rebuild the reasoning without spelunking the diff.
+### Validate before you commit
+A commit means "this works." Either tests cover the change end-to-end, or you ran the code and verified the new/changed behaviour manually (pages render, tool calls succeed, the new flag actually flips the thing). Don't commit changes you haven't watched run.
 
-**Never commit secrets.** Tokens, API keys, long-lived access tokens, network IPs that identify a private deployment, hostnames that aren't public DNS — none of these belong in tracked files. They go in `.env` (gitignored) or `docker-compose.override.yml` (gitignored). When in doubt, treat it as a secret.
+### One commit = one focused change
+Tight, single-purpose commits. A topbar UI tweak, a tool-description edit, and a server-side bugfix are three commits, not one — even when they all sit in the same dirty tree at the end of a session. If you find yourself listing five unrelated bullets in a commit message, stop and split. Mixed commits are hostile to bisection, review, and `git revert`.
+
+### Commit messages
+Subject (≤ 72 chars, imperative mood, no trailing period) is for `git log --oneline` skimmers. Bias toward "*what changed and why*" over "*how*" — `Fix camera widget memory leak from per-instance body observer` beats `Refactor CameraRenderer.ts`. Then a blank line, then the body: why this is needed (problem solved, symptom or ticket that prompted it), the approach in a sentence or two, alternatives considered, non-obvious trade-offs. Don't restate the diff. Future-you and future-agents will read these in `git log` and `git blame`; write them so the reasoning survives the diff being touched again later.
+
+### Token efficiency
+- Read targeted ranges, not whole files. Whole files only when you'll read them linearly.
+- Edit with surgical replacements, not rewrites.
+- Don't paste large outputs back into reasoning. Summarize; reference paths and line numbers.
+- Don't restate the request before answering. Just do it.
+- Match response length to question.
+
+### Communication
+- Report outcomes, not attempts. Failed approaches go in the commit body if useful, else discarded.
+- Surface uncertainty. "I changed X. Y is suspect because Z" beats false confidence.
+- Flag what you noticed but didn't fix. Don't silently fix; don't silently ignore.
+
+### When in doubt
+Ask. Read the surrounding code one more time. Make the smaller version first.
+
+### Performance and lifecycles
+Every observer, listener, interval, timeout, subscription, or long-lived closure is a potential leak and a potential CPU drain. Before you ship code that adds one of those, answer two questions out loud: (1) what cleans this up when the owning element / session / turn ends? (2) how often does it run, and what's the cost per run × the worst-case rate? Specific shapes to watch for: `MutationObserver` scoped wider than necessary (especially `document.body` with `subtree: true`), per-instance global listeners with no removal path, intervals that don't self-cancel when their state goes away, growing maps with no pruning, and subscriptions taken inside render functions that re-take on every render. Lit elements with `connectedCallback` / `disconnectedCallback` are usually the right home for anything DOM-bound — they get the lifecycle hooks for free instead of you reinventing them with cleanup observers. Default to the cheapest mechanism that solves the problem, and re-check perf hotspots whenever they're touched.
+
+### Update the docs alongside the code
+When you change something user- or agent-visible — routes, env vars, the protocol, the tool list, the architecture diagram — update `AGENTS.md`, `CLAUDE.md`, `README.md` (if present), and the relevant doc comments in the same commit. Stale docs are confidently wrong, which is worse than missing.
+
+### Never invoke `git` with `-C <path>`
+It re-targets the repo path explicitly, trips the harness's permission prompt on every call, and adds noise. If your shell is somewhere other than the repo root (e.g. `web/` after a `tsc` run), `cd` to the repo root once and then run plain `git status` / `git add …` / `git commit …`.
+
+### Never commit secrets
+Tokens, API keys, long-lived access tokens, network IPs that identify a private deployment, hostnames that aren't public DNS — none of these belong in tracked files. They go in `.env` (gitignored) or `docker-compose.override.yml` (gitignored). When in doubt, treat it as a secret.
 
 - Do not hardcode anything that looks like a token, key, or private IP — read it from an env var with a generic public default (e.g. `homeassistant.local`, `host.docker.internal`).
 - Do not commit `.env`, `.pi-agent/`, `docker-compose.override.yml`, or any file under `workspace/` (scratch / dev notes).

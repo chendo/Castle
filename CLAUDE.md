@@ -50,19 +50,83 @@ Key modules:
 
 `web/` is a separate Vite/Lit project (`web/package.json`) consuming `@mariozechner/pi-web-ui`. The build output lands in `web/dist/` and is served as static files by `main.ts`. There is no SSR and no API client layer — the UI talks to the server only via the `/ws` protocol (look at `WebSocketRemoteAgent.ts` and `main.ts`'s `handleSocket` for the message shapes: `hello`, `prompt`, `abort`, `reset`, `set_settings`, `set_model`, `set_exposure`, `get_settings`, `list_sessions`, `resume_session`, `delete_session`).
 
-## When deleting or refactoring
+## Engineering standards
 
-Sweep the diff for dead code every time. After removing or renaming something, check for: unused imports, now-orphaned helper functions, unread struct/interface fields, dead conditional branches that handled a removed case, comments describing behaviour that no longer exists, and tests for code that no longer exists. `deno lint` catches *some* unused locals but not unread fields, dead branches, or stale comments. A half-finished delete that leaves wreckage behind is worse than no delete — chase it down before you commit.
+Rules for every change. Optimize for whoever reads this commit in six months without context.
 
-Also re-read `AGENTS.md`, `CLAUDE.md`, and any nearby doc comments in the same pass. When you change a route, env var, protocol, tool list, or architectural shape, the docs that describe it become wrong instantly — fix them in the same commit. Stale docs that confidently describe a system that no longer exists are worse than missing docs.
+### Principles
+- Smallest change that solves the problem. Resist scope creep, especially your own.
+- Code says what; commits say why. Reasoning lives in commit messages and `git blame`.
+- Types are load-bearing. Make wrong states unrepresentable.
+- Dead code is debt. Delete it. Git remembers.
+- Read more than you write.
 
-## Committing
+### Before changing code
+- Read the relevant files in full. Surrounding code teaches conventions.
+- Find prior art and match it. Don't introduce a third way of doing the same thing.
+- For non-trivial changes, state the plan in one paragraph: what, why, what you won't touch.
+- If the request is ambiguous, ask. Always ask before irreversible operations.
 
-- **Never use `git -C <path>`.** Triggers a permission prompt on every call. If your shell is somewhere other than the repo root (e.g. `web/` after a `tsc` run), `cd` to the repo root once and run plain `git`.
-- **One commit, one focused change.** A UI tweak, a tool-description edit, and a server-side bugfix are three commits even when they're all in the same session's dirty tree. Mixed commits are hostile to bisection, review, and `git revert` — split them.
-- **Validate before staging.** Either tests cover it end-to-end, or you ran the code and watched the new behaviour work (the page renders, the tool call succeeds, the flag actually toggles the thing). Never commit a change you haven't seen run.
-- **Subject line is for `git log --oneline` skimmers** — humans and agents both. Imperative mood, ≤ 72 chars, no trailing period. Bias toward "*what changed and why*" rather than "*how*": `Fix camera widget memory leak from per-instance body observer` beats `Refactor CameraRenderer.ts`. Make it findable from a one-line history grep.
-- **Body explains the why.** Context (what was wrong, what constraint forced the choice), the approach in a sentence or two, non-obvious trade-offs. Future-you reads these in `git blame`; write them so the reasoning survives the diff being touched again later.
+### Writing code
+- **Types.** Sum types over flags. `Result<T, E>` over thrown strings. Newtypes for ids that mustn't mix (`UserId` ≠ `OrgId`). No `any`, no unwrapping fallible values without a comment justifying it.
+- **Parse, don't validate.** Convert untrusted input to a typed value at the boundary, once.
+- **Errors are values.** Return them, type them. No empty catch. No rethrow without added context. Crash on programmer error, surface user error, retry transient error.
+- **Names describe intent, not type.** `pendingApprovals` not `items`. `cancelOrder` not `processOrder2`.
+- **One thing, one level of abstraction per function.** If you need "and" to describe it, split it.
+- **Pure core, imperative shell.** Push side effects to the edges.
+- **Comments justify non-obvious choices.** If a comment paraphrases the next line, delete one.
+- **Don't abstract for hypothetical futures.** Two call sites is a coincidence; three is a pattern. Until then, inline.
+- **Default to no shared mutable state.** Module-level buffers and singletons are concurrency hazards.
+
+### Size discipline
+- Files over 1000 lines should be split. If you're touching one, leave it smaller than you found it. Splits go in their own commit.
+- Target commits under ~100 lines diff. Over ~200, justify why it can't be split. Mechanical refactors (renames, formatter runs) excepted but should be obviously mechanical.
+- Each commit builds and passes tests on its own. `git bisect` only works when every commit is green.
+
+### Refactoring and dead code
+- Refactors go in separate commits from feature work. A reviewer should never have to ask "is this a behaviour change or a rename?"
+- Pure refactors don't change behaviour. If tests fail after, it wasn't a refactor.
+- Refactor opportunistically, but bound it. Improve what's in your way; don't rewrite the module.
+- If you find a deeper problem, name it and stop. Surface it; let the human decide if it's in scope.
+- Delete unused code, exports, deps, flags. Don't comment out, don't `if (false)`. Removals in their own commit.
+- Resolve or delete stale TODOs.
+
+After a delete or rename, sweep the diff for the wreckage: unused imports, orphaned helper functions, unread struct/interface fields, dead conditional branches that handled a removed case, comments describing behaviour that no longer exists, and tests for code that no longer exists. `deno lint` catches *some* unused locals but not unread fields, dead branches, or stale comments. A half-finished delete is worse than no delete — chase it down before you commit. Re-read `AGENTS.md`, `CLAUDE.md`, and nearby doc comments in the same pass: when you change a route, env var, protocol, tool list, or architectural shape, the docs describing it become wrong instantly. Fix them in the same commit.
+
+### Tests
+- Test behaviour, not implementation. Assertions on observable outcomes survive refactors.
+- One reason to fail per test.
+- A failing test is a finished test. Watch it fail with a wrong expected value first.
+- Don't test what types prove. Don't test framework code.
+- Run the test suite before every commit (`./scripts/check.sh` or at minimum `deno task test:unit`). Never commit with red or skipped tests "to fix later".
+- Run integration tests (`tests/integration/`) after notable changes to agent behaviour, tool definitions, or the WS protocol — they're not in the pre-commit hook because they need a real LLM.
+
+### Validate before staging
+A commit means "this works." Either tests cover it end-to-end, or you ran the code and watched the new behaviour work (the page renders, the tool call succeeds, the flag actually toggles the thing). Never commit a change you haven't seen run.
+
+### One commit = one focused change
+A UI tweak, a tool-description edit, and a server-side bugfix are three commits even when they're all in the same session's dirty tree. Mixed commits are hostile to bisection, review, and `git revert` — split them.
+
+### Commit messages
+Subject (≤ 72 chars, imperative mood, no trailing period) is for `git log --oneline` skimmers — humans and agents both. Bias toward "*what changed and why*" over "*how*": `Fix camera widget memory leak from per-instance body observer` beats `Refactor CameraRenderer.ts`. Body: why this is needed (problem solved, symptom or ticket that prompted it), the approach in a sentence or two, alternatives considered, non-obvious trade-offs. Don't restate the diff. Future-you reads these in `git blame`; write them so the reasoning survives the diff being touched again later.
+
+### Token efficiency
+- Read targeted ranges, not whole files. Whole files only when you'll read them linearly.
+- Edit with surgical replacements, not rewrites.
+- Don't paste large outputs back into reasoning. Summarize; reference paths and line numbers.
+- Don't restate the request before answering. Just do it.
+- Match response length to question.
+
+### Communication
+- Report outcomes, not attempts. Failed approaches go in the commit body if useful, else discarded.
+- Surface uncertainty. "I changed X. Y is suspect because Z" beats false confidence.
+- Flag what you noticed but didn't fix. Don't silently fix; don't silently ignore.
+
+### When in doubt
+Ask. Read the surrounding code one more time. Make the smaller version first.
+
+### Never use `git -C <path>`
+Triggers a permission prompt on every call. If your shell is somewhere other than the repo root (e.g. `web/` after a `tsc` run), `cd` to the repo root once and run plain `git`.
 
 ## Performance and lifecycles
 
