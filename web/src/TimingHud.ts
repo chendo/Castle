@@ -120,15 +120,17 @@ function decorateMessages(root: HTMLElement): void {
  * moment any text/thinking delta arrives. Animated dots so it doesn't look
  * frozen during long gaps. Same affordance pi-web-ui already has for
  * "Thinking…" but covers the gap that one doesn't.
+ *
+ * Placed inline inside the chat flow — sits right after the last message and
+ * before <streaming-message-container> — so it reads as "the assistant is
+ * working on a reply" rather than as a global page status.
  */
 function buildProcessingIndicator(): HTMLElement {
   const el = document.createElement("div");
+  el.setAttribute("data-castle-processing", "");
   el.style.cssText = `
-    position: absolute;
-    bottom: 12px;
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 5;
+    align-self: flex-start;
+    margin: 0 16px;
     padding: 4px 12px;
     border: 1px solid var(--border);
     border-radius: 999px;
@@ -136,8 +138,7 @@ function buildProcessingIndicator(): HTMLElement {
     color: var(--muted-foreground);
     font: 12px ui-sans-serif, system-ui, sans-serif;
     pointer-events: none;
-    opacity: 0;
-    transition: opacity 120ms;
+    display: none;
   `;
   // Dots animate so the user can tell the page isn't frozen.
   if (!document.getElementById("castle-dots-style")) {
@@ -162,12 +163,24 @@ function buildProcessingIndicator(): HTMLElement {
   el.innerHTML = `Processing<span class="castle-processing-dots"></span>`;
 
   const update = () => {
-    const next = turnTimings.isProcessing() ? "1" : "0";
-    if (el.style.opacity !== next) el.style.opacity = next;
+    el.style.display = turnTimings.isProcessing() ? "inline-block" : "none";
   };
   turnTimings.subscribe(update);
   update();
   return el;
+}
+
+/**
+ * Keep the processing indicator anchored just before pi-web-ui's
+ * <streaming-message-container>, so it sits in the chat flow right below the
+ * last user message. pi-web-ui never moves the streaming container once
+ * AgentInterface has rendered, so re-attaching is cheap and only fires when
+ * lit creates a new instance (e.g. fresh session). */
+function reattachProcessingIndicator(chatPanel: HTMLElement, indicator: HTMLElement): void {
+  const target = chatPanel.querySelector("streaming-message-container");
+  if (!target?.parentElement) return;
+  if (indicator.nextSibling === target) return; // already in the right slot
+  target.parentElement.insertBefore(indicator, target);
 }
 
 /**
@@ -233,7 +246,7 @@ export function mountTimingHud(chatWrap: HTMLElement, chatPanel: HTMLElement): v
   if (!chatWrap.style.position) chatWrap.style.position = "relative";
 
   chatWrap.appendChild(buildLiveTicker());
-  chatWrap.appendChild(buildProcessingIndicator());
+  const processingIndicator = buildProcessingIndicator();
 
   // Coalesce the mutation storm during streaming into one decorate per frame.
   // pi-web-ui re-renders the message DOM on every text-delta; without this
@@ -244,6 +257,7 @@ export function mountTimingHud(chatWrap: HTMLElement, chatPanel: HTMLElement): v
     rafId = requestAnimationFrame(() => {
       rafId = null;
       decorateMessages(chatPanel);
+      reattachProcessingIndicator(chatPanel, processingIndicator);
     });
   };
 

@@ -1,1 +1,10 @@
 @import "@mariozechner/pi-web-ui/app.css";
+
+/* Hide pi-web-ui's pulsing block caret inside streaming messages.
+   TimingHud's bottom-center "Processing…" pill plays the same role with less
+   visual noise (it sits in dead-air, not inline with the text), and keeping
+   both is redundant. The selector is intentionally specific so the rule only
+   matches the streaming caret, not other animate-pulse usages. */
+streaming-message-container span.animate-pulse.bg-muted-foreground.w-2.h-4 {
+  display: none !important;
+}
