@@ -496,9 +496,18 @@ export function submitPrompt(text: string, ha: HAClient): void {
 export interface WarmupResult { at: number; durationMs: number }
 
 let lastWarmup: WarmupResult | null = null;
+let warming = false;
 
 export function getLastWarmup(): WarmupResult | null {
   return lastWarmup;
+}
+
+/** True between the moment a warmup turn enters the prompt queue and the
+ *  matching agent.reset(). The broadcast layer reads this to suppress the
+ *  warmup turn so it never lands in the chat panel; the snapshot serializer
+ *  reads it to keep `messages` empty for any client that connects mid-warm. */
+export function isWarmingUp(): boolean {
+  return warming;
 }
 
 /**
@@ -518,9 +527,13 @@ export async function warmupPromptCache(ha: HAClient): Promise<WarmupResult | nu
   const t0 = performance.now();
   return await new Promise<WarmupResult | null>((resolve) => {
     queue.push(async () => {
+      // `warming` brackets the entire prompt+reset sequence so the broadcast
+      // layer can drop every event the warmup turn generates. Cleared in
+      // finally so a thrown agent error doesn't leave us stuck filtering.
+      warming = true;
       try {
         const session = await getAgentSession(ha);
-        await session.prompt("Do not respond, prompt cache");
+        await session.prompt("Your output must be empty.");
         await session.agent.waitForIdle();
         session.agent.reset();
         const result: WarmupResult = { at: Date.now(), durationMs: Math.round(performance.now() - t0) };
@@ -530,6 +543,8 @@ export async function warmupPromptCache(ha: HAClient): Promise<WarmupResult | nu
       } catch (err) {
         console.warn("[castle] warmup failed:", (err as Error).message);
         resolve(null);
+      } finally {
+        warming = false;
       }
     });
     drainQueue();
