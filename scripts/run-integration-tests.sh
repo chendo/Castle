@@ -196,6 +196,15 @@ echo "HA_TOKEN=$HA_TOKEN" >> "$PROJECT_DIR/.env.test.compose"
 docker compose "${COMPOSE_ARGS[@]}" up -d castle 2>&1 | while read -r line; do log "$line"; done
 wait_for_ws
 
+# Seed a storage-mode lovelace dashboard via the WS API (no YAML equivalent,
+# and the auto-created Overview never lists). Runs inside the test castle
+# container so it has the in-network ws://ha-demo:8123 path.
+log "Seeding test dashboard..."
+docker compose "${COMPOSE_ARGS[@]}" exec \
+  -e HA_URL=http://ha-demo:8123 \
+  -e HA_TOKEN="${HA_TOKEN}" \
+  castle deno run --allow-net --allow-env /workspace/scripts/seed-test-dashboard.ts 2>&1 | while read -r line; do log "$line"; done
+
 log "Running integration tests..."
 EXIT_CODE=0
 docker compose "${COMPOSE_ARGS[@]}" exec \

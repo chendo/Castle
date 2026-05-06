@@ -350,49 +350,77 @@ export async function getSwitchEntityIds(haBaseUrl: string): Promise<string[]> {
 
 // ── Dashboard Helpers ───────────────────────────────────────────────────────
 
-/** List dashboards via HA REST API. */
-export async function listDashboards(haBaseUrl: string): Promise<Array<{ slug: string; name: string }>> {
-  try {
-    const res = await haFetch(`${haBaseUrl}/api/config/dashboard/list`);
-    if (!res.ok) return [];
-    const json = await res.json();
-    return Array.isArray(json) ? json : (json.dashboards ?? []);
-  } catch {
-    return [];
-  }
+/** Send one authenticated WS command to HA and return its result. Dashboards
+ *  have no REST surface in modern HA; lovelace/dashboards/list and
+ *  lovelace/config are WS-only. Auths via HA_TOKEN; resolves null on auth
+ *  failure, ws error, or 5s timeout (whichever lands first). */
+async function haWsCall<T>(haBaseUrl: string, msg: Record<string, unknown>): Promise<T | null> {
+  const wsUrl = haBaseUrl.replace(/^http(s?):\/\//, "ws$1://").replace(/\/$/, "") + "/api/websocket";
+  const token = Deno.env.get("HA_TOKEN") ?? "";
+  return new Promise<T | null>((resolve) => {
+    const ws = new WebSocket(wsUrl);
+    const reqId = 1;
+    let resolved = false;
+    const finish = (val: T | null) => {
+      if (resolved) return;
+      resolved = true;
+      try { ws.close(); } catch { /* ignore */ }
+      resolve(val);
+    };
+    const timeout = setTimeout(() => finish(null), 5000);
+    ws.onmessage = (ev) => {
+      try {
+        const m = JSON.parse(typeof ev.data === "string" ? ev.data : "") as { type?: string; id?: number; success?: boolean; result?: T };
+        if (m.type === "auth_required") {
+          ws.send(JSON.stringify({ type: "auth", access_token: token }));
+        } else if (m.type === "auth_ok") {
+          ws.send(JSON.stringify({ id: reqId, ...msg }));
+        } else if (m.type === "auth_invalid") {
+          clearTimeout(timeout);
+          finish(null);
+        } else if (m.id === reqId) {
+          clearTimeout(timeout);
+          finish(m.success ? (m.result ?? null) : null);
+        }
+      } catch { /* malformed frame */ }
+    };
+    ws.onerror = () => { clearTimeout(timeout); finish(null); };
+  });
 }
 
-/** Fetch raw dashboard YAML via HA REST API. */
+/** List dashboards via HA WebSocket API.
+ *  /api/config/dashboard/list doesn't exist; lovelace/dashboards/list returns
+ *  the user-defined dashboards (the auto-created "Overview" is implicit and
+ *  doesn't appear here — declare extra ones via configuration.yaml). */
+export async function listDashboards(haBaseUrl: string): Promise<Array<{ slug: string; name: string }>> {
+  const result = await haWsCall<Array<{ url_path: string; title: string }>>(haBaseUrl, {
+    type: "lovelace/dashboards/list",
+  });
+  if (!result) return [];
+  return result.map((d) => ({ slug: d.url_path, name: d.title }));
+}
+
+/** Fetch a dashboard's full config object via WS. The "raw" / "config" pair
+ *  on REST is unavailable; the WS endpoint returns the config as a JSON
+ *  object. Stringify for tests that just compare before/after for change. */
 export async function getDashboardRaw(
   haBaseUrl: string,
   slugOrPath: string,
 ): Promise<string | null> {
-  try {
-    const res = await haFetch(`${haBaseUrl}/api/config/dashboard/raw/${slugOrPath}`);
-    if (!res.ok) return null;
-    return await res.text();
-  } catch {
-    return null;
-  }
+  const cfg = await getDashboardConfig(haBaseUrl, slugOrPath);
+  if (cfg === null) return null;
+  return JSON.stringify(cfg, null, 2);
 }
 
-/** Fetch dashboard JSON config. */
+/** Fetch dashboard JSON config via WS. */
 export async function getDashboardConfig(
   haBaseUrl: string,
   slugOrPath: string,
 ): Promise<unknown | null> {
-  try {
-    const res = await haFetch(`${haBaseUrl}/api/config/dashboard/raw/${slugOrPath}`);
-    if (!res.ok) return null;
-    const yamlText = await res.text();
-    // Try to parse as JSON first (some dashboards store JSON)
-    try {
-      return JSON.parse(yamlText);
-    } catch { /* not JSON */ }
-    return null;
-  } catch {
-    return null;
-  }
+  return await haWsCall<unknown>(haBaseUrl, {
+    type: "lovelace/config",
+    url_path: slugOrPath || null,
+  });
 }
 
 // ── Automation Helpers ──────────────────────────────────────────────────────

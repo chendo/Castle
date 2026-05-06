@@ -4,3 +4,8 @@ demo:
 # the integration tests have writable automations to exercise. The 'demo:'
 # integration doesn't seed any.
 automation: !include automations.yaml
+
+# Note: storage-mode dashboards can't be declared in YAML (HA only accepts
+# mode: yaml + filename here). Tests need a *mutable* dashboard for the
+# ha_edit_dashboard suite, so the runner creates one via the lovelace WS
+# API after onboarding instead.
