@@ -1,19 +1,21 @@
 // Main information surface — two stacked sections:
 //   ★ Favourites — the user's hand-picked entities, each rendered as a
 //                  full domain-tailored EntityCard (slider for lights,
-//                  setpoint for climate, transport for media, etc.) so
-//                  the dashboard *is* the control surface for them.
+//                  setpoint for climate, transport for media, etc.).
 //   Areas        — one summary card per area: ambient sensors + a
-//                  short list of shortcut rows + an "Open in chat" link
-//                  for full agent-mediated control.
+//                  short list of shortcut rows.
 //
-// Cards subscribe to EntityStateCache; controls fire ha_call_service
-// over the WS service_call frame, same path the chat-inline cards use.
+// State flows through EntityStateCache. Each shortcut row owns its own
+// per-entity subscription, so a state-change burst only patches the
+// rows whose entities actually changed — buttons stay attached, click
+// handlers don't get torn out from under a mid-click. Tearing down the
+// whole grid on every state change (which is what the previous version
+// did) is the reason the toggle buttons felt unresponsive.
 //
-// Visibility filter: only entities exposed to the agent are surfaced
-// here, matching the sidebar's "Hide non-exposed" default. Anything
-// non-exposed is one click away in the sidebar (which has the
-// per-entity eye toggle).
+// Visibility:
+//   - Only entities exposed to the agent are surfaced here.
+//   - The user can hide areas they don't care about; hidden areas
+//     come back via a "Show hidden" checkbox.
 
 import type { AreaInfo, EntityState, WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
 import { entityCache } from "./EntityStateCache";
@@ -23,10 +25,9 @@ import { buildEntityCard } from "./EntityCard";
 
 const FAV_KEY = "castle-sidebar-favourites";
 const COLLAPSED_KEY = "castle-dashboard-collapsed";
+const HIDDEN_AREAS_KEY = "castle-dashboard-hidden-areas";
+const SHOW_HIDDEN_KEY = "castle-dashboard-show-hidden";
 
-// Domains a user typically reaches for when they open a room. Shortcut
-// rows are reserved for these; anything outside is "more" the user can
-// reach via the chat link.
 const SHORTCUT_PRIORITY: Record<string, number> = {
   light: 1,
   climate: 2,
@@ -39,7 +40,6 @@ const SHORTCUT_PRIORITY: Record<string, number> = {
 };
 const MAX_SHORTCUTS = 5;
 
-// Domains that count as "ambient" sensors for the area summary.
 const AMBIENT_DEVICE_CLASSES = new Set([
   "temperature", "humidity", "illuminance", "motion", "occupancy",
 ]);
@@ -48,14 +48,7 @@ interface ServiceCaller {
   (domain: string, service: string, entityId: string, data?: Record<string, unknown>): Promise<{ ok: boolean; error?: string }>;
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────
-
-function el<K extends keyof HTMLElementTagNameMap>(tag: K, style?: string, text?: string): HTMLElementTagNameMap[K] {
-  const e = document.createElement(tag);
-  if (style) e.style.cssText = style;
-  if (text !== undefined) e.textContent = text;
-  return e;
-}
+// ── Storage helpers ───────────────────────────────────────────────────────
 
 function readSet(key: string): Set<string> {
   try {
@@ -65,17 +58,32 @@ function readSet(key: string): Set<string> {
   return new Set();
 }
 
-function isCollapsed(): boolean {
-  try { return localStorage.getItem(COLLAPSED_KEY) === "1"; } catch { return false; }
+function writeSet(key: string, set: Set<string>): void {
+  try { localStorage.setItem(key, JSON.stringify([...set])); } catch { /* ignore */ }
 }
 
-function setCollapsed(v: boolean): void {
-  try { localStorage.setItem(COLLAPSED_KEY, v ? "1" : "0"); } catch { /* ignore */ }
+function readBool(key: string): boolean {
+  try { return localStorage.getItem(key) === "1"; } catch { return false; }
+}
+
+function writeBool(key: string, v: boolean): void {
+  try { localStorage.setItem(key, v ? "1" : "0"); } catch { /* ignore */ }
+}
+
+// ── DOM helpers ────────────────────────────────────────────────────────────
+
+function el<K extends keyof HTMLElementTagNameMap>(tag: K, style?: string, text?: string): HTMLElementTagNameMap[K] {
+  const e = document.createElement(tag);
+  if (style) e.style.cssText = style;
+  if (text !== undefined) e.textContent = text;
+  return e;
 }
 
 function isExposed(e: EntityState): boolean {
   return e.exposed !== false;
 }
+
+// ── Data shaping ───────────────────────────────────────────────────────────
 
 function pickAmbient(entities: EntityState[]): EntityState[] {
   const seen = new Set<string>();
@@ -133,27 +141,59 @@ function domainIcon(domain: string): string {
   }
 }
 
-function buildShortcutRow(state: EntityState, set: ServiceCaller): HTMLElement {
+// ── Live shortcut row ─────────────────────────────────────────────────────
+//
+// One row per entity. Subscribes to its entity in EntityStateCache and
+// patches itself on every state change. Importantly, the ROW DOM stays
+// alive across state changes — only the action button is replaced. So a
+// click that arrives mid-state-flip targets the still-attached row, not
+// a dead branch of the tree.
+
+interface RowHandle {
+  root: HTMLElement;
+  dispose: () => void;
+}
+
+function buildLiveShortcutRow(
+  entityId: string,
+  domain: string,
+  set: ServiceCaller,
+): RowHandle {
   const row = el("div", `
     display: flex; align-items: center; gap: 6px; min-height: 24px;
     padding: 2px 0; font-size: 12px; color: var(--foreground);
   `);
-  const icon = el("span", "width: 16px; flex-shrink: 0;", domainIcon(state.domain));
-  const name = el("span", "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0;", entityLabel(state));
-  name.title = state.entity_id;
+  const icon = el("span", "width: 16px; flex-shrink: 0;", domainIcon(domain));
+  const name = el("span", "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0;");
   name.style.cursor = "pointer";
-  name.onclick = () => showEntityDetail(state);
 
-  const action = buildAction(state, set);
+  // The action button is replaced wholesale on each state change. The
+  // wrapping span lets us hold a stable reference for replaceWith().
+  const actionSlot = el("span", "display: contents;");
 
-  row.append(icon, name, action);
-  return row;
+  row.append(icon, name, actionSlot);
+
+  let lastState: EntityState | null = null;
+  name.onclick = () => { if (lastState) showEntityDetail(lastState); };
+
+  let currentAction: HTMLElement | null = null;
+  const unsub = entityCache.subscribeEntity(entityId, (state) => {
+    lastState = state;
+    if (!state) return;
+    name.textContent = entityLabel(state);
+    name.title = state.entity_id;
+    const newAction = buildAction(state, set);
+    if (currentAction) currentAction.replaceWith(newAction);
+    else actionSlot.appendChild(newAction);
+    currentAction = newAction;
+  });
+
+  return { root: row, dispose: unsub };
 }
 
 function buildAction(state: EntityState, set: ServiceCaller): HTMLElement {
-  // Buttons label themselves with the *current* state so the
-  // dashboard reads at a glance — a bright "On" pill means the light
-  // is on, not that "On" is the action you'd take. Click toggles.
+  // Buttons label themselves with the *current* state so the dashboard
+  // reads at a glance — bright "On" pill = on, transparent "Off" = off.
   const isOn = state.state === "on" || state.state === "playing" || state.state === "open";
   const padBtn = "padding: 2px 8px; font-size: 11px; cursor: pointer; border-radius: 4px; border: 1px solid var(--border); flex-shrink: 0; line-height: 1.4;";
   const activeBg = `background: var(--primary, #58a6ff); color: var(--primary-foreground, white);`;
@@ -196,8 +236,6 @@ function buildAction(state: EntityState, set: ServiceCaller): HTMLElement {
       return btn;
     }
     case "media_player": {
-      // Two-state binary: playing or not. Highlight when playing so it
-      // matches the on/off semantics of the other domains.
       const btn = el("button", padBtn + (isOn ? activeBg : inactiveBg), isOn ? "Playing" : "Idle");
       btn.title = `Click to ${isOn ? "pause" : "play"}`;
       btn.onclick = async (ev) => {
@@ -218,55 +256,147 @@ function buildAction(state: EntityState, set: ServiceCaller): HTMLElement {
   return el("span", "font-family: ui-monospace, monospace; font-size: 11px; color: var(--foreground); flex-shrink: 0;", state.state);
 }
 
-// ── Area card (summary + shortcuts) ───────────────────────────────────────
+// ── Live area card ────────────────────────────────────────────────────────
+//
+// A card whose DOM is built once, then patched in place via refresh().
+// Each shortcut row owns its own subscription; the card itself only
+// rebuilds the ambient row on refresh. This means a state-change burst
+// replaces individual action buttons, not the whole grid.
+
+interface AreaCardHandle {
+  root: HTMLElement;
+  refresh: (opts: { name: string; entities: EntityState[]; hidden: boolean }) => void;
+  dispose: () => void;
+}
 
 function buildAreaCard(opts: {
+  area_id: string;
   name: string;
-  entities: EntityState[];
   agent: WebSocketRemoteAgent;
-}): HTMLElement {
+  onToggleHide: (area_id: string) => void;
+}): AreaCardHandle {
   const root = el("div", `
     display: flex; flex-direction: column; gap: 8px;
     padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px;
     background: var(--card, var(--background));
+    transition: opacity 120ms;
+    position: relative;
   `);
 
+  // Hide button is absolutely positioned at the top-right of the
+  // card so it doesn't reserve layout space when invisible — the area
+  // title stays flush-left even when the button is hidden.
+  const hideBtn = el("button", `
+    position: absolute; top: 8px; right: 10px;
+    background: var(--card, var(--background)); border: 1px solid var(--border); cursor: pointer;
+    color: var(--muted-foreground); font-size: 11px; line-height: 1;
+    padding: 2px 8px; border-radius: 999px; opacity: 0;
+    transition: opacity 120ms; pointer-events: none;
+  `);
+  hideBtn.onclick = (ev) => {
+    ev.stopPropagation();
+    opts.onToggleHide(opts.area_id);
+  };
+  root.appendChild(hideBtn);
+
   const header = el("div", "display: flex; align-items: baseline; justify-content: space-between; gap: 8px;");
-  const title = el("div", "font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;", opts.name);
-  const meta = el("div", "font-size: 11px; color: var(--muted-foreground); flex-shrink: 0;",
-    `${opts.entities.length} entit${opts.entities.length === 1 ? "y" : "ies"}`);
+  const title = el("div", "font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1;", opts.name);
+  const meta = el("div", "font-size: 11px; color: var(--muted-foreground); flex-shrink: 0; padding-right: 56px;");
   header.append(title, meta);
   root.appendChild(header);
 
-  const ambient = pickAmbient(opts.entities);
-  if (ambient.length > 0) {
-    // Ambient values are real data, not metadata — render at full
-    // foreground contrast so the dashboard reads at a glance in dark
-    // mode without leaning into the muted greys.
-    const row = el("div", "font-size: 12px; color: var(--foreground); display: flex; flex-wrap: wrap; gap: 10px;");
-    for (const a of ambient) {
-      const chip = el("span", "white-space: nowrap;", formatAmbient(a));
-      chip.title = a.entity_id;
-      chip.style.cursor = "pointer";
-      chip.onclick = () => showEntityDetail(a);
-      row.appendChild(chip);
-    }
-    root.appendChild(row);
-  }
+  // Hover-to-reveal hide button.
+  root.addEventListener("mouseenter", () => {
+    hideBtn.style.opacity = "1";
+    hideBtn.style.pointerEvents = "auto";
+  });
+  root.addEventListener("mouseleave", () => {
+    hideBtn.style.opacity = "0";
+    hideBtn.style.pointerEvents = "none";
+  });
+
+  const ambientRow = el("div", "font-size: 12px; color: var(--foreground); display: flex; flex-wrap: wrap; gap: 10px;");
+  ambientRow.style.display = "none"; // hidden until first refresh populates it
+  root.appendChild(ambientRow);
+
+  const list = el("div", "display: flex; flex-direction: column; gap: 2px; border-top: 1px solid var(--border); padding-top: 8px;");
+  list.style.display = "none";
+  root.appendChild(list);
+
+  const empty = el("div", "font-size: 12px; color: var(--muted-foreground); font-style: italic;", "No quick controls in this area.");
+  empty.style.display = "none";
+  root.appendChild(empty);
 
   const set: ServiceCaller = (domain, service, entityId, data) =>
     opts.agent.callService(domain, service, entityId, data);
 
-  const shortcuts = pickShortcuts(opts.entities);
-  if (shortcuts.length > 0) {
-    const list = el("div", "display: flex; flex-direction: column; gap: 2px; border-top: 1px solid var(--border); padding-top: 8px;");
-    for (const e of shortcuts) list.appendChild(buildShortcutRow(e, set));
-    root.appendChild(list);
-  } else {
-    root.appendChild(el("div", "font-size: 12px; color: var(--muted-foreground); font-style: italic;", "No quick controls in this area."));
+  // Per-entity row map. Reconciled across refresh() calls so we only
+  // tear down rows for entities that actually disappeared.
+  const rowMap = new Map<string, RowHandle>();
+
+  function refresh(input: { name: string; entities: EntityState[]; hidden: boolean }): void {
+    title.textContent = input.name;
+    meta.textContent = `${input.entities.length} entit${input.entities.length === 1 ? "y" : "ies"}`;
+    root.style.opacity = input.hidden ? "0.5" : "1";
+    hideBtn.textContent = input.hidden ? "+ unhide" : "× hide";
+    hideBtn.title = input.hidden ? "Unhide this area" : "Hide this area from the dashboard";
+
+    // Ambient values can flip frequently (motion, temperature) but the
+    // *set* of ambient sensors per area is stable. Quick rebuild of
+    // chips is cheaper than threading subscriptions through here.
+    const ambient = pickAmbient(input.entities);
+    if (ambient.length === 0) {
+      ambientRow.style.display = "none";
+      ambientRow.innerHTML = "";
+    } else {
+      ambientRow.innerHTML = "";
+      for (const a of ambient) {
+        const chip = el("span", "white-space: nowrap; cursor: pointer;", formatAmbient(a));
+        chip.title = a.entity_id;
+        chip.onclick = () => showEntityDetail(a);
+        ambientRow.appendChild(chip);
+      }
+      ambientRow.style.display = "flex";
+    }
+
+    // Reconcile shortcut rows. Drop rows for entities that left the
+    // shortcut set, keep existing ones (their per-entity subscription
+    // handles their own state updates), add new ones.
+    const shortcuts = pickShortcuts(input.entities);
+    const wantedIds = new Set(shortcuts.map((e) => e.entity_id));
+    for (const [id, row] of rowMap) {
+      if (!wantedIds.has(id)) {
+        row.dispose();
+        row.root.remove();
+        rowMap.delete(id);
+      }
+    }
+    if (shortcuts.length === 0) {
+      list.style.display = "none";
+      empty.style.display = "block";
+    } else {
+      empty.style.display = "none";
+      list.style.display = "flex";
+      // Ensure rows are in the priority order. We simply re-append
+      // them in order — no DOM teardown if the row is already in this
+      // parent.
+      for (const e of shortcuts) {
+        let r = rowMap.get(e.entity_id);
+        if (!r) {
+          r = buildLiveShortcutRow(e.entity_id, e.domain, set);
+          rowMap.set(e.entity_id, r);
+        }
+        list.appendChild(r.root);
+      }
+    }
   }
 
-  return root;
+  function dispose(): void {
+    for (const r of rowMap.values()) r.dispose();
+    rowMap.clear();
+  }
+
+  return { root, refresh, dispose };
 }
 
 // ── Public entry point ────────────────────────────────────────────────────
@@ -284,16 +414,14 @@ export function buildDashboard(agent: WebSocketRemoteAgent): DashboardHandle {
     background: var(--background);
     transition: margin-left 200ms ease;
   `);
-  if (isCollapsed()) {
+  if (readBool(COLLAPSED_KEY)) {
     root.style.display = "none";
   }
 
   const heading = el("div", "font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted-foreground); margin-bottom: 10px;", "Dashboard");
   root.appendChild(heading);
 
-  // Two stacked grids: Favourites (full entity cards) over Areas
-  // (summary cards). Both auto-fill at 280px so the dashboard adapts
-  // to whatever width the chat column leaves it.
+  // Favourites: full domain-tailored cards.
   const favSection = el("section", "margin-bottom: 18px;");
   const favHeader = el("div", "font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted-foreground); margin-bottom: 8px;", "★ Favourites");
   const favGrid = el("div", `
@@ -303,19 +431,29 @@ export function buildDashboard(agent: WebSocketRemoteAgent): DashboardHandle {
     align-content: start;
   `);
   favSection.append(favHeader, favGrid);
-  favSection.style.display = "none"; // toggled in render() based on count
+  favSection.style.display = "none";
 
-  const areaHeader = el("div", "font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted-foreground); margin-bottom: 8px;", "Areas");
+  // Areas section: header row + grid.
+  const areaSection = el("section");
+  const areaHeaderRow = el("div", "display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; gap: 12px;");
+  const areaHeader = el("div", "font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted-foreground);", "Areas");
+  const showHiddenLabel = el("label", "display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted-foreground); cursor: pointer; user-select: none;");
+  const showHiddenCb = document.createElement("input");
+  showHiddenCb.type = "checkbox";
+  showHiddenCb.checked = readBool(SHOW_HIDDEN_KEY);
+  showHiddenLabel.append(showHiddenCb, document.createTextNode("Show hidden areas"));
+  areaHeaderRow.append(areaHeader, showHiddenLabel);
   const areaGrid = el("div", `
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
     gap: 12px;
     align-content: start;
   `);
+  areaSection.append(areaHeaderRow, areaGrid);
 
-  root.append(favSection, areaHeader, areaGrid);
+  root.append(favSection, areaSection);
 
-  // ── State + render ────────────────────────────────────────────────────
+  // ── State ─────────────────────────────────────────────────────────────
   let renderQueued = false;
   function requestRender(): void {
     if (renderQueued) return;
@@ -328,11 +466,27 @@ export function buildDashboard(agent: WebSocketRemoteAgent): DashboardHandle {
 
   let states = new Map<string, EntityState>();
   let areas: AreaInfo[] = [];
+  const hiddenAreas = readSet(HIDDEN_AREAS_KEY);
 
-  // Per-favourite EntityCard handles. We only rebuild the card when the
-  // favourite set changes; mid-stream state changes flow through the
-  // card's own EntityStateCache subscription.
+  // Persistent area-card handles. Re-created only when an area
+  // appears or disappears from the registry — never on a state-change
+  // burst — which is what fixes the click responsiveness.
+  const areaCards = new Map<string, AreaCardHandle>();
+
+  // Favourite cards.
   const favCards = new Map<string, { handle: { dispose: () => void }; slot: HTMLElement }>();
+
+  function toggleHideArea(area_id: string): void {
+    if (hiddenAreas.has(area_id)) hiddenAreas.delete(area_id);
+    else hiddenAreas.add(area_id);
+    writeSet(HIDDEN_AREAS_KEY, hiddenAreas);
+    requestRender();
+  }
+
+  showHiddenCb.onchange = () => {
+    writeBool(SHOW_HIDDEN_KEY, showHiddenCb.checked);
+    requestRender();
+  };
 
   function reconcileFavourites(): void {
     const wantedIds = new Set<string>();
@@ -341,8 +495,6 @@ export function buildDashboard(agent: WebSocketRemoteAgent): DashboardHandle {
       if (!e || !isExposed(e)) continue;
       wantedIds.add(id);
     }
-
-    // Remove cards for entities that are no longer favourited / exposed.
     for (const [id, { handle, slot }] of favCards) {
       if (!wantedIds.has(id)) {
         handle.dispose();
@@ -350,9 +502,6 @@ export function buildDashboard(agent: WebSocketRemoteAgent): DashboardHandle {
         favCards.delete(id);
       }
     }
-
-    // Add cards for newly-favourited entities, in stable alphabetical order
-    // so reordering doesn't jump the layout around.
     const ordered = [...wantedIds]
       .map((id) => states.get(id)!)
       .sort((a, b) => entityLabel(a).localeCompare(entityLabel(b)));
@@ -371,7 +520,6 @@ export function buildDashboard(agent: WebSocketRemoteAgent): DashboardHandle {
       }
       favGrid.appendChild(entry.slot);
     }
-
     favSection.style.display = ordered.length > 0 ? "" : "none";
   }
 
@@ -383,8 +531,7 @@ export function buildDashboard(agent: WebSocketRemoteAgent): DashboardHandle {
 
     reconcileFavourites();
 
-    // Area cards: bucket exposed entities by area; render one card per
-    // area regardless of whether it has controllable entities.
+    // Bucket exposed entities by area.
     const entityArea = entityCache.getEntityAreaMap();
     const buckets = new Map<string, EntityState[]>();
     for (const a of areas) buckets.set(a.area_id, []);
@@ -396,10 +543,44 @@ export function buildDashboard(agent: WebSocketRemoteAgent): DashboardHandle {
       if (bucket) bucket.push(e);
     }
 
-    areaGrid.innerHTML = "";
-    for (const a of [...areas].sort((x, y) => x.name.localeCompare(y.name))) {
-      const entities = buckets.get(a.area_id) ?? [];
-      areaGrid.appendChild(buildAreaCard({ name: a.name, entities, agent }));
+    const showHidden = showHiddenCb.checked;
+    const visibleAreas = [...areas]
+      .filter((a) => showHidden || !hiddenAreas.has(a.area_id))
+      .sort((x, y) => x.name.localeCompare(y.name));
+    const seenIds = new Set<string>();
+
+    // Reconcile cards: keep existing ones, add new ones, remove gone ones.
+    for (const [id, card] of areaCards) {
+      // We'll re-append them in order below; for now, just detach.
+      card.root.remove();
+    }
+    for (const a of visibleAreas) {
+      seenIds.add(a.area_id);
+      let card = areaCards.get(a.area_id);
+      if (!card) {
+        card = buildAreaCard({
+          area_id: a.area_id,
+          name: a.name,
+          agent,
+          onToggleHide: toggleHideArea,
+        });
+        areaCards.set(a.area_id, card);
+      }
+      card.refresh({
+        name: a.name,
+        entities: buckets.get(a.area_id) ?? [],
+        hidden: hiddenAreas.has(a.area_id),
+      });
+      areaGrid.appendChild(card.root);
+    }
+    // Dispose cards for areas that no longer exist or are now hidden
+    // and not being shown. Their click handlers and subscriptions go
+    // with them.
+    for (const [id, card] of areaCards) {
+      if (!seenIds.has(id)) {
+        card.dispose();
+        areaCards.delete(id);
+      }
     }
   }
 
@@ -421,7 +602,7 @@ export function buildDashboard(agent: WebSocketRemoteAgent): DashboardHandle {
     toggle: () => {
       const collapsed = root.style.display === "none";
       root.style.display = collapsed ? "" : "none";
-      setCollapsed(!collapsed);
+      writeBool(COLLAPSED_KEY, !collapsed);
     },
   };
 }
