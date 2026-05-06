@@ -1,11 +1,1 @@
 demo:
-
-# Static-image camera so the integration suite has a reproducible camera
-# entity to exercise ha_get_camera_snapshot / ha_show_camera against. The
-# image (demo-camera.jpg) is a fixed Lorem Picsum frame chosen for
-# describable content — hilltop road, forest, fog rolling in over the
-# valley, a small white car. Vision-capable model evals can ask about it.
-camera:
-  - platform: local_file
-    name: Demo Camera
-    file_path: /config/demo-camera.jpg
