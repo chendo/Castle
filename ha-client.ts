@@ -369,6 +369,33 @@ export class HAClient {
     }
   }
 
+  /**
+   * Per-entity short "Name" from the entity registry. Distinct from
+   * state.attributes.friendly_name, which is usually `device.name +
+   * entity.name` and gets long quickly. We use this in the UI to label
+   * an entity *inside* its area card without repeating the area prefix.
+   * Falls back to `original_name` when the user hasn't overridden the
+   * name; null otherwise so callers know to fall back to friendly_name.
+   */
+  async getEntityLabels(): Promise<Map<string, string>> {
+    try {
+      const rows = await this.call<Array<{
+        entity_id: string;
+        name?: string | null;
+        original_name?: string | null;
+      }>>({ type: "config/entity_registry/list" });
+      const map = new Map<string, string>();
+      for (const r of rows) {
+        const label = r.name ?? r.original_name ?? null;
+        if (label) map.set(r.entity_id, label);
+      }
+      return map;
+    } catch (err) {
+      console.warn("[ha] failed to fetch entity labels:", (err as Error).message);
+      return new Map();
+    }
+  }
+
   private servicesCache: HAServices | null = null;
 
   /** Fetch the full service registry from HA (cached after first call). */

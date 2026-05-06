@@ -21,6 +21,7 @@ import { registerCameraRenderer } from "./CameraRenderer";
 import { buildTopbar } from "./Topbar";
 import { buildSidebar } from "./Sidebar";
 import { buildDashboard } from "./Dashboard";
+import { buildStarterPrompts } from "./StarterPrompts";
 import { openModelPickerDialog } from "./ModelPickerDialog";
 import { mountTimingHud } from "./TimingHud";
 
@@ -122,6 +123,7 @@ const chatWrap = document.createElement("div");
 // surface alongside it.
 chatWrap.style.cssText = "width: 480px; flex-shrink: 0; min-width: 0; min-height: 0; position: relative; display: flex; flex-direction: column; border-left: 1px solid var(--border);";
 chatWrap.appendChild(chatPanel);
+chatWrap.appendChild(buildStarterPrompts(agent));
 layout.appendChild(chatWrap);
 
 app.appendChild(layout);

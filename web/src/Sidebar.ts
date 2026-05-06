@@ -1,6 +1,7 @@
 import { showEntityDetail } from "./EntityDetail";
 import type { AreaInfo, EntityState, WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
 import { entityCache } from "./EntityStateCache";
+import { entityLabel } from "./EntityLabel";
 import { openSettingsDialog } from "./SettingsDialog";
 import { openSessionBrowser } from "./SessionBrowser";
 
@@ -198,14 +199,14 @@ export function buildSidebar(agent: WebSocketRemoteAgent): SidebarHandle {
   function entitiesMatchingQuery(q: string): (e: EntityState) => boolean {
     if (!q) return () => true;
     return (e) => {
-      const friendly = (e.attributes?.friendly_name as string ?? "").toLowerCase();
-      return e.entity_id.toLowerCase().includes(q) || friendly.includes(q);
+      const label = entityLabel(e).toLowerCase();
+      return e.entity_id.toLowerCase().includes(q) || label.includes(q);
     };
   }
 
   // Build an entity list-item, used by every leaf of the tree.
   function renderEntityRow(e: EntityState): HTMLElement {
-    const friendly = (e.attributes?.friendly_name as string) ?? e.entity_id.split(".").pop() ?? e.entity_id;
+    const friendly = entityLabel(e);
     const exposed = e.exposed !== false;
 
     const item = document.createElement("div");
@@ -346,9 +347,7 @@ export function buildSidebar(agent: WebSocketRemoteAgent): SidebarHandle {
       .map((id) => states.get(id))
       .filter((e): e is EntityState => !!e && visible(e))
       .sort((a, b) =>
-        ((a.attributes?.friendly_name as string) ?? a.entity_id).localeCompare(
-          (b.attributes?.friendly_name as string) ?? b.entity_id,
-        ),
+        entityLabel(a).localeCompare(entityLabel(b)),
       );
     if (favourites.size > 0 || q === "") {
       tree.appendChild(renderGroup({
@@ -377,9 +376,7 @@ export function buildSidebar(agent: WebSocketRemoteAgent): SidebarHandle {
     }
     for (const arr of buckets.values()) {
       arr.sort((a, b) =>
-        ((a.attributes?.friendly_name as string) ?? a.entity_id).localeCompare(
-          (b.attributes?.friendly_name as string) ?? b.entity_id,
-        ),
+        entityLabel(a).localeCompare(entityLabel(b)),
       );
     }
     const areaTotal = [...buckets.values()].reduce((s, arr) => s + arr.length, 0);

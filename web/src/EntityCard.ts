@@ -15,6 +15,7 @@
 import type { EntityState, WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
 import type { EntityStateCache } from "./EntityStateCache";
 import { showEntityDetail } from "./EntityDetail";
+import { entityLabel } from "./EntityLabel";
 
 export interface CardSpec {
   entity_id: string;
@@ -67,7 +68,8 @@ function el<K extends keyof HTMLElementTagNameMap>(
 }
 
 function friendly(state: EntityState | null, fallback: string): string {
-  return (state?.attributes?.friendly_name as string | undefined) ?? fallback;
+  if (!state) return fallback;
+  return entityLabel(state);
 }
 
 function header(state: EntityState | null, entityId: string, badge?: string): HTMLElement {

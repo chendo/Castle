@@ -35,6 +35,10 @@ export interface EntityState {
   attributes: Record<string, any>;
   domain: string;
   exposed: boolean;
+  /** Short user-facing name from HA's entity registry. Distinct from
+   *  attributes.friendly_name, which usually carries a device/area
+   *  prefix. Falls back to friendly_name in the UI if not present. */
+  label?: string;
 }
 
 export type EntityStateChange =

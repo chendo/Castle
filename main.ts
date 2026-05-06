@@ -37,6 +37,10 @@ async function regenerateCatalog(): Promise<void> {
     // Drop the cached frame so the next hello / catalog_regenerated push picks
     // up the fresh data.
     invalidateAreasCache();
+    // Refresh entity labels alongside the catalog. HA users rename
+    // entities via the UI; without this the sidebar / dashboard keep
+    // displaying the old short name until the next process restart.
+    await refreshEntityLabels();
     const houseInfo = await ha.getHouseInfo();
     const services = await ha.getServices();
     const states = ha.getAllStates();
@@ -420,6 +424,17 @@ function broadcastCacheWarmed(result: { at: number; durationMs: number }): void 
   }
 }
 
+// Cache of entity_id → short "Name" from HA's entity registry. Surfaced
+// in every state push so the UI can label an entity without repeating
+// the device/area prefix that friendly_name usually includes. Refreshed
+// when the catalog regenerates (entity registry changes via HA UI are
+// rare enough to ride that signal).
+let entityLabelsCache: Map<string, string> = new Map();
+
+async function refreshEntityLabels(): Promise<void> {
+  entityLabelsCache = await ha.getEntityLabels();
+}
+
 /** Convert HA state list to the entity shape the sidebar / entity-detail UIs use. */
 function serializeStates() {
   return ha.getAllStates().map((s) => ({
@@ -428,6 +443,7 @@ function serializeStates() {
     attributes: s.attributes,
     domain: s.entity_id.split(".")[0],
     exposed: ha.isExposed(s.entity_id),
+    label: entityLabelsCache.get(s.entity_id),
   }));
 }
 
@@ -470,6 +486,7 @@ function wireStateBroadcast(): void {
         attributes: newState.attributes,
         domain: entityId.split(".")[0],
         exposed: ha.isExposed(entityId),
+        label: entityLabelsCache.get(entityId),
       }
       // Removed entity — clients drop it from their local map.
       : { entity_id: entityId, removed: true as const };
