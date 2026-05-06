@@ -1,12 +1,18 @@
 // Smoke suite: one prompt per critical capability so we can sanity-check the
 // stack (HA + LLM + WS protocol + tool wiring) in ~1 minute instead of ~9.
 //
+// Post-consolidation: only ha_call_service / ha_get_states / ha_get_entity /
+// ha_present_card live in the prefix. Everything else is reached via ha_invoke
+// — its describe-then-execute flow is what the extended-tool tests below
+// exercise. assertToolInvoked accepts both direct calls and ha_invoke wraps,
+// so a tool the user pins to "always" still passes without a test change.
+//
 // What each test covers:
-//   - read entity     → ha_get_states / ha_get_entity (single-entity read)
-//   - write service   → ha_call_service (mutation + actual HA state changes)
-//   - camera capture  → ha_get_camera_snapshot
-//   - dashboard list  → ha_list_dashboards (the new no-args lister)
-//   - automation read → ha_get_automation
+//   - read entity     → ha_get_entity (core)
+//   - write service   → ha_call_service (core, mutation verified against HA)
+//   - present card    → ha_present_card (core, generalised camera renderer)
+//   - dashboard list  → ha_list_dashboards (extended → ha_invoke)
+//   - automation read → ha_get_automation (extended → ha_invoke)
 //
 // If any of these flip red, the broader suite probably will too — start here.
 // Run via: docker compose exec castle deno task test:smoke
@@ -59,48 +65,54 @@ Deno.test({
 });
 
 Deno.test({
-  name: "smoke — camera snapshot succeeds",
+  name: "smoke — present a camera card via ha_present_card",
   fn: async () => {
     const cameraId = await S.findDemoCamera(HA_BASE);
     if (!cameraId) throw new Error("No camera entity found in HA demo");
 
     const result = await S.runConversation(
-      `Take a snapshot from ${cameraId} using ha_get_camera_snapshot.`,
+      `Show me the live feed from ${cameraId}.`,
     );
 
-    const call = S.assertOneOfToolsCalled(
-      result,
-      ["ha_get_camera_snapshot", "ha_show_camera"],
-      (args) => String(args?.entity_id ?? "") === cameraId,
-    );
-    S.assertToolSucceeded(result, call.toolCallId);
+    // ha_present_card is core; the agent should pick it directly. Accept
+    // either the singular old shape (entity_id) or the new list shape
+    // (entity_ids: [...]) so we're not pinned to a transient parameter
+    // form during this consolidation.
+    S.assertToolCalled(result, "ha_present_card", (args) => {
+      const entity = String(args?.entity_id ?? "");
+      const list = (args?.entity_ids as string[] | undefined) ?? [];
+      return entity === cameraId || list.includes(cameraId);
+    });
   },
 });
 
 Deno.test({
-  name: "smoke — ha_list_dashboards enumerates Lovelace dashboards",
+  name: "smoke — list dashboards via ha_invoke umbrella",
   fn: async () => {
     const result = await S.runConversation(
-      `Call ha_list_dashboards to enumerate every Lovelace dashboard.`,
+      `List my Lovelace dashboards.`,
     );
 
-    S.assertToolCalled(result, "ha_list_dashboards");
+    // Extended tool — chat reaches it through ha_invoke. assertToolInvoked
+    // accepts either a direct call (if the user pinned it) or an
+    // ha_invoke({tool: "ha_list_dashboards", …}) wrap.
+    S.assertToolInvoked(result, "ha_list_dashboards");
     S.assertNoMutatingTools(result);
   },
 });
 
 Deno.test({
-  name: "smoke — read an automation's config via ha_get_automation",
+  name: "smoke — read an automation's config via ha_invoke umbrella",
   fn: async () => {
     const auto = await S.findDemoAutomation(HA_BASE);
     if (!auto) throw new Error("No automations found in HA demo");
 
     const result = await S.runConversation(
-      `Show me the YAML for ${auto.entity_id} using ha_get_automation.`,
+      `Show me the YAML for ${auto.entity_id}.`,
     );
 
-    S.assertToolCalled(result, "ha_get_automation", (args) =>
-      String(args?.automation_id ?? "") === String(auto.id),
+    S.assertToolInvoked(result, "ha_get_automation", (args) =>
+      String(args?.automation_id ?? "") === String(auto.id)
     );
     S.assertNoMutatingTools(result);
   },

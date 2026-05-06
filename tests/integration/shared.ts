@@ -191,6 +191,49 @@ export function assertToolCalled(
   return match ?? found[0];
 }
 
+/** Assert that a tool was reached, either directly OR through ha_invoke's
+ *  umbrella dispatcher. Use this for tools whose pin state is "extended"
+ *  (umbrella-only) by default — chat invokes them via
+ *  `ha_invoke({tool: <name>, args: …})`, so the captured event has
+ *  toolName === "ha_invoke" and args.tool === <name>. The optional
+ *  argsMatcher receives the underlying tool's args (extracted from
+ *  ha_invoke.args.args when applicable) so callers don't have to handle
+ *  both shapes. */
+export function assertToolInvoked(
+  result: AgentRunResult,
+  name: string,
+  argsMatcher?: (args: Record<string, unknown> | null) => boolean,
+): ToolCallRecord {
+  const candidates = result.toolCalls.filter((tc) => {
+    if (tc.toolName === name) return true;
+    if (tc.toolName === "ha_invoke") {
+      const t = (tc.args as { tool?: unknown } | null)?.tool;
+      return t === name;
+    }
+    return false;
+  });
+  if (candidates.length === 0) {
+    throw new Error(
+      `Expected tool "${name}" to be invoked (directly or via ha_invoke). ` +
+        `Called: [${result.toolCalls.map((t) => t.toolName === "ha_invoke" ? `ha_invoke(${(t.args as {tool?:unknown})?.tool ?? "?"})` : t.toolName).join(", ")}]`,
+    );
+  }
+  if (!argsMatcher) return candidates[0];
+  const match = candidates.find((tc) => {
+    if (tc.toolName === name) return argsMatcher(tc.args);
+    // ha_invoke wrap: forward args.args to the matcher.
+    const inner = (tc.args as { args?: Record<string, unknown> | null } | null)?.args ?? null;
+    return argsMatcher(inner);
+  });
+  if (!match) {
+    throw new Error(
+      `Expected tool "${name}" invoked with matching args. ` +
+        `Calls: [${candidates.map((t) => JSON.stringify(t.args)).join(", ")}]`,
+    );
+  }
+  return match;
+}
+
 /** Assert that at least one of the named tools was called. Returns the first
  *  matching call. Use this for behavioural tests where multiple tools are
  *  semantically interchangeable (e.g. snapshot vs live-feed for "show me the
