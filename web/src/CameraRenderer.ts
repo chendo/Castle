@@ -213,17 +213,6 @@ function renderCameraTool(opts: {
   };
 }
 
-class ShowCameraRenderer implements ToolRenderer {
-  render(rawArgs: any, result: ToolResultMessage | undefined, isStreaming?: boolean): ToolRenderResult {
-    return renderCameraTool({
-      rawArgs, result, isStreaming,
-      headerLabel: "Live",
-      icon: Video,
-      build: (args, el) => buildLiveFeed(args, el),
-    });
-  }
-}
-
 class GetCameraSnapshotRenderer implements ToolRenderer {
   render(rawArgs: any, result: ToolResultMessage | undefined, isStreaming?: boolean): ToolRenderResult {
     return renderCameraTool({
@@ -235,7 +224,115 @@ class GetCameraSnapshotRenderer implements ToolRenderer {
   }
 }
 
+interface PresentCard {
+  entity_id: string;
+  kind: string;   // "camera" | "entity" | "fallback"
+  domain: string;
+}
+
+/** Dispatcher renderer for `ha_present_card`. The server's tool result
+ *  carries a `details.cards: PresentCard[]` array describing which kind of
+ *  widget to render per entity. Cameras get the live-feed builder; every
+ *  other kind falls through to a small inline entity card. The tool
+ *  accepts a list of entity_ids, so we render each card stacked. */
+class PresentCardRenderer implements ToolRenderer {
+  render(rawArgs: any, result: ToolResultMessage | undefined, isStreaming?: boolean): ToolRenderResult {
+    const argsObj = (() => {
+      let p: any = rawArgs;
+      if (typeof p === "string") {
+        try { p = JSON.parse(p); } catch { return null; }
+      }
+      return p && typeof p === "object" ? p : null;
+    })();
+    const titleArg = typeof argsObj?.title === "string" ? argsObj.title : undefined;
+    // Prefer the cards array the server attached to result.details. Fall
+    // back to deriving it from rawArgs.entity_ids if the result hasn't
+    // landed yet (streaming) or is malformed. Defensive because we want
+    // the live-render path to start drawing as early as possible.
+    const detailsCards = (result?.details as any)?.cards as PresentCard[] | undefined;
+    const cards: PresentCard[] = (() => {
+      if (Array.isArray(detailsCards) && detailsCards.length > 0) return detailsCards;
+      const ids = Array.isArray(argsObj?.entity_ids) ? argsObj.entity_ids as unknown[] : [];
+      return ids
+        .filter((id): id is string => typeof id === "string" && id.includes("."))
+        .map((id) => {
+          const domain = id.slice(0, id.indexOf("."));
+          return { entity_id: id, domain, kind: domain === "camera" ? "camera" : "entity" };
+        });
+    })();
+
+    const state: "inprogress" | "complete" | "error" = result
+      ? (result.isError ? "error" : "complete")
+      : isStreaming ? "inprogress" : "complete";
+    const title = titleArg ?? ((result?.details as any)?.title as string | undefined);
+    const summary = (() => {
+      if (cards.length === 0) return "card";
+      const head = cards.length === 1
+        ? `Card: ${cards[0].entity_id}`
+        : `Cards: ${cards.map((c) => c.entity_id).join(", ")}`;
+      const withTitle = title ? `${head} — ${title}` : head;
+      const durationMs = result?.toolCallId ? getDuration(result.toolCallId) : undefined;
+      return summaryWithDuration(withTitle, durationMs);
+    })();
+
+    const container = createRef<HTMLDivElement>();
+    const captureTs = result ? Date.now() : undefined;
+
+    if (cards.length > 0 && (result || !isStreaming)) {
+      queueMicrotask(() => {
+        const root = container.value;
+        if (!root || root.dataset.rendered === "1") return;
+        root.dataset.rendered = "1";
+        root.innerHTML = "";
+        if (title) {
+          const h = document.createElement("div");
+          h.style.cssText = "font-size: 13px; font-weight: 500; margin-bottom: 6px; color: var(--foreground);";
+          h.textContent = title;
+          root.appendChild(h);
+        }
+        for (const card of cards) {
+          const slot = document.createElement("div");
+          slot.style.cssText = "margin-bottom: 8px;";
+          if (card.kind === "camera") {
+            buildLiveFeed({ entity_id: card.entity_id }, slot);
+          } else {
+            // Inline entity-card placeholder: small badge with id + domain.
+            // Replaceable with a richer per-domain renderer later (light
+            // controls, climate panel, media_player widget, …).
+            slot.style.cssText += `
+              padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px;
+              font: 13px ui-sans-serif, system-ui, sans-serif; color: var(--foreground);
+              background: var(--card, var(--background));
+              display: flex; align-items: center; justify-content: space-between; gap: 12px;
+            `;
+            const left = document.createElement("div");
+            left.style.cssText = "min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;";
+            left.textContent = card.entity_id;
+            const right = document.createElement("div");
+            right.style.cssText = "font-size: 11px; color: var(--muted-foreground); flex-shrink: 0;";
+            right.textContent = card.domain;
+            slot.appendChild(left);
+            slot.appendChild(right);
+          }
+          root.appendChild(slot);
+        }
+      });
+    }
+    void captureTs; // currently unused for non-camera cards — reserved for future per-card snapshots
+
+    return {
+      content: html`
+        <div>
+          ${renderHeader(state, Video, summary)}
+          <div ${ref(container)} style="margin-top: 8px;"></div>
+        </div>
+      `,
+      isCustom: false,
+    };
+  }
+}
+
 export function registerCameraRenderer(): void {
-  registerToolRenderer("ha_show_camera", new ShowCameraRenderer());
+  registerToolRenderer("ha_present_card", new PresentCardRenderer());
   registerToolRenderer("ha_get_camera_snapshot", new GetCameraSnapshotRenderer());
 }

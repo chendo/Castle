@@ -1522,8 +1522,8 @@ export function buildTools(
       name: "ha_get_camera_snapshot",
       label: "Camera Snapshot",
       description: isMultimodal
-        ? "Capture a camera snapshot. The image is BOTH fed to YOU (so you can describe / identify / count) AND displayed inline in the chat for the user. Use whenever the user asks what's happening at a camera. For a continuous live view (no LLM analysis), prefer ha_show_camera."
-        : "Capture a camera snapshot and display it inline in the chat for the user. The current model is text-only, so the image is NOT fed back to you. For a continuous live view, prefer ha_show_camera.",
+        ? "Capture a camera snapshot. The image is BOTH fed to YOU (so you can describe / identify / count) AND displayed inline in the chat for the user. Use whenever the user asks what's happening at a camera. For a continuous live view (no LLM analysis), prefer ha_present_card."
+        : "Capture a camera snapshot and display it inline in the chat for the user. The current model is text-only, so the image is NOT fed back to you. For a continuous live view, prefer ha_present_card.",
       parameters: Type.Object({
         entity_id: Type.String({ description: "Camera entity ID (must start with camera.)" }),
       }),
@@ -1545,7 +1545,7 @@ export function buildTools(
             return ok(
               `Snapshot captured for ${params.entity_id} (${sizeText}, ${mimeType}). ` +
               `The current model is text-only and can't see the image. ` +
-              `Use ha_show_camera to display it to the user, or configure a multimodal model to enable visual reasoning.`,
+              `Use ha_present_card to display it to the user, or configure a multimodal model to enable visual reasoning.`,
             );
           }
 
@@ -1563,21 +1563,73 @@ export function buildTools(
     },
 
     {
-      name: "ha_show_camera",
-      label: "Show Camera",
-      description: "Render a continuous live MJPEG feed of a camera entity inline in the chat for the USER to view (the browser pauses it when offscreen / tab inactive). This does NOT let YOU see the image — if you also need to look at it (e.g. to describe contents), call ha_get_camera_snapshot, which both displays the image AND feeds it to you. Use when the user asks to see/show/view/watch a camera.",
+      name: "ha_present_card",
+      label: "Present Cards",
+      description: "Render one or more entity cards inline in the chat panel for the USER to see. The tool inspects each entity's domain and picks the right card kind: camera → live MJPEG feed; light / climate / media_player / cover / sensor / etc. → interactive entity card; anything unknown → universal entity detail panel. Does NOT return data to YOU — if you need to inspect an entity programmatically, call ha_get_entity or ha_get_camera_snapshot. Use when the user asks to see / show / view / display / watch one or more entities together.",
       parameters: Type.Object({
-        entity_id: Type.String({ description: "Camera entity ID (must start with camera.)" }),
-        title: Type.Optional(Type.String({ description: "Optional caption" })),
+        entity_ids: Type.Array(Type.String(), {
+          description: "One or more entity IDs to render side-by-side. " +
+            "Examples: ['camera.front_door'] for one camera, " +
+            "['light.kitchen', 'light.dining'] to show two lights together, " +
+            "['camera.front', 'sensor.front_temperature'] to show a camera " +
+            "alongside its temperature sensor.",
+        }),
+        title: Type.Optional(Type.String({
+          description: "Optional caption / heading rendered above the group.",
+        })),
       }),
       execute(
         _id: string,
-        params: { entity_id: string; title?: string },
+        params: { entity_ids: string[]; title?: string },
       ): Promise<ToolResult> {
-        if (!params.entity_id.startsWith("camera.")) {
-          return Promise.resolve(ok(`Not a camera entity: ${params.entity_id}`));
+        if (!Array.isArray(params.entity_ids) || params.entity_ids.length === 0) {
+          return Promise.resolve(ok(`ha_present_card: entity_ids must be a non-empty list.`));
         }
-        return Promise.resolve(ok(`Showing ${params.entity_id} live feed inline.`));
+        // Map each entity to its card kind. The client renderer dispatches
+        // on `kind`: cameras get a live feed, every other known domain gets
+        // an interactive entity card, unknowns fall back to a universal
+        // entity detail panel so the tool always lands something visible.
+        const kindByDomain: Record<string, string> = {
+          camera: "camera",
+          light: "entity",
+          climate: "entity",
+          media_player: "entity",
+          cover: "entity",
+          fan: "entity",
+          switch: "entity",
+          input_boolean: "entity",
+          input_number: "entity",
+          input_text: "entity",
+          input_select: "entity",
+          input_datetime: "entity",
+          sensor: "entity",
+          binary_sensor: "entity",
+          weather: "entity",
+        };
+        const cards: Array<{ entity_id: string; kind: string; domain: string }> = [];
+        const errors: string[] = [];
+        for (const id of params.entity_ids) {
+          const dot = id.indexOf(".");
+          if (dot < 0) {
+            errors.push(`Invalid entity_id: ${id}`);
+            continue;
+          }
+          const domain = id.slice(0, dot);
+          cards.push({ entity_id: id, domain, kind: kindByDomain[domain] ?? "fallback" });
+        }
+        if (cards.length === 0) {
+          return Promise.resolve(ok(errors.join("; ")));
+        }
+        const summary = cards.length === 1
+          ? `Presenting ${cards[0].entity_id} as a ${cards[0].kind} card.`
+          : `Presenting ${cards.length} cards: ${cards.map((c) => c.entity_id).join(", ")}.`;
+        return Promise.resolve({
+          content: [{ type: "text", text: errors.length ? `${summary} (${errors.join("; ")})` : summary }],
+          details: {
+            cards,
+            title: params.title,
+          },
+        });
       },
     },
 

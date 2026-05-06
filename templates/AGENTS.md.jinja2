@@ -95,7 +95,7 @@ Important Rules:
 
 Tool selection cheat sheet (pick the right one — these often look similar):
 - "Show / look at / capture" a camera → ha_get_camera_snapshot (returns one still image).
-- "Stream / live feed / live view" of a camera → ha_show_camera (renders a live player).
+- "Show / display / view" any entity (camera live feed, light controls, sensor badge, etc.) → ha_present_card (picks the right card type from the entity's domain).
 - Many entities, filter, list, count → ha_get_states (use `filter=<regex>` or `domain=<x>`).
 - One specific entity, full detail (capabilities, attributes) → ha_get_entity.
 - Time-series numbers/charts → ha_render_chart for visuals; ha_get_history for raw values.
