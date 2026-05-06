@@ -207,14 +207,42 @@ docker compose "${COMPOSE_ARGS[@]}" exec \
   castle deno run --allow-net --allow-env /workspace/scripts/seed-test-dashboard.ts 2>&1 | while read -r line; do log "$line"; done
 
 log "Running integration tests..."
+TEST_LOG="$PROJECT_DIR/workspace/test.log"
+mkdir -p "$(dirname "$TEST_LOG")"
+# Per-line ISO timestamps so a stale log is obvious when validating results;
+# overwrite (not append) so the file always reflects the most recent run.
+printf '[%s] === integration test run started ===\n' \
+  "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$TEST_LOG"
+
 EXIT_CODE=0
-docker compose "${COMPOSE_ARGS[@]}" exec \
+# Optional filter — set INTEGRATION_FILTER="substring" to run only the
+# matching subset of test names. Forwards to `deno test --filter`.
+TEST_FILTER_ARGS=()
+if [[ -n "${INTEGRATION_FILTER:-}" ]]; then
+  # `deno task` forwards extra args to its underlying command, so these land
+  # on `deno test`. `--filter` accepts a substring or /regex/.
+  TEST_FILTER_ARGS=(--filter "$INTEGRATION_FILTER")
+  log "Filtering tests by name: $INTEGRATION_FILTER"
+fi
+docker compose "${COMPOSE_ARGS[@]}" exec -T \
                  -e HA_URL=http://ha-demo:8123 \
                  -e HA_TOKEN="${HA_TOKEN}" \
-                 -e OPENAI_URL="${OPENAI_URL:-http://host.docker.internal:1234/v1}" \
+                 -e LLM_URL="${LLM_URL:-http://host.docker.internal:1234/v1}" \
+                 -e LLM_API_KEY="${LLM_API_KEY:-}" \
+                 -e LLM_TYPE="${LLM_TYPE:-openai-completions}" \
                  -e MODEL_NAME="${MODEL_NAME}" \
                  -e CASTLE_WS_URL="ws://localhost:7090/ws" \
-                 castle deno task test:integration 2>&1 || EXIT_CODE=$?
+                 castle deno task test:integration "${TEST_FILTER_ARGS[@]}" 2>&1 \
+  | while IFS= read -r line; do
+      printf '[%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$line"
+    done | tee -a "$TEST_LOG"
+# PIPESTATUS reflects the docker exec exit code (the leftmost pipeline cmd);
+# the read+tee tail always succeeds so plain $? would always be 0.
+EXIT_CODE=${PIPESTATUS[0]}
+
+printf '[%s] === integration test run finished (exit=%s) ===\n' \
+  "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$EXIT_CODE" | tee -a "$TEST_LOG"
+log "Test output written to $TEST_LOG"
 # CASTLE_WS_URL points at the in-container listen port, not the host-mapped
 # CASTLE_PORT — `docker compose exec` runs the test process inside castle.
 
