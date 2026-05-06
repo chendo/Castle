@@ -44,7 +44,8 @@ Run all checks manually:
 ./scripts/check.sh                           # deno check + lint + unit tests + web tsc
 docker compose exec castle deno task test       # both unit and integration
 docker compose exec castle deno task test:unit  # unit only (no LLM/HA needed)
-docker compose exec castle deno task test:integration  # WS round-trip via LM Studio
+docker compose exec castle deno task test:smoke  # ~1 min smoke against a real LLM
+docker compose exec castle deno task test:integration  # full ~9 min suite via LM Studio
 ```
 
 ### Integration tests against HA demo instance

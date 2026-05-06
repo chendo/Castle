@@ -10,7 +10,8 @@ Deno is **not installed on the host**. Every `deno`/`npm` invocation must go thr
 
 ```bash
 docker compose exec castle deno task test:unit       # unit only (no LLM/HA)
-docker compose exec castle deno task test:integration # WS round-trip via real LM Studio
+docker compose exec castle deno task test:smoke      # ~1 min smoke (5 capabilities, real LLM)
+docker compose exec castle deno task test:integration # WS round-trip via real LM Studio (~9 min)
 docker compose exec castle deno task check           # deno check + lint
 ./scripts/check.sh                                   # full gate: deno check/lint/unit + web tsc
 ```
