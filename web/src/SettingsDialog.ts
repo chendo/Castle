@@ -1,8 +1,12 @@
-import type { ServerSettings, WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
+import type { ServerSettings, ToolPin, WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
 
 interface DialogState {
   allTools: string[];
+  coreTools: Set<string>;
   enabled: Set<string>;
+  /** Per-tool pin (extended tools only). Core tools are always pinned;
+   *  the dialog renders them as "(always — core)" and ignores any saved pin. */
+  pins: Map<string, ToolPin>;
   contextWindow: number;
   allowUnexposedWrites: boolean;
   conversationCapMb: number;
@@ -13,17 +17,28 @@ const MIN_CONTEXT_WINDOW = 8192;
 const MIN_CONVERSATION_CAP_MB = 10;
 
 /**
- * Settings dialog. Lists every available tool with a checkbox so the user can
- * narrow what the agent can call. Apply sends `set_settings` over the WS — the
- * server persists to .pi-agent/settings.json and resets the session so the
- * change takes effect on the next prompt.
+ * Settings dialog. For each tool, surfaces:
+ *   - enable/disable checkbox (master switch — disabled tools aren't reachable
+ *     even via ha_invoke).
+ *   - pin tri-state for extended tools: off (umbrella-only) / auto (eligible
+ *     for boot-time auto-pin if used often enough) / always (force-pinned to
+ *     the prefix every session).
+ *
+ * Core tools are always enabled and always pinned — their row shows the
+ * label and a muted "core" badge instead of the toggles.
+ *
+ * Apply sends `set_settings` over the WS — the server persists to
+ * .pi-agent/settings.json and resets the session so changes take effect on
+ * the next prompt.
  */
 export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
   if (document.getElementById("castle-settings-overlay")) return;
 
   const state: DialogState = {
     allTools: [],
+    coreTools: new Set(),
     enabled: new Set(),
+    pins: new Map(),
     contextWindow: 65536,
     allowUnexposedWrites: false,
     conversationCapMb: 100,
@@ -43,7 +58,7 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
   panel.style.cssText = `
     background: var(--card); color: var(--foreground);
     border: 1px solid var(--border); border-radius: 14px;
-    width: 100%; max-width: 540px; max-height: 90vh;
+    width: 100%; max-width: 640px; max-height: 90vh;
     display: flex; flex-direction: column;
   `;
 
@@ -80,16 +95,25 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
         Oldest sessions are deleted first when the JSONL store exceeds this cap. The active session is never pruned.
       </div>
 
-      <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted-foreground); margin: 18px 0 10px;">Enabled tools</div>
+      <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted-foreground); margin: 18px 0 10px;">Tools</div>
+      <div style="font-size: 12px; color: var(--muted-foreground); margin-bottom: 8px;">
+        <strong>Enabled</strong> controls whether the agent can call the tool at all.
+        <strong>Pin</strong> controls whether an extended tool's full schema lives
+        in the prompt prefix or only behind <code>ha_invoke</code>:
+        <em>off</em> = umbrella-only (default),
+        <em>auto</em> = pin if used often,
+        <em>always</em> = pin every session.
+        Core tools are always pinned.
+      </div>
       <div id="castle-settings-tools" style="display: flex; flex-direction: column; gap: 4px;">
         <div style="font-size: 13px; color: var(--muted-foreground);">Loading…</div>
       </div>
-      <div style="margin-top: 12px; font-size: 12px; color: var(--muted-foreground);">
-        Disabling a tool prevents the agent from calling it. Changes restart the conversation.
-      </div>
-      <div style="margin-top: 8px;">
+      <div style="margin-top: 12px;">
         <button id="castle-settings-all" style="font-size: 12px; padding: 4px 10px; background: transparent; color: var(--foreground); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; margin-right: 6px;">Enable all</button>
         <button id="castle-settings-none" style="font-size: 12px; padding: 4px 10px; background: transparent; color: var(--foreground); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Disable all</button>
+      </div>
+      <div style="margin-top: 8px; font-size: 12px; color: var(--muted-foreground);">
+        Changes restart the conversation.
       </div>
     </div>
     <div style="padding: 12px 20px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 8px;">
@@ -109,32 +133,106 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
   const allowUnexposedInput = panel.querySelector("#castle-settings-allow-unexposed") as HTMLInputElement;
   const capInput = panel.querySelector("#castle-settings-cap") as HTMLInputElement;
 
+  /** Render one tool row: name + enable checkbox + (core badge OR pin select). */
+  const renderToolRow = (name: string): HTMLElement => {
+    const isCore = state.coreTools.has(name);
+    const row = document.createElement("div");
+    row.style.cssText = `
+      display: grid; grid-template-columns: 1fr auto auto; align-items: center;
+      gap: 12px; padding: 4px 0; font-size: 13px;
+    `;
+
+    const labelWrap = document.createElement("label");
+    labelWrap.style.cssText = "display: flex; align-items: center; gap: 8px; cursor: pointer; min-width: 0;";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = state.enabled.has(name);
+    cb.disabled = isCore; // core tools can't be disabled
+    cb.title = isCore ? "Core tools are always enabled" : "";
+    cb.onchange = () => {
+      if (cb.checked) state.enabled.add(name);
+      else state.enabled.delete(name);
+      updatePinSelectAvailability();
+    };
+    const labelText = document.createElement("span");
+    labelText.style.cssText = "font-family: ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;";
+    labelText.textContent = name;
+    labelWrap.append(cb, labelText);
+    row.appendChild(labelWrap);
+
+    if (isCore) {
+      const badge = document.createElement("span");
+      badge.textContent = "core";
+      badge.style.cssText = `
+        font-size: 11px; padding: 2px 8px; border-radius: 999px;
+        background: var(--muted, transparent); color: var(--muted-foreground);
+        border: 1px solid var(--border); white-space: nowrap;
+      `;
+      row.appendChild(badge);
+      const placeholder = document.createElement("span");
+      placeholder.style.cssText = "font-size: 11px; color: var(--muted-foreground);";
+      placeholder.textContent = "always pinned";
+      row.appendChild(placeholder);
+    } else {
+      const pinLabel = document.createElement("span");
+      pinLabel.textContent = "pin";
+      pinLabel.style.cssText = "font-size: 11px; color: var(--muted-foreground);";
+      row.appendChild(pinLabel);
+
+      const pinSelect = document.createElement("select");
+      pinSelect.dataset.tool = name;
+      pinSelect.dataset.role = "pin";
+      pinSelect.style.cssText = `
+        padding: 3px 6px; font-size: 12px; background: var(--background);
+        color: var(--foreground); border: 1px solid var(--border); border-radius: 6px;
+      `;
+      const opts: ToolPin[] = ["off", "auto", "always"];
+      for (const v of opts) {
+        const o = document.createElement("option");
+        o.value = v;
+        o.textContent = v;
+        pinSelect.appendChild(o);
+      }
+      pinSelect.value = state.pins.get(name) ?? "off";
+      pinSelect.disabled = !state.enabled.has(name); // can't pin a disabled tool
+      pinSelect.onchange = () => {
+        state.pins.set(name, pinSelect.value as ToolPin);
+      };
+      row.appendChild(pinSelect);
+    }
+
+    return row;
+  };
+
+  /** Pin selects need to mirror enable state (a disabled tool can't be pinned). */
+  const updatePinSelectAvailability = (): void => {
+    const selects = toolsContainer.querySelectorAll<HTMLSelectElement>("select[data-role='pin']");
+    selects.forEach((s) => {
+      const name = s.dataset.tool!;
+      s.disabled = !state.enabled.has(name);
+    });
+  };
+
   const renderTools = () => {
     if (!state.loaded) return;
     toolsContainer.innerHTML = "";
-    for (const name of [...state.allTools].sort()) {
-      const row = document.createElement("label");
-      row.style.cssText = "display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 4px 0; font-size: 13px;";
-      const cb = document.createElement("input");
-      cb.type = "checkbox";
-      cb.checked = state.enabled.has(name);
-      cb.onchange = () => {
-        if (cb.checked) state.enabled.add(name);
-        else state.enabled.delete(name);
-      };
-      const label = document.createElement("span");
-      label.style.cssText = "font-family: ui-monospace, monospace;";
-      label.textContent = name;
-      row.append(cb, label);
-      toolsContainer.appendChild(row);
+    // Core tools first (alpha within group), then extended (alpha) — keeps
+    // the dialog's vertical layout stable as the user toggles things.
+    const sorted = [...state.allTools].sort();
+    const core = sorted.filter((n) => state.coreTools.has(n));
+    const ext = sorted.filter((n) => !state.coreTools.has(n));
+    for (const n of [...core, ...ext]) {
+      toolsContainer.appendChild(renderToolRow(n));
     }
   };
 
   // Subscribe to settings frames from the agent.
   const prevHandler = agent.onSettings;
-  const handler = (settings: ServerSettings, allTools: string[]) => {
+  const handler = (settings: ServerSettings, allTools: string[], coreTools: string[]) => {
     state.allTools = allTools;
+    state.coreTools = new Set(coreTools);
     state.enabled = new Set(settings.enabledTools);
+    state.pins = new Map(Object.entries(settings.toolPins ?? {}) as Array<[string, ToolPin]>);
     state.contextWindow = settings.contextWindow;
     state.allowUnexposedWrites = settings.allowUnexposedWrites;
     state.conversationCapMb = settings.conversationCapMb;
@@ -155,7 +253,9 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
     renderTools();
   };
   noneBtn.onclick = () => {
-    state.enabled = new Set();
+    // Don't disable core tools — the server force-enables them anyway and
+    // pretending otherwise in the UI would be misleading.
+    state.enabled = new Set(state.coreTools);
     renderTools();
   };
 
@@ -169,10 +269,19 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
     const conversationCapMb = Number.isFinite(capRaw) && capRaw >= MIN_CONVERSATION_CAP_MB
       ? capRaw
       : state.conversationCapMb;
+    // Drop pins for core tools and for "off" (the default) — keeps the
+    // saved settings.json compact and avoids stale entries.
+    const toolPins: Record<string, ToolPin> = {};
+    for (const [name, pin] of state.pins) {
+      if (state.coreTools.has(name)) continue;
+      if (pin === "off") continue;
+      toolPins[name] = pin;
+    }
     agent.sendRaw({
       type: "set_settings",
       settings: {
         enabledTools: [...state.enabled],
+        toolPins,
         contextWindow,
         allowUnexposedWrites: allowUnexposedInput.checked,
         conversationCapMb,

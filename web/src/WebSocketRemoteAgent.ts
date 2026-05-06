@@ -21,8 +21,14 @@ export interface SessionInfo {
   modified: Date;
 }
 
+export type ToolPin = "off" | "auto" | "always";
+
 export interface ServerSettings {
   enabledTools: string[];
+  /** Per-tool pin policy. Missing keys default to "off" (umbrella-only).
+   *  Core tools' entries are ignored at runtime; the server still echoes
+   *  whatever was saved. */
+  toolPins: Partial<Record<string, ToolPin>>;
   contextWindow: number;
   allowUnexposedWrites: boolean;
   conversationCapMb: number;
@@ -52,7 +58,7 @@ export interface HealthSnapshot {
 type Frame =
   | { type: "snapshot"; state: any }
   | { type: "event"; event: AgentEvent }
-  | { type: "settings"; settings: ServerSettings; all_tools: string[] }
+  | { type: "settings"; settings: ServerSettings; all_tools: string[]; core_tools?: string[] }
   | { type: "states_snapshot"; states: EntityState[] }
   | { type: "state_change"; entity: EntityStateChange }
   | { type: "health"; health: HealthSnapshot }
@@ -76,7 +82,7 @@ export class WebSocketRemoteAgent extends RemoteAgent {
   private closed = false;
   public onConnectionChange?: (connected: boolean) => void;
   public onError?: (message: string) => void;
-  public onSettings?: (settings: ServerSettings, allTools: string[]) => void;
+  public onSettings?: (settings: ServerSettings, allTools: string[], coreTools: string[]) => void;
   /** Full state map sent on hello and after reconnects. */
   public onStatesSnapshot?: (states: EntityState[]) => void;
   /** Single entity update streamed as HA emits state_changed. */
@@ -179,7 +185,7 @@ export class WebSocketRemoteAgent extends RemoteAgent {
       } else if (frame.type === "event") {
         await this.ingestEvent(frame.event);
       } else if (frame.type === "settings") {
-        this.onSettings?.(frame.settings, frame.all_tools);
+        this.onSettings?.(frame.settings, frame.all_tools, frame.core_tools ?? []);
       } else if (frame.type === "states_snapshot") {
         this.onStatesSnapshot?.(frame.states);
       } else if (frame.type === "state_change") {

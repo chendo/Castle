@@ -18,7 +18,7 @@ import {
   deleteSession,
 } from "./agent.ts";
 import { parseHistoryPoints } from "./tools.ts";
-import { ALL_TOOL_NAMES, loadSettings, saveSettings, TOOL_DESCRIPTIONS, type ToolName } from "./settings.ts";
+import { ALL_TOOL_NAMES, CORE_TOOL_NAMES, loadSettings, saveSettings, TOOL_DESCRIPTIONS, type ToolName } from "./settings.ts";
 
 const HA_URL = Deno.env.get("HA_URL") ?? "http://homeassistant.local:8123";
 const HA_TOKEN = Deno.env.get("HA_TOKEN") ?? "";
@@ -552,12 +552,13 @@ async function handleSocket(socket: WebSocket): Promise<void> {
         type: "settings",
         settings,
         all_tools: ALL_TOOL_NAMES,
+        core_tools: CORE_TOOL_NAMES,
       }));
       return;
     }
 
     if (msg.type === "set_settings") {
-      const incoming = (msg as unknown as { settings: { enabledTools?: ToolName[]; contextWindow?: number; allowUnexposedWrites?: boolean; conversationCapMb?: number } }).settings;
+      const incoming = (msg as unknown as { settings: { enabledTools?: ToolName[]; toolPins?: Partial<Record<ToolName, "off" | "auto" | "always">>; contextWindow?: number; allowUnexposedWrites?: boolean; conversationCapMb?: number } }).settings;
       const saved = await saveSettings(incoming);
       // Refresh AGENTS.md *before* rebuilding the session — the new agent reads
       // .pi-agent/AGENTS.md on construction, so a stale file would leave it
@@ -574,7 +575,7 @@ async function handleSocket(socket: WebSocket): Promise<void> {
       await ensureAgentBroadcast();
       const session = await getAgentSession(ha);
       const snapshotFrame = JSON.stringify({ type: "snapshot", state: serializeSnapshot(session) });
-      const settingsFrame = JSON.stringify({ type: "settings", settings: saved, all_tools: ALL_TOOL_NAMES });
+      const settingsFrame = JSON.stringify({ type: "settings", settings: saved, all_tools: ALL_TOOL_NAMES, core_tools: CORE_TOOL_NAMES });
       for (const ws of sockets) {
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(snapshotFrame);
