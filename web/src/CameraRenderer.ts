@@ -288,24 +288,34 @@ class PresentCardRenderer implements ToolRenderer {
         if (!root || root.dataset.rendered === "1") return;
         root.dataset.rendered = "1";
         root.innerHTML = "";
-        // Flex-wrap so multi-entity present_card calls lay out as a 2-up
-        // grid in a wide chat bubble and collapse to 1-up on narrow ones.
-        // Cards cap at 360px each; cameras break to a full row so the
-        // live feed isn't crammed into half the bubble.
-        root.style.cssText = "display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start;";
+        // Strict 2-column grid: equal-width columns, cards always
+        // aligned to the same vertical rails regardless of intrinsic
+        // size. Capped at 728px (2 × 360 + 8 gap) so a wide chat bubble
+        // doesn't make each column larger than a card looks good at;
+        // narrow bubbles shrink both columns equally so they stay
+        // aligned. Single-card present_card → no grid, just a normal
+        // flow card so it doesn't sit in column 1 with column 2 empty.
+        const isGrid = cards.length > 1;
+        root.style.cssText = isGrid
+          ? "display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; max-width: 728px;"
+          : "";
         if (title) {
           const h = document.createElement("div");
-          h.style.cssText = "flex: 1 0 100%; font-size: 13px; font-weight: 500; color: var(--foreground);";
+          h.style.cssText = isGrid
+            ? "grid-column: 1 / -1; font-size: 13px; font-weight: 500; color: var(--foreground);"
+            : "font-size: 13px; font-weight: 500; margin-bottom: 6px; color: var(--foreground);";
           h.textContent = title;
           root.appendChild(h);
         }
         for (const card of cards) {
+          // Camera live feed wants full bubble width; in the grid it
+          // spans both columns to avoid being cramped to ~360px.
           const slot = document.createElement("div");
+          if (isGrid && card.kind === "camera") slot.style.cssText = "grid-column: 1 / -1;";
+          if (!isGrid && card.kind !== "camera") slot.style.cssText = "margin-bottom: 8px;";
           if (card.kind === "camera") {
-            slot.style.cssText = "flex: 1 0 100%;";
             buildLiveFeed({ entity_id: card.entity_id }, slot);
           } else {
-            slot.style.cssText = "flex: 1 1 280px; min-width: 0; max-width: 360px;";
             // Domain-tailored interactive card. Live-updates from the
             // entity cache; controls fire ha_call_service via /ws.
             buildEntityCard(card, this.deps, slot);
@@ -363,12 +373,16 @@ class ServiceCallCardRenderer implements ToolRenderer {
       const root = slotRef.value;
       if (!root || root.dataset.rendered === "1") return;
       root.dataset.rendered = "1";
-      // Flex-wrap so multi-target service calls (e.g. light.turn_on with
-      // entity_id: [a, b, c]) render side-by-side instead of stacked.
-      root.style.cssText = "display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px;";
+      // Strict 2-column grid for multi-target service calls (e.g.
+      // light.turn_on with entity_id: [a, b, c]). Single-target stays
+      // in normal flow with a plain margin so the card doesn't sit in
+      // column 1 with column 2 empty.
+      const isGrid = entityIds.length > 1;
+      root.style.cssText = isGrid
+        ? "display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; max-width: 728px; margin-top: 6px;"
+        : "margin-top: 6px;";
       for (const entityId of entityIds) {
         const slot = document.createElement("div");
-        slot.style.cssText = "flex: 1 1 280px; min-width: 0; max-width: 360px;";
         const domain = entityId.split(".")[0] ?? "";
         buildEntityCard({ entity_id: entityId, kind: "entity", domain }, this.deps, slot);
         root.appendChild(slot);

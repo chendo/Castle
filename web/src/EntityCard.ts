@@ -106,7 +106,7 @@ function buildToggleBody(
     padding: 4px 14px; font-size: 12px; cursor: pointer;
     border-radius: 6px; border: 1px solid var(--border);
     background: ${state?.state === "on" ? "var(--primary, #58a6ff)" : "transparent"};
-    color: ${state?.state === "on" ? "white" : "var(--foreground)"};
+    color: ${state?.state === "on" ? "var(--primary-foreground, white)" : "var(--foreground)"};
   `);
   btn.textContent = state?.state === "on" ? "Turn off" : "Turn on";
   btn.onclick = async () => {
@@ -142,7 +142,7 @@ function buildLightBody(state: EntityState | null, set: ServiceCaller): HTMLElem
     padding: 4px 14px; font-size: 12px; cursor: pointer;
     border-radius: 6px; border: 1px solid var(--border);
     background: ${isOn ? "var(--primary, #58a6ff)" : "transparent"};
-    color: ${isOn ? "white" : "var(--foreground)"};
+    color: ${isOn ? "var(--primary-foreground, white)" : "var(--foreground)"};
   `);
   btn.textContent = isOn ? "Turn off" : "Turn on";
   btn.onclick = async () => {
