@@ -9,6 +9,7 @@ import {
 } from "npm:@mariozechner/pi-coding-agent";
 import type { HAClient } from "./ha-client.ts";
 import { buildTools } from "./tools.ts";
+import { buildInvokeTool } from "./umbrella.ts";
 import { loadSettings } from "./settings.ts";
 
 const AGENT_DIR = new URL(".pi-agent/", import.meta.url).pathname.replace(/\/$/, "");
@@ -203,18 +204,27 @@ export function getAgentSession(ha: HAClient): Promise<AgentSession> {
       const reserveTokens = Math.min(4096, Math.floor(settings.contextWindow * 0.0625));
       const keepRecentTokens = Math.max(8192, Math.floor(settings.contextWindow * 0.125));
 
+      const haTools = buildTools(ha, {
+        multimodal: isMultimodal,
+        dashboardCache,
+        allowUnexposedWrites: settings.allowUnexposedWrites,
+      });
+      // ha_invoke is a uniform dispatcher — given a tool name + args it
+      // forwards to that tool's execute. Right now every tool is also
+      // visible directly in the prefix, so ha_invoke is just an alternate
+      // path; once we land per-tool pin policy (settings tri-state), the
+      // tools NOT pinned to the prefix will be reachable only here.
+      const customTools = [...haTools, buildInvokeTool({ allTools: haTools })];
+      const enabledTools = [...settings.enabledTools, "ha_invoke"];
+
       const result = await createAgentSession({
         cwd: CWD,
         agentDir: AGENT_DIR,
         authStorage,
         model,
         noTools: "builtin",
-        tools: settings.enabledTools.slice(),
-        customTools: buildTools(ha, {
-          multimodal: isMultimodal,
-          dashboardCache,
-          allowUnexposedWrites: settings.allowUnexposedWrites,
-        }),
+        tools: enabledTools,
+        customTools,
         sessionManager: resumeFile
           ? SessionManager.open(resumeFile, SESSIONS_DIR, CWD)
           : SessionManager.create(CWD, SESSIONS_DIR),
