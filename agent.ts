@@ -170,6 +170,73 @@ export function getCurrentSessionFile(): string | undefined {
   return currentSessionFile;
 }
 
+// pi-coding-agent's TypeBox validator and "tool not found" branch both
+// surface only the failure pointer + received-args dump back to the LLM.
+// Without the *correct* shape, qwen-class models tend to retry the same
+// broken call rather than self-correct. enrichToolErrorMessage detects
+// these specific failure messages and appends:
+//   - the full JSON-Schema for the tool that was being called, so the
+//     model sees what fields exist and which are required;
+//   - or, for "tool not found", the list of enabled tools.
+// Idempotent — re-runs of transformContext won't double-enrich.
+
+const ENRICH_MARKER_SCHEMA = "\n\nCorrect schema for ";
+const ENRICH_MARKER_AVAILABLE = "\n\nAvailable tools: ";
+
+function formatSchemaForLLM(schema: unknown): string {
+  // TypeBox schemas are JSON Schema with extra Symbol metadata — those
+  // symbols are quietly dropped by JSON.stringify. The remaining JSON is
+  // exactly the schema that ought to be matched.
+  try {
+    return JSON.stringify(schema, null, 2);
+  } catch {
+    return "(schema unavailable)";
+  }
+}
+
+export function enrichErrorText(
+  text: string,
+  schemas: Map<string, unknown>,
+  enabledTools: string[],
+): string {
+  if (text.includes(ENRICH_MARKER_SCHEMA) || text.includes(ENRICH_MARKER_AVAILABLE)) {
+    return text;
+  }
+  const validationMatch = /^Validation failed for tool "([^"]+)":/.exec(text);
+  if (validationMatch) {
+    const name = validationMatch[1];
+    const schema = schemas.get(name);
+    if (schema !== undefined) {
+      return `${text}${ENRICH_MARKER_SCHEMA}${name}:\n${formatSchemaForLLM(schema)}\n\nFix the arguments to match this schema and retry.`;
+    }
+  }
+  // pi-coding-agent throws this exact phrasing in two places — quoted
+  // and unquoted — so handle both.
+  const notFoundMatch = /^Tool "?([^"\s]+)"? not found/.exec(text);
+  if (notFoundMatch) {
+    return `${text}${ENRICH_MARKER_AVAILABLE}${enabledTools.join(", ")}\n\nUse one of the available tools above; tool names are case-sensitive.`;
+  }
+  return text;
+}
+
+// deno-lint-ignore no-explicit-any
+export function enrichToolErrorMessage(m: any, schemas: Map<string, unknown>, enabledTools: string[]): any {
+  if (!m || m.role !== "toolResult") return m;
+  const content = m.content;
+  if (!Array.isArray(content)) return m;
+  let mutated = false;
+  // deno-lint-ignore no-explicit-any
+  const newContent = content.map((c: any) => {
+    if (c?.type !== "text" || typeof c.text !== "string") return c;
+    const next = enrichErrorText(c.text, schemas, enabledTools);
+    if (next === c.text) return c;
+    mutated = true;
+    return { ...c, text: next };
+  });
+  if (!mutated) return m;
+  return { ...m, content: newContent };
+}
+
 // Stable JSON serializer so identical arg objects fingerprint the same even
 // when their keys arrive in different orders. Used for loop detection.
 function stableJsonStringify(v: unknown): string {
@@ -210,6 +277,18 @@ export function getAgentSession(ha: HAClient): Promise<AgentSession> {
       }).filter((t) => settings.enabledTools.includes(t.name as ToolName));
       const enabledTools = customTools.map((t) => t.name as string);
       console.log(`[agent] enabled tools: ${enabledTools.join(", ")}`);
+      // Map for the transformContext validation-error enricher: when
+      // pi-coding-agent's TypeBox validator rejects a tool call, it
+      // returns a tool-result message containing only the validator's
+      // pointer-list. Useful for the LLM to know *what* failed, but no
+      // signal as to the *correct* shape — so it tends to retry the
+      // same broken arguments. We append the relevant schema below so
+      // the recovery path has the information it needs.
+      // deno-lint-ignore no-explicit-any
+      const toolSchemaByName = new Map<string, any>(
+        // deno-lint-ignore no-explicit-any
+        customTools.map((t) => [t.name as string, (t as any).parameters]),
+      );
 
       const result = await createAgentSession({
         cwd: CWD,
@@ -296,13 +375,22 @@ export function getAgentSession(ha: HAClient): Promise<AgentSession> {
       // transformContext mutates only what the LLM sees, so stored messages —
       // and the UI — keep showing the user's clean text.
       result.session.agent.transformContext = async (messages) => {
+        // First: enrich every tool-result message that carries a bare
+        // validator failure. We rewrite in place inside a copy so the
+        // session JSONL keeps the original concise text.
+        const enriched = messages.map((m) => enrichToolErrorMessage(m, toolSchemaByName, enabledTools));
+
         const lastUserIdx = (() => {
-          for (let i = messages.length - 1; i >= 0; i--) {
-            if (messages[i].role === "user") return i;
+          for (let i = enriched.length - 1; i >= 0; i--) {
+            if (enriched[i].role === "user") return i;
           }
           return -1;
         })();
-        if (lastUserIdx < 0) return messages;
+        if (lastUserIdx < 0) return enriched;
+        // Mutate `messages` reference in the closure below to read from
+        // the enriched copy from here on — the rest of this function
+        // appends time-of-day to the last user message.
+        messages = enriched;
 
         const houseInfo = await ha.getHouseInfo();
         const tz = houseInfo.timezone || "UTC";
