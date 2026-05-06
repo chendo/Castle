@@ -38,11 +38,16 @@ const SUPPORT_STOP = 8;
 
 // ── Style helpers ──────────────────────────────────────────────────────────
 
+// Cap card width — full-width control cards in a wide chat column make the
+// brightness/temperature sliders feel oversized and the card looks empty
+// next to its header. 360px sits between a phone widget and a desktop
+// dashboard tile, with room for ~6 chars of icon + ~28 chars of name.
 const CARD_BASE = `
   display: flex; flex-direction: column; gap: 6px;
   padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px;
   background: var(--card, var(--background)); color: var(--foreground);
   font: 13px ui-sans-serif, system-ui, sans-serif;
+  max-width: 360px;
 `;
 
 function escapeAttr(s: string): string {

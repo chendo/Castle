@@ -1,5 +1,5 @@
 import type { ToolResultMessage } from "@mariozechner/pi-ai";
-import { type ToolRenderer, type ToolRenderResult, registerToolRenderer, renderHeader } from "@mariozechner/pi-web-ui";
+import { getToolRenderer, type ToolRenderer, type ToolRenderResult, registerToolRenderer, renderHeader } from "@mariozechner/pi-web-ui";
 import { getDuration } from "./ToolDurations";
 import { summaryWithDuration } from "./ToolHeader";
 import { html } from "lit";
@@ -322,7 +322,100 @@ class PresentCardRenderer implements ToolRenderer {
   }
 }
 
+/** Wraps the existing `ha_call_service` collapsible so an inline entity
+ *  card mounts as soon as the agent's streaming params include an
+ *  entity_id. The card subscribes to EntityStateCache, so the moment the
+ *  service call lands and HA pushes the resulting state_changed event,
+ *  the card flips on/off (or moves a slider, etc.) — visualising the
+ *  control action without an extra round-trip. The actual service call
+ *  is unchanged; the card render is a pure UI side-effect that runs in
+ *  parallel with the LLM's tool execution. */
+class ServiceCallCardRenderer implements ToolRenderer {
+  constructor(
+    private readonly deps: CardDeps,
+    private readonly inner: ToolRenderer,
+  ) {}
+
+  render(rawArgs: any, result: ToolResultMessage | undefined, isStreaming?: boolean): ToolRenderResult {
+    const innerResult = this.inner.render(rawArgs, result, isStreaming);
+    const params = (() => {
+      let p: any = rawArgs;
+      if (typeof p === "string") {
+        try { p = JSON.parse(p); } catch { return null; }
+      }
+      return p && typeof p === "object" ? p : null;
+    })();
+    const entityIds = collectEntityIds(params);
+    if (entityIds.length === 0) return innerResult;
+
+    // Stable key so we only mount the card slot once per render cycle.
+    // Without this, every re-render (one per streamed event during a
+    // live tool call) would tear down and rebuild the card, killing
+    // the live-state subscription.
+    const slotRef = createRef<HTMLDivElement>();
+    queueMicrotask(() => {
+      const root = slotRef.value;
+      if (!root || root.dataset.rendered === "1") return;
+      root.dataset.rendered = "1";
+      for (const entityId of entityIds) {
+        const slot = document.createElement("div");
+        slot.style.cssText = "margin-top: 6px;";
+        const domain = entityId.split(".")[0] ?? "";
+        buildEntityCard({ entity_id: entityId, kind: "entity", domain }, this.deps, slot);
+        root.appendChild(slot);
+      }
+    });
+
+    return {
+      content: html`
+        <div>
+          ${innerResult.content}
+          <div ${ref(slotRef)}></div>
+        </div>
+      `,
+      isCustom: false,
+    };
+  }
+}
+
+/** Pulls entity_ids out of an ha_call_service param object. HA accepts
+ *  entity_id at the top level, under service_data, and under target —
+ *  any of them may be a string or an array. We dedupe and skip groups
+ *  / non-entity strings. */
+function collectEntityIds(params: any): string[] {
+  if (!params) return [];
+  const candidates: unknown[] = [];
+  for (const key of ["entity_id", "service_data", "target"]) {
+    const v = params[key];
+    if (key === "entity_id") {
+      candidates.push(v);
+    } else if (v && typeof v === "object") {
+      candidates.push((v as any).entity_id);
+    }
+  }
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const c of candidates) {
+    const list = Array.isArray(c) ? c : c !== undefined ? [c] : [];
+    for (const item of list) {
+      if (typeof item !== "string") continue;
+      if (!/^[a-z_][a-z0-9_]*\.[a-z0-9_]+$/i.test(item)) continue;
+      if (seen.has(item)) continue;
+      seen.add(item);
+      out.push(item);
+    }
+  }
+  return out;
+}
+
 export function registerCameraRenderer(deps: CardDeps): void {
   registerToolRenderer("ha_present_card", new PresentCardRenderer(deps));
   registerToolRenderer("ha_get_camera_snapshot", new GetCameraSnapshotRenderer());
+  // Wrap whichever renderer is already registered for ha_call_service
+  // (registerHAToolRenderers runs before this in main.ts) so we keep its
+  // collapsible header verbatim and just prepend a live entity card.
+  const existing = getToolRenderer("ha_call_service");
+  if (existing) {
+    registerToolRenderer("ha_call_service", new ServiceCallCardRenderer(deps, existing));
+  }
 }
