@@ -4,7 +4,7 @@
 # Usage:  ./scripts/run-integration-tests.sh [--down]
 #
 # Prerequisites:
-#   - .env.test (copied from .env.test.example) with MODEL_NAME, OPENAI_API_KEY, etc.
+#   - .env.test (copied from .env.test.example) with MODEL_NAME, LLM_API_KEY, etc.
 #   - An external OpenAI-compatible server (LM Studio, vLLM, etc.) reachable from the
 #     castle container — typically http://host.docker.internal:1234/v1 on macOS/Docker
 #     Desktop; on Linux you may need --network host or a custom extra_hosts entry.
@@ -168,8 +168,9 @@ COMPOSE_FILES=(-f "$PROJECT_DIR/docker-compose.yml" -f "$PROJECT_DIR/docker-comp
 # regardless of container_name.
 cat > "$PROJECT_DIR/.env.test.compose" <<EOF
 HA_URL=http://ha-demo:8123
-OPENAI_URL=${OPENAI_URL:-http://host.docker.internal:1234/v1}
-OPENAI_API_KEY=${OPENAI_API_KEY:-}
+LLM_URL=${LLM_URL:-http://host.docker.internal:1234/v1}
+LLM_API_KEY=${LLM_API_KEY:-}
+LLM_TYPE=${LLM_TYPE:-openai-completions}
 MODEL_NAME=${MODEL_NAME:-}
 CASTLE_PORT=${CASTLE_PORT}
 CASTLE_TEST_HA_PORT=${HA_PORT}

@@ -288,13 +288,13 @@ const broadcastWiredAgents = new WeakSet<object>();
  * Surface LLM call failures and retry attempts in the container logs. Without
  * this the agent silently swallows connection errors into agent state and the
  * operator only sees them via the browser UI — useless when running headless
- * or trying to diagnose a misconfigured OPENAI_URL.
+ * or trying to diagnose a misconfigured LLM_URL.
  */
 function logLlmFailure(event: unknown): void {
   // deno-lint-ignore no-explicit-any
   const e = event as any;
   if (!e || typeof e !== "object") return;
-  const url = Deno.env.get("OPENAI_URL") ?? "(OPENAI_URL unset)";
+  const url = Deno.env.get("LLM_URL") ?? "(LLM_URL unset)";
   if (e.type === "auto_retry_start") {
     console.error(`[agent] LLM call failed, retrying (${e.attempt}/${e.maxAttempts}, ${e.delayMs}ms backoff): ${e.errorMessage}  [model server: ${url}]`);
     return;
@@ -313,7 +313,7 @@ function logLlmFailure(event: unknown): void {
 }
 
 /**
- * Augment errorMessage on assistant failure messages with the OPENAI_URL the
+ * Augment errorMessage on assistant failure messages with the LLM_URL the
  * agent was trying to reach. The bare "tcp connect error" / "fetch failed"
  * strings Deno produces don't say which endpoint timed out, so the user can't
  * tell whether their model server is down or misconfigured.
@@ -328,7 +328,7 @@ function enrichErrorEvent(event: unknown): unknown {
   if (!/connect|fetch failed|connection refused|enotfound|econnreset|timed out|terminated/i.test(msg.errorMessage)) {
     return event;
   }
-  const url = Deno.env.get("OPENAI_URL") ?? "(OPENAI_URL unset)";
+  const url = Deno.env.get("LLM_URL") ?? "(LLM_URL unset)";
   if (msg.errorMessage.includes(url)) return event; // already present
   return {
     ...e,
@@ -388,7 +388,7 @@ function buildHealth() {
     ha_ok: ha.isConnected,
     ha_url: HA_URL,
     llm_ok: llmHealthy,
-    llm_url: Deno.env.get("OPENAI_URL") ?? "",
+    llm_url: Deno.env.get("LLM_URL") ?? "",
   };
 }
 
@@ -733,5 +733,5 @@ async function handleSocket(socket: WebSocket): Promise<void> {
 
 await writeModelsJson();
 setupHaSupervisor(); // wires HAClient's auto-reconnect loop; runs in background
-startLlmProbe();     // periodically pings OPENAI_URL/models so the UI bubble reflects reality
+startLlmProbe();     // periodically pings LLM_URL/models so the UI bubble reflects reality
 Deno.serve({ port: PORT }, handler);

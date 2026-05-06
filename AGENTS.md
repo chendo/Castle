@@ -8,7 +8,7 @@ Deno app that bridges an OpenAI-compatible LLM (LM Studio by default) to Home As
 deno run --allow-all --unstable-node-globals main.ts
 ```
 
-Requires `.env` with at least `HA_TOKEN`, `MODEL_NAME`, and (usually) `OPENAI_API_KEY`. See `.env.example` and the env-var table below for all knobs.
+Requires `.env` with at least `HA_TOKEN`, `MODEL_NAME`, and (usually) `LLM_API_KEY`. See `.env.example` and the env-var table below for all knobs.
 
 ## Run via Docker
 
@@ -63,7 +63,7 @@ docker compose exec castle deno task test:integration
 ```
 
 **Prerequisites:** `.env.test` (copy from `.env.test.example`) with `MODEL_NAME`,
-`OPENAI_API_KEY`, etc. An external OpenAI-compatible server must be reachable from
+`LLM_API_KEY`, etc. An external OpenAI-compatible server must be reachable from
 the castle container — typically `http://host.docker.internal:1234/v1`.
 
 The test suite covers all 16 HA tools, plus scenario tests for context inference,
@@ -209,8 +209,9 @@ The HA token must have **write permission** for this API endpoint. If the call f
 |---|---|---|
 | `HA_URL` | `http://homeassistant.local:8123` | Home Assistant URL |
 | `HA_TOKEN` | *(required)* | HA long-lived access token |
-| `OPENAI_URL` | `http://host.docker.internal:1234/v1` (in Docker) / `http://localhost:1234/v1` (host) | OpenAI-compatible API base URL (LM Studio, vLLM, llama.cpp, OpenRouter, real OpenAI, etc.) |
-| `OPENAI_API_KEY` | *(empty)* | API key for the OpenAI-compatible endpoint |
+| `LLM_URL` | `http://host.docker.internal:1234/v1` (in Docker) / `http://localhost:1234/v1` (host) | Model server base URL (LM Studio, vLLM, llama.cpp, OpenRouter, real OpenAI, etc.) |
+| `LLM_API_KEY` | *(empty)* | API key for the model server |
+| `LLM_TYPE` | `openai-completions` | Provider dialect; only `openai-completions` is wired up today |
 | `MODEL_NAME` | *(required)* | Model id passed in chat completions (e.g. `qwen/qwen3-vl-30b`, `gpt-4o-mini`) |
 | `CASTLE_AUTH_TOKEN` | *(empty)* | Optional bearer token guarding Castle's own WS/HTTP server |
 | `PORT` | `7090` | Server listen port (mapped to 7091 externally) |

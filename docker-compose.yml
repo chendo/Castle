@@ -13,11 +13,14 @@ services:
         required: false
     environment:
       - HA_URL=${HA_URL:-http://homeassistant.local:8123}
-      - OPENAI_URL=${OPENAI_URL:-http://host.docker.internal:1234/v1}
-      # HA_TOKEN normally arrives via env_file (.env). Re-declaring it here
-      # lets the test runner override it from .env.test.compose without
-      # touching the dev .env, since `environment:` wins over `env_file:`.
+      - LLM_URL=${LLM_URL:-http://host.docker.internal:1234/v1}
+      # HA_TOKEN, LLM_API_KEY, and LLM_TYPE normally arrive via env_file (.env).
+      # Re-declaring them here lets the test runner override them from
+      # .env.test.compose without touching the dev .env, since `environment:`
+      # wins over `env_file:`. Default-empty so a fresh .env still boots.
       - HA_TOKEN=${HA_TOKEN:-}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_TYPE=${LLM_TYPE:-openai-completions}
     # If your runtime needs a custom host alias (Lima, Podman, etc.), put it in
     # a local `docker-compose.override.yml` (gitignored) — for example:
     #   services:

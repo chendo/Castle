@@ -9,7 +9,7 @@ interface ModelsResponse {
  * Custom model picker — replaces pi-web-ui's built-in cloud picker.
  *
  * Fetches /models (proxied through the Castle server, which calls /v1/models on
- * the configured OPENAI_URL with the bearer token never seen by the browser),
+ * the configured LLM_URL with the bearer token never seen by the browser),
  * shows a searchable list, and on selection fires set_model over the WS. The
  * server resets the agent session and broadcasts a fresh snapshot, which is
  * what flips agent.state.model in every connected tab.

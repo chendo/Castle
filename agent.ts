@@ -32,10 +32,25 @@ export function getActiveModelId(): string {
   return activeModelId;
 }
 
+/** LLM endpoint base URL. Single accessor so renames stay surgical and the
+ *  default is consistent across probe / models-list / models.json writers. */
+function llmUrl(): string {
+  return Deno.env.get("LLM_URL") ?? "http://localhost:1234/v1";
+}
+function llmApiKey(): string {
+  return Deno.env.get("LLM_API_KEY") ?? "";
+}
+/** API dialect string passed to pi-coding-agent's provider config. Today
+ *  only `openai-completions` is wired up; setting LLM_TYPE makes future
+ *  alternative dialects opt-in without another env-var rename. */
+function llmType(): string {
+  return Deno.env.get("LLM_TYPE") ?? "openai-completions";
+}
+
 /** Pulls the upstream /v1/models list. Used by the browser model picker. */
 export async function listUpstreamModels(): Promise<Array<{ id: string }>> {
-  const url = Deno.env.get("OPENAI_URL") ?? "http://localhost:1234/v1";
-  const key = Deno.env.get("OPENAI_API_KEY") ?? "";
+  const url = llmUrl();
+  const key = llmApiKey();
   const headers: Record<string, string> = {};
   if (key) headers["Authorization"] = `Bearer ${key}`;
   const res = await fetch(`${url.replace(/\/$/, "")}/models`, { headers, signal: AbortSignal.timeout(5000) });
@@ -84,15 +99,15 @@ async function detectModelInput(baseUrl: string, apiKey: string, modelId: string
  */
 export async function writeModelsJson(): Promise<void> {
   if (!activeModelId) throw new Error("no active model — set MODEL_NAME env var or POST set_model");
-  const key = Deno.env.get("OPENAI_API_KEY") ?? "";
-  const url = Deno.env.get("OPENAI_URL") ?? "http://localhost:1234/v1";
+  const key = llmApiKey();
+  const url = llmUrl();
   const input = await detectModelInput(url, key, activeModelId);
   console.log(`[castle] model ${activeModelId} input modalities: ${input.join(", ")}`);
   const config = {
     providers: {
       local: {
         baseUrl: url,
-        api: "openai-completions",
+        api: llmType(),
         apiKey: key,
         compat: { supportsDeveloperRole: false, supportsReasoningEffort: false },
         models: [{

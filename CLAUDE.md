@@ -146,6 +146,6 @@ When you touch a hot path (anything that runs per token delta, per state change,
 
 - The agent's system prompt is the auto-generated `.pi-agent/AGENTS.md` (entity catalog), **not** the project's `AGENTS.md` (contributor guide). Don't confuse them.
 - Tool output is truncated by byte budget (not token count) with a footer surfacing the elision. Renderers in `web/src/HAToolRenderer.ts` show a warning badge when `details.truncated` is set.
-- LLM call failures are logged at the host with the `OPENAI_URL` appended (see `logLlmFailure` / `enrichErrorEvent` in main.ts) — bare "fetch failed" errors omit the endpoint, which is the #1 misconfiguration symptom.
+- LLM call failures are logged at the host with the `LLM_URL` appended (see `logLlmFailure` / `enrichErrorEvent` in main.ts) — bare "fetch failed" errors omit the endpoint, which is the #1 misconfiguration symptom.
 - Tests under `tests/integration/` require a running LM Studio + reachable HA and are skipped by `test:unit`. The integration test asserts the agent only invokes read-only tools when asked about a weather entity; override the entity with `CASTLE_TEST_WEATHER_ENTITY` if `weather.forecast_home` doesn't exist.
 - Pre-commit hook scrubs for tokens, private IPs, JWTs. If a secret slips through, **rotate first**, then rewrite history with `git filter-repo --replace-text` — deleting the file in a follow-up commit leaves the value reachable in the original blob.
