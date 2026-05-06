@@ -103,14 +103,16 @@ function buildToggleBody(
   domain: string,
 ): HTMLElement {
   const wrap = el("div", "display: flex; align-items: center; justify-content: space-between; gap: 12px;");
-  const stateText = el("span", "font-size: 13px; color: var(--muted-foreground);", state?.state ?? "unknown");
+  const stateText = el("span", "font-size: 13px; color: var(--foreground);", state?.state ?? "unknown");
   const btn = el("button", `
     padding: 4px 14px; font-size: 12px; cursor: pointer;
     border-radius: 6px; border: 1px solid var(--border);
     background: ${state?.state === "on" ? "var(--primary, #58a6ff)" : "transparent"};
     color: ${state?.state === "on" ? "var(--primary-foreground, white)" : "var(--foreground)"};
   `);
-  btn.textContent = state?.state === "on" ? "Turn off" : "Turn on";
+  // Label = current state. Click toggles.
+  btn.textContent = state?.state === "on" ? "On" : "Off";
+  btn.title = state?.state === "on" ? "Click to turn off" : "Click to turn on";
   btn.onclick = async () => {
     btn.disabled = true;
     const next = state?.state === "on" ? "turn_off" : "turn_on";
@@ -139,14 +141,15 @@ function buildLightBody(state: EntityState | null, set: ServiceCaller): HTMLElem
   const supportsBrightness = hasColorModeBrightness || hasLegacyBrightness || hasBrightnessAttr;
 
   const row = el("div", "display: flex; align-items: center; justify-content: space-between; gap: 12px;");
-  const stateText = el("span", "font-size: 13px; color: var(--muted-foreground);", isOn ? `${Math.round((brightness / 255) * 100)}%` : "off");
+  const stateText = el("span", "font-size: 13px; color: var(--foreground);", isOn ? `${Math.round((brightness / 255) * 100)}%` : "off");
   const btn = el("button", `
     padding: 4px 14px; font-size: 12px; cursor: pointer;
     border-radius: 6px; border: 1px solid var(--border);
     background: ${isOn ? "var(--primary, #58a6ff)" : "transparent"};
     color: ${isOn ? "var(--primary-foreground, white)" : "var(--foreground)"};
   `);
-  btn.textContent = isOn ? "Turn off" : "Turn on";
+  btn.textContent = isOn ? "On" : "Off";
+  btn.title = isOn ? "Click to turn off" : "Click to turn on";
   btn.onclick = async () => {
     btn.disabled = true;
     const next = isOn ? "turn_off" : "turn_on";
@@ -170,7 +173,7 @@ function buildLightBody(state: EntityState | null, set: ServiceCaller): HTMLElem
     slider.max = "100";
     slider.step = "1";
     slider.value = String(isOn ? Math.round((brightness / 255) * 100) : 0);
-    const valueLabel = el("span", "font-size: 11px; color: var(--muted-foreground); min-width: 36px; text-align: right;", `${slider.value}%`);
+    const valueLabel = el("span", "font-size: 11px; color: var(--foreground); min-width: 36px; text-align: right;", `${slider.value}%`);
     slider.oninput = () => { valueLabel.textContent = `${slider.value}%`; };
     let scheduled = false;
     slider.onchange = async () => {
@@ -193,7 +196,7 @@ function buildLightBody(state: EntityState | null, set: ServiceCaller): HTMLElem
 function buildCoverBody(state: EntityState | null, set: ServiceCaller): HTMLElement {
   const supported = Number(state?.attributes?.supported_features ?? 0);
   const wrap = el("div", "display: flex; align-items: center; justify-content: space-between; gap: 12px;");
-  const stateText = el("span", "font-size: 13px; color: var(--muted-foreground);", state?.state ?? "unknown");
+  const stateText = el("span", "font-size: 13px; color: var(--foreground);", state?.state ?? "unknown");
   const btnGroup = el("div", "display: flex; gap: 6px;");
   const mkBtn = (label: string, svc: string) => {
     const b = el("button", `
@@ -228,9 +231,9 @@ function buildClimateBody(state: EntityState | null, set: ServiceCaller): HTMLEl
   const step = Number(state?.attributes?.target_temp_step ?? 0.5);
 
   const row = el("div", "display: flex; align-items: baseline; justify-content: space-between; gap: 12px;");
-  const left = el("div", "font-size: 13px; color: var(--muted-foreground);");
+  const left = el("div", "font-size: 13px; color: var(--foreground);");
   left.innerHTML = `${current !== undefined ? `${current}${unit}` : "—"} <span style="color: var(--muted-foreground); font-size: 11px;">now</span> · <span style="color: var(--foreground);">${Number.isFinite(target) ? `${target}${unit}` : "—"}</span> <span style="font-size: 11px;">target</span>`;
-  const modeBadge = el("span", "font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--muted, transparent); color: var(--muted-foreground); border: 1px solid var(--border);", mode);
+  const modeBadge = el("span", "font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--muted, transparent); color: var(--foreground); border: 1px solid var(--border);", mode);
   row.append(left, modeBadge);
   wrap.appendChild(row);
 

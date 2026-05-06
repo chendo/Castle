@@ -151,17 +151,21 @@ function buildShortcutRow(state: EntityState, set: ServiceCaller): HTMLElement {
 }
 
 function buildAction(state: EntityState, set: ServiceCaller): HTMLElement {
+  // Buttons label themselves with the *current* state so the
+  // dashboard reads at a glance — a bright "On" pill means the light
+  // is on, not that "On" is the action you'd take. Click toggles.
   const isOn = state.state === "on" || state.state === "playing" || state.state === "open";
   const padBtn = "padding: 2px 8px; font-size: 11px; cursor: pointer; border-radius: 4px; border: 1px solid var(--border); flex-shrink: 0; line-height: 1.4;";
-  const onBg = `background: var(--primary, #58a6ff); color: var(--primary-foreground, white);`;
-  const offBg = `background: transparent; color: var(--foreground);`;
+  const activeBg = `background: var(--primary, #58a6ff); color: var(--primary-foreground, white);`;
+  const inactiveBg = `background: transparent; color: var(--foreground);`;
 
   switch (state.domain) {
     case "light":
     case "switch":
     case "input_boolean":
     case "fan": {
-      const btn = el("button", padBtn + (isOn ? onBg : offBg), isOn ? "Off" : "On");
+      const btn = el("button", padBtn + (isOn ? activeBg : inactiveBg), isOn ? "On" : "Off");
+      btn.title = `Click to turn ${isOn ? "off" : "on"}`;
       btn.onclick = async (ev) => {
         ev.stopPropagation();
         btn.disabled = true;
@@ -171,7 +175,7 @@ function buildAction(state: EntityState, set: ServiceCaller): HTMLElement {
       return btn;
     }
     case "scene": {
-      const btn = el("button", padBtn + offBg, "Activate");
+      const btn = el("button", padBtn + inactiveBg, "Activate");
       btn.onclick = async (ev) => {
         ev.stopPropagation();
         btn.disabled = true;
@@ -181,7 +185,8 @@ function buildAction(state: EntityState, set: ServiceCaller): HTMLElement {
       return btn;
     }
     case "cover": {
-      const btn = el("button", padBtn + (isOn ? onBg : offBg), isOn ? "Close" : "Open");
+      const btn = el("button", padBtn + (isOn ? activeBg : inactiveBg), isOn ? "Open" : "Closed");
+      btn.title = `Click to ${isOn ? "close" : "open"}`;
       btn.onclick = async (ev) => {
         ev.stopPropagation();
         btn.disabled = true;
@@ -191,7 +196,10 @@ function buildAction(state: EntityState, set: ServiceCaller): HTMLElement {
       return btn;
     }
     case "media_player": {
-      const btn = el("button", padBtn + offBg, isOn ? "⏸" : "▶");
+      // Two-state binary: playing or not. Highlight when playing so it
+      // matches the on/off semantics of the other domains.
+      const btn = el("button", padBtn + (isOn ? activeBg : inactiveBg), isOn ? "Playing" : "Idle");
+      btn.title = `Click to ${isOn ? "pause" : "play"}`;
       btn.onclick = async (ev) => {
         ev.stopPropagation();
         btn.disabled = true;
@@ -203,11 +211,11 @@ function buildAction(state: EntityState, set: ServiceCaller): HTMLElement {
     case "climate": {
       const t = state.attributes?.temperature;
       const cur = state.attributes?.current_temperature;
-      return el("span", "font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted-foreground); flex-shrink: 0;",
+      return el("span", "font-family: ui-monospace, monospace; font-size: 11px; color: var(--foreground); flex-shrink: 0;",
         cur !== undefined && t !== undefined ? `${cur}°→${t}°` : state.state);
     }
   }
-  return el("span", "font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted-foreground); flex-shrink: 0;", state.state);
+  return el("span", "font-family: ui-monospace, monospace; font-size: 11px; color: var(--foreground); flex-shrink: 0;", state.state);
 }
 
 // ── Area card (summary + shortcuts) ───────────────────────────────────────
@@ -232,7 +240,10 @@ function buildAreaCard(opts: {
 
   const ambient = pickAmbient(opts.entities);
   if (ambient.length > 0) {
-    const row = el("div", "font-size: 12px; color: var(--muted-foreground); display: flex; flex-wrap: wrap; gap: 10px;");
+    // Ambient values are real data, not metadata — render at full
+    // foreground contrast so the dashboard reads at a glance in dark
+    // mode without leaning into the muted greys.
+    const row = el("div", "font-size: 12px; color: var(--foreground); display: flex; flex-wrap: wrap; gap: 10px;");
     for (const a of ambient) {
       const chip = el("span", "white-space: nowrap;", formatAmbient(a));
       chip.title = a.entity_id;
@@ -253,24 +264,6 @@ function buildAreaCard(opts: {
     root.appendChild(list);
   } else {
     root.appendChild(el("div", "font-size: 12px; color: var(--muted-foreground); font-style: italic;", "No quick controls in this area."));
-  }
-
-  if (opts.entities.length > 0) {
-    const ids = opts.entities.map((e) => e.entity_id);
-    const link = el("button", `
-      align-self: flex-start; padding: 0; margin-top: 4px;
-      background: transparent; border: none; cursor: pointer;
-      font: inherit; font-size: 12px; color: var(--primary, #58a6ff);
-    `, `Open in chat ▸`);
-    link.onclick = () => {
-      const idList = ids.slice(0, 12).map((i) => `\`${i}\``).join(", ");
-      const more = ids.length > 12 ? ` (and ${ids.length - 12} more — pick the most relevant)` : "";
-      opts.agent.sendRaw({
-        type: "prompt",
-        text: `Use ha_present_card to show ${idList}${more} with title "${opts.name}".`,
-      });
-    };
-    root.appendChild(link);
   }
 
   return root;
