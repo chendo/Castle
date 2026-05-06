@@ -308,7 +308,7 @@ export function getAgentSession(ha: HAClient): Promise<AgentSession> {
             keepRecentTokens,
           },
         }),
-        thinkingLevel: settings.disableThinking ? "off" : "low",
+        thinkingLevel: "low",
       });
 
       // Per-turn guardrails: stop the agent if it goes berserk with tool calls.
@@ -405,11 +405,7 @@ export function getAgentSession(ha: HAClient): Promise<AgentSession> {
           hour12: false,
         });
 
-        // /no_think is Qwen3's chat-template directive to skip the thinking
-        // block. Other models see it as ordinary text in the user message,
-        // which they ignore — so this is safe to append unconditionally
-        // when the user has asked us to disable thinking.
-        const append = `\n\nCurrent time: ${now} (${tz})${settings.disableThinking ? " /no_think" : ""}`;
+        const append = `\n\nCurrent time: ${now} (${tz})`;
         const lastUser = messages[lastUserIdx] as { role: "user"; content: any; timestamp: number };
         const newContent = typeof lastUser.content === "string"
           ? lastUser.content + append

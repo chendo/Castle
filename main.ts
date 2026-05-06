@@ -557,7 +557,7 @@ async function handleSocket(socket: WebSocket): Promise<void> {
     }
 
     if (msg.type === "set_settings") {
-      const incoming = (msg as unknown as { settings: { enabledTools?: ToolName[]; disableThinking?: boolean; contextWindow?: number; allowUnexposedWrites?: boolean; conversationCapMb?: number } }).settings;
+      const incoming = (msg as unknown as { settings: { enabledTools?: ToolName[]; contextWindow?: number; allowUnexposedWrites?: boolean; conversationCapMb?: number } }).settings;
       const saved = await saveSettings(incoming);
       // Refresh AGENTS.md *before* rebuilding the session — the new agent reads
       // .pi-agent/AGENTS.md on construction, so a stale file would leave it

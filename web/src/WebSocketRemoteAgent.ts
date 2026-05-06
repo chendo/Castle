@@ -23,7 +23,6 @@ export interface SessionInfo {
 
 export interface ServerSettings {
   enabledTools: string[];
-  disableThinking: boolean;
   contextWindow: number;
   allowUnexposedWrites: boolean;
   conversationCapMb: number;

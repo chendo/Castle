@@ -3,7 +3,6 @@ import type { ServerSettings, WebSocketRemoteAgent } from "./WebSocketRemoteAgen
 interface DialogState {
   allTools: string[];
   enabled: Set<string>;
-  disableThinking: boolean;
   contextWindow: number;
   allowUnexposedWrites: boolean;
   conversationCapMb: number;
@@ -25,7 +24,6 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
   const state: DialogState = {
     allTools: [],
     enabled: new Set(),
-    disableThinking: false,
     contextWindow: 65536,
     allowUnexposedWrites: false,
     conversationCapMb: 100,
@@ -62,15 +60,6 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
       </div>
       <div style="margin-top: 6px; font-size: 12px; color: var(--muted-foreground);">
         Set to whatever your model server actually supports. Compaction thresholds scale with this value.
-      </div>
-
-      <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted-foreground); margin: 18px 0 10px;">Model behaviour</div>
-      <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px;">
-        <input id="castle-settings-disable-thinking" type="checkbox" />
-        <span>Disable thinking (Qwen3 <code>/no_think</code>)</span>
-      </label>
-      <div style="margin-top: 6px; font-size: 12px; color: var(--muted-foreground);">
-        Skips the model's reasoning phase to cut TTFT. For Qwen3 family, also appends <code>/no_think</code> to each user message so the chat template suppresses the &lt;think&gt; block.
       </div>
 
       <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted-foreground); margin: 18px 0 10px;">Write protection</div>
@@ -118,7 +107,6 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
   const noneBtn = panel.querySelector("#castle-settings-none") as HTMLButtonElement;
   const contextInput = panel.querySelector("#castle-settings-context") as HTMLInputElement;
   const allowUnexposedInput = panel.querySelector("#castle-settings-allow-unexposed") as HTMLInputElement;
-  const disableThinkingInput = panel.querySelector("#castle-settings-disable-thinking") as HTMLInputElement;
   const capInput = panel.querySelector("#castle-settings-cap") as HTMLInputElement;
 
   const renderToolRow = (name: string): HTMLElement => {
@@ -156,12 +144,10 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
     state.enabled = new Set(settings.enabledTools);
     state.contextWindow = settings.contextWindow;
     state.allowUnexposedWrites = settings.allowUnexposedWrites;
-    state.disableThinking = settings.disableThinking;
     state.conversationCapMb = settings.conversationCapMb;
     state.loaded = true;
     contextInput.value = String(settings.contextWindow);
     allowUnexposedInput.checked = settings.allowUnexposedWrites;
-    disableThinkingInput.checked = settings.disableThinking;
     capInput.value = String(settings.conversationCapMb);
     applyBtn.disabled = false;
     renderTools();
@@ -194,7 +180,6 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
       type: "set_settings",
       settings: {
         enabledTools: [...state.enabled],
-        disableThinking: disableThinkingInput.checked,
         contextWindow,
         allowUnexposedWrites: allowUnexposedInput.checked,
         conversationCapMb,

@@ -49,14 +49,6 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
 
 export interface Settings {
   enabledTools: ToolName[];
-  /**
-   * When true, the agent runs with thinkingLevel "off" AND each user
-   * message is suffixed with `/no_think` — Qwen3 family models emit
-   * <think> blocks by default, and the server has no other way to
-   * suppress them via the OpenAI-compat API. Provider-agnostic: harmless
-   * for non-Qwen models, which just see the suffix as ordinary text.
-   */
-  disableThinking: boolean;
   // LLM context window in tokens. Drives compaction thresholds in the agent.
   // Floored at 8k so things still work; no upper bound — user knows their backend.
   contextWindow: number;
@@ -89,7 +81,6 @@ const DEFAULT_CONVERSATION_CAP_MB = 100;
 
 const DEFAULTS: Settings = {
   enabledTools: [...ALL_TOOL_NAMES],
-  disableThinking: false,
   contextWindow: DEFAULT_CONTEXT_WINDOW,
   allowUnexposedWrites: false,
   conversationCapMb: DEFAULT_CONVERSATION_CAP_MB,
@@ -109,16 +100,12 @@ function sanitize(s: Partial<Settings> | null | undefined): Settings {
   const allowUnexposedWrites = typeof s?.allowUnexposedWrites === "boolean"
     ? s!.allowUnexposedWrites
     : DEFAULTS.allowUnexposedWrites;
-  const disableThinking = typeof s?.disableThinking === "boolean"
-    ? s!.disableThinking
-    : DEFAULTS.disableThinking;
   const capRaw = typeof s?.conversationCapMb === "number" ? s!.conversationCapMb : DEFAULTS.conversationCapMb;
   const conversationCapMb = Number.isFinite(capRaw) && capRaw >= MIN_CONVERSATION_CAP_MB
     ? Math.floor(capRaw)
     : DEFAULTS.conversationCapMb;
   return {
     enabledTools: filtered.length ? filtered : [...ALL_TOOL_NAMES],
-    disableThinking,
     contextWindow,
     allowUnexposedWrites,
     conversationCapMb,
