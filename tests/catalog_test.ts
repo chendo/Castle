@@ -118,9 +118,9 @@ Deno.test("buildAgentsMd — disabled tools are listed with their descriptions",
   assert(md.includes("Disabled tools"));
   assert(md.includes("ha_get_history — fetch historical sensor / state data"));
   assert(md.includes("ha_render_chart — render a chart from historical data"));
-  // Section sits inside Reminders, before the "Tool guidance:" line.
+  // Section sits inside Reminders, before the operational rules block.
   assert(md.indexOf("Disabled tools") > md.indexOf("## Reminders"));
-  assert(md.indexOf("Disabled tools") < md.indexOf("Tool guidance:"));
+  assert(md.indexOf("Disabled tools") < md.indexOf("Important Rules:"));
 });
 
 Deno.test("buildAgentsMd — disabled tools section omitted when list is empty", () => {
