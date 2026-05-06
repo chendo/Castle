@@ -1,0 +1,17 @@
+# Overlay applied on top of docker-compose.yml when the integration runner
+# brings up the test stack. Pass via `-f docker-compose.yml -f docker-compose.test.yml`.
+#
+# .pi-agent/ holds the auto-generated entity catalog, models.json, and auth
+# storage — castle rewrites those files every time HA's catalog refreshes.
+# In dev mode .pi-agent/ lives in the host workspace via the :/workspace bind
+# mount; if the test castle also writes to that path, it stomps the dev
+# castle's catalog (and vice versa) on every refresh. Mount a docker volume
+# at /workspace/.pi-agent for the test castle so each project's pi-agent
+# state is isolated.
+services:
+  castle:
+    volumes:
+      - test-pi-agent:/workspace/.pi-agent
+
+volumes:
+  test-pi-agent:

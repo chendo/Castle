@@ -131,15 +131,15 @@ wait_for_ws() {
 teardown() {
   if [[ "$DOWN_LATER" == true ]]; then
     log "Tearing down services..."
-    docker compose --env-file "$PROJECT_DIR/.env.test.compose" -f "$PROJECT_DIR/docker-compose.yml" stop ha-demo castle 2>/dev/null || true
-    docker compose --env-file "$PROJECT_DIR/.env.test.compose" -f "$PROJECT_DIR/docker-compose.yml" rm -f ha-demo castle 2>/dev/null || true
+    docker compose "${COMPOSE_ARGS[@]}" stop ha-demo castle 2>/dev/null || true
+    docker compose "${COMPOSE_ARGS[@]}" rm -f ha-demo castle 2>/dev/null || true
     log "Done."
   fi
 }
 
 # ── Main ────────────────────────────────────────────────────────────────────
 
-trap teardown EXIT INT TERM
+trap '[[ "${KEEP_ALIVE:-false}" == "true" ]] || teardown' EXIT INT TERM
 
 # Parse args — if caller passes --down, skip starting services (they're already up)
 for arg in "$@"; do
@@ -155,9 +155,13 @@ log "Starting test environment..."
 # Isolate from the dev stack: separate compose project + unique container names
 # so a `docker compose up castle` running on the host isn't disturbed.
 export COMPOSE_PROJECT_NAME="castle-test"
-export COMPOSE_FILE="$PROJECT_DIR/docker-compose.yml"
 export CASTLE_CONTAINER_NAME="castle-test"
 export HA_DEMO_CONTAINER_NAME="ha-demo-test"
+# docker-compose.test.yml overlays the base compose with a docker volume for
+# /workspace/.pi-agent — without it, the test castle and the dev castle would
+# stomp each other's auto-generated catalog (both write to the same host
+# .pi-agent/ via the workspace bind mount).
+COMPOSE_FILES=(-f "$PROJECT_DIR/docker-compose.yml" -f "$PROJECT_DIR/docker-compose.test.yml")
 
 # Override env vars for this compose run so castle (the test instance) points
 # at the in-network ha-demo by its compose *service* name, which resolves
@@ -176,7 +180,7 @@ EOF
 # --env-file feeds Docker Compose's variable substitution (the ${VAR} expressions
 # in docker-compose.yml). It is independent from the per-service `env_file:`
 # directive, which still reads .env into the container at runtime.
-COMPOSE_ARGS=(--env-file "$PROJECT_DIR/.env.test.compose" -f "$COMPOSE_FILE")
+COMPOSE_ARGS=(--env-file "$PROJECT_DIR/.env.test.compose" "${COMPOSE_FILES[@]}")
 
 # Start ha-demo first; we need it healthy before we can mint an HA_TOKEN, and
 # castle must boot with that token already in its environment so the initial
@@ -210,9 +214,13 @@ else
   log "All integration tests passed."
 fi
 
-# Keep services running for manual inspection if tests fail
+# Keep services running for manual inspection if tests fail. The trap reads
+# KEEP_ALIVE so we can disable teardown without removing the trap entirely.
 if [[ $EXIT_CODE -eq 0 ]]; then
   teardown
+else
+  log "Tests failed — leaving castle-test + ha-demo-test up for inspection (run \`docker compose --env-file .env.test.compose -p castle-test down\` to clean)."
+  export KEEP_ALIVE=true
 fi
 
 exit $EXIT_CODE
