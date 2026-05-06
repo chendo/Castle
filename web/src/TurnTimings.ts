@@ -40,6 +40,13 @@ class TurnTimingsTracker {
   /** Last fully-completed turn — kept so the live ticker can clear cleanly. */
   private lastCompleted: TurnTiming | null = null;
   private perMessage = new Map<number, PerMessageTiming>();
+  /** Completed turns keyed by the timestamp of the assistant message that
+   *  ended the turn. Lets the timing chip stay attached to *that* message
+   *  forever, instead of jumping to whichever message is currently last. */
+  private turnByEndingMessage = new Map<number, TurnTiming>();
+  /** Timestamp of the most recent assistant message in the current turn —
+   *  used to bind the turn timing once agent_end lands. */
+  private lastMessageTsThisTurn: number | undefined;
   /** Number of in-flight tool_execution_* calls. Drives the "processing" gap detection. */
   private activeTools = 0;
   /** True between a text_start / thinking_start delta and the matching message_end —
@@ -69,6 +76,13 @@ class TurnTimingsTracker {
 
   getMessageTiming(timestamp: number): PerMessageTiming | undefined {
     return this.perMessage.get(timestamp);
+  }
+
+  /** If `timestamp` is the last assistant message of a completed turn,
+   *  return that turn's timing. Lets per-message chips render the TTFT /
+   *  total summary on the message it actually applies to. */
+  getTurnEndedAt(timestamp: number): TurnTiming | undefined {
+    return this.turnByEndingMessage.get(timestamp);
   }
 
   /**
@@ -159,6 +173,9 @@ class TurnTimingsTracker {
         }
         pm.endedAt = performance.now();
       }
+      // Track the most recent assistant message; on agent_end we'll bind
+      // the turn-summary chip to it.
+      if (typeof ts === "number") this.lastMessageTsThisTurn = ts;
       // The current assistant message is done — if tools follow, we'll go
       // back into "processing" until the next message starts streaming.
       this.streamingContent = false;
@@ -170,8 +187,12 @@ class TurnTimingsTracker {
       if (this.current) {
         this.current.endedAt = performance.now();
         this.lastCompleted = this.current;
+        if (this.lastMessageTsThisTurn !== undefined) {
+          this.turnByEndingMessage.set(this.lastMessageTsThisTurn, this.current);
+        }
       }
       this.current = null;
+      this.lastMessageTsThisTurn = undefined;
       this.activeTools = 0;
       this.streamingContent = false;
       this.emit();
@@ -184,6 +205,8 @@ class TurnTimingsTracker {
     this.current = null;
     this.lastCompleted = null;
     this.perMessage.clear();
+    this.turnByEndingMessage.clear();
+    this.lastMessageTsThisTurn = undefined;
     this.activeTools = 0;
     this.streamingContent = false;
     this.emit();

@@ -60,13 +60,8 @@ const DECORATED_MARKER = "data-castle-chip-state";
 function decorateMessages(root: HTMLElement): void {
   const msgs = root.querySelectorAll("assistant-message");
   if (msgs.length === 0) return;
-  const lastTurn = turnTimings.getLastCompleted();
-  // Encode the relevant turn-headline state so we know to invalidate the
-  // last message's chip when a new turn lands and the headline shifts.
-  const turnSig = lastTurn?.endedAt !== undefined ? `${lastTurn.submitAt}|${lastTurn.endedAt}` : "";
 
-  msgs.forEach((el, idx) => {
-    const isLast = idx === msgs.length - 1;
+  msgs.forEach((el) => {
     // deno-lint-ignore no-explicit-any
     const msg = (el as any).message;
     if (!msg?.usage) return; // pi-web-ui hasn't rendered the tokens line yet
@@ -74,11 +69,17 @@ function decorateMessages(root: HTMLElement): void {
     if (typeof ts !== "number") return;
 
     const pm = turnTimings.getMessageTiming(ts);
-    const headline = isLast ? turnSig : "";
-    // Stamp combines the per-message timing fingerprint and the turn headline
-    // (only relevant on the last message). If the stamp matches what we wrote
-    // last time AND the chip is still in the DOM, nothing has changed — skip.
-    const sig = `${pm?.thinkingMs ?? 0}|${pm?.firstActivityAt ?? 0}|${pm?.endedAt ?? 0}|${headline}`;
+    // The TTFT / total suffix is anchored to whichever assistant message
+    // ended each turn, so it stays attached even after the next turn
+    // arrives and this message is no longer "last".
+    const turnEnding = turnTimings.getTurnEndedAt(ts);
+    const turnSig = turnEnding?.endedAt !== undefined
+      ? `${turnEnding.submitAt}|${turnEnding.endedAt}`
+      : "";
+    // Stamp combines the per-message timing fingerprint and (for messages
+    // that ended a turn) the turn timing. If the stamp matches what we
+    // wrote last time AND the chip is still in the DOM, skip.
+    const sig = `${pm?.thinkingMs ?? 0}|${pm?.firstActivityAt ?? 0}|${pm?.endedAt ?? 0}|${turnSig}`;
     const target = el as HTMLElement;
     if (target.getAttribute(DECORATED_MARKER) === sig && target.querySelector(`span[${CHIP_MARKER}]`)) {
       return;
@@ -102,8 +103,8 @@ function decorateMessages(root: HTMLElement): void {
       const m = describeMessageChip(pm);
       if (m) parts.push(m);
     }
-    if (isLast && lastTurn?.endedAt !== undefined) {
-      const tsum = describeTurnSuffix(lastTurn);
+    if (turnEnding?.endedAt !== undefined) {
+      const tsum = describeTurnSuffix(turnEnding);
       if (tsum) parts.push(tsum);
     }
     const next = parts.join(" · ");
