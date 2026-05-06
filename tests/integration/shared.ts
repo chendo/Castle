@@ -397,24 +397,38 @@ export async function getDashboardConfig(
 
 // ── Automation Helpers ──────────────────────────────────────────────────────
 
-/** List automations via HA REST API. */
+/** List automations by reading state and pulling each automation entity's
+ *  attribute-stored id/friendly_name. /api/config/automation/list isn't a
+ *  real endpoint (404 in modern HA); the configurable bits live under
+ *  /api/config/automation/config/<id>, but the *listing* of automations is
+ *  the state machine. */
 export async function listAutomations(haBaseUrl: string): Promise<Array<{ id: number | string; name: string; entity_id: string }>> {
   try {
-    const res = await haFetch(`${haBaseUrl}/api/config/automation/list`);
-    if (!res.ok) return [];
-    return (await res.json()) as Array<{ id: number | string; name: string; entity_id: string }>;
+    const states = await getAllStates(haBaseUrl);
+    const out: Array<{ id: number | string; name: string; entity_id: string }> = [];
+    for (const [entity_id, info] of Object.entries(states)) {
+      if (!entity_id.startsWith("automation.")) continue;
+      const attrs = info.attributes ?? {};
+      const id = (attrs as { id?: number | string }).id;
+      const friendlyName = (attrs as { friendly_name?: string }).friendly_name ?? entity_id;
+      // YAML automations get a usable id; UI ones may not — skip if missing.
+      if (id === undefined || id === null || id === "") continue;
+      out.push({ id, name: friendlyName, entity_id });
+    }
+    return out;
   } catch {
     return [];
   }
 }
 
-/** Fetch automation config by ID. */
+/** Fetch automation config by ID. /api/config/automation/config/<id> returns
+ *  the full YAML body. */
 export async function getAutomationConfig(
   haBaseUrl: string,
   automationId: number | string,
 ): Promise<unknown | null> {
   try {
-    const res = await haFetch(`${haBaseUrl}/api/config/automation/${encodeURIComponent(String(automationId))}`);
+    const res = await haFetch(`${haBaseUrl}/api/config/automation/config/${encodeURIComponent(String(automationId))}`);
     if (!res.ok) return null;
     return await res.json();
   } catch {
@@ -430,7 +444,7 @@ export async function updateAutomationConfig(
 ): Promise<boolean> {
   try {
     const res = await haFetch(
-      `${haBaseUrl}/api/config/automation/${encodeURIComponent(String(automationId))}`,
+      `${haBaseUrl}/api/config/automation/config/${encodeURIComponent(String(automationId))}`,
       { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(config) },
     );
     return res.ok;

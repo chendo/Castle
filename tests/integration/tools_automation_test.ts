@@ -15,8 +15,11 @@ async function testRun(prompt: string, opts?: { timeoutMs?: number }) {
 /** Find a writable automation in the demo. */
 async function findWritableAutomation() {
   const automations = await S.listAutomations(HA_BASE);
-  // Filter to ones that have triggers we can modify safely
-  return automations.find((a) => typeof a.id === "number" && a.entity_id.startsWith("automation.")) ?? null;
+  // YAML-defined automations come back from /api/config/automation/list with
+  // a stringified id ("1001") and entity_id "automation.<slug>". UI-created
+  // automations have UUID strings. Both are mutable via ha_update_automation;
+  // any entry under automation.* with an id is fine for these tests.
+  return automations.find((a) => a.id != null && String(a.id) !== "" && a.entity_id?.startsWith("automation.")) ?? null;
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────

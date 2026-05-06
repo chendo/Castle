@@ -1,1 +1,6 @@
 demo:
+
+# YAML-managed automations so /api/states matches against automation.* and
+# the integration tests have writable automations to exercise. The 'demo:'
+# integration doesn't seed any.
+automation: !include automations.yaml

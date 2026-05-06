@@ -1,0 +1,58 @@
+- id: '1001'
+  alias: Bed light on when door opens
+  description: Turn the bedroom light on when the front door is opened, and off when
+    closed.
+  triggers:
+  - platform: state
+    entity_id: lock.front_door
+    to: unlocked
+  - platform: state
+    entity_id: lock.front_door
+    to: locked
+  actions:
+  - if:
+    - condition: state
+      entity_id: lock.front_door
+      state: unlocked
+    then:
+    - target:
+        entity_id: light.bed_light
+      action: light.turn_on
+  - if:
+    - condition: state
+      entity_id: lock.front_door
+      state: locked
+    then:
+    - target:
+        entity_id: light.bed_light
+      action: light.turn_off
+  mode: single
+- id: '1002'
+  alias: AC off when door opens
+  description: Pause the AC if the front door is opened (energy saver fixture).
+  triggers:
+  - platform: state
+    entity_id: binary_sensor.basement_floor_wet
+    to: 'on'
+  - platform: time
+    at: '18:00:00'
+  actions:
+  - target:
+      entity_id: switch.ac
+    action: switch.turn_off
+  mode: single
+- id: '1003'
+  alias: Notify when basement is wet
+  description: Send a notification if the basement floor sensor trips.
+  triggers:
+  - platform: state
+    entity_id: binary_sensor.basement_floor_wet
+    to: 'on'
+  - platform: time
+    at: 08:00:00
+  actions:
+  - data:
+      title: Basement leak
+      message: The basement floor sensor reports water present.
+    action: persistent_notification.create
+  mode: single
