@@ -14,6 +14,7 @@
 
 import type { EntityState, WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
 import type { EntityStateCache } from "./EntityStateCache";
+import { showEntityDetail } from "./EntityDetail";
 
 export interface CardSpec {
   entity_id: string;
@@ -480,7 +481,27 @@ export function buildEntityCard(
 
   const draw = (state: EntityState | null) => {
     container.innerHTML = "";
-    container.appendChild(header(state, spec.entity_id));
+    const head = header(state, spec.entity_id);
+    // Title is the entry point to the full entity-detail modal — same
+    // shortcut as clicking an entity in the sidebar. We bind on the
+    // header's "left" cell (the friendly name) so the right-side
+    // entity_id label and any badges remain non-interactive.
+    const titleCell = head.firstElementChild as HTMLElement | null;
+    if (titleCell) {
+      titleCell.style.cursor = "pointer";
+      titleCell.title = "Open details";
+      titleCell.onclick = () => {
+        const latest = state ?? {
+          entity_id: spec.entity_id,
+          state: "unknown",
+          attributes: {},
+          domain: spec.domain,
+          exposed: true,
+        };
+        showEntityDetail(latest);
+      };
+    }
+    container.appendChild(head);
     let body: HTMLElement;
     switch (spec.domain) {
       case "switch":

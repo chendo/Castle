@@ -288,18 +288,24 @@ class PresentCardRenderer implements ToolRenderer {
         if (!root || root.dataset.rendered === "1") return;
         root.dataset.rendered = "1";
         root.innerHTML = "";
+        // Flex-wrap so multi-entity present_card calls lay out as a 2-up
+        // grid in a wide chat bubble and collapse to 1-up on narrow ones.
+        // Cards cap at 360px each; cameras break to a full row so the
+        // live feed isn't crammed into half the bubble.
+        root.style.cssText = "display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start;";
         if (title) {
           const h = document.createElement("div");
-          h.style.cssText = "font-size: 13px; font-weight: 500; margin-bottom: 6px; color: var(--foreground);";
+          h.style.cssText = "flex: 1 0 100%; font-size: 13px; font-weight: 500; color: var(--foreground);";
           h.textContent = title;
           root.appendChild(h);
         }
         for (const card of cards) {
           const slot = document.createElement("div");
-          slot.style.cssText = "margin-bottom: 8px;";
           if (card.kind === "camera") {
+            slot.style.cssText = "flex: 1 0 100%;";
             buildLiveFeed({ entity_id: card.entity_id }, slot);
           } else {
+            slot.style.cssText = "flex: 1 1 280px; min-width: 0; max-width: 360px;";
             // Domain-tailored interactive card. Live-updates from the
             // entity cache; controls fire ha_call_service via /ws.
             buildEntityCard(card, this.deps, slot);
@@ -357,9 +363,12 @@ class ServiceCallCardRenderer implements ToolRenderer {
       const root = slotRef.value;
       if (!root || root.dataset.rendered === "1") return;
       root.dataset.rendered = "1";
+      // Flex-wrap so multi-target service calls (e.g. light.turn_on with
+      // entity_id: [a, b, c]) render side-by-side instead of stacked.
+      root.style.cssText = "display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px;";
       for (const entityId of entityIds) {
         const slot = document.createElement("div");
-        slot.style.cssText = "margin-top: 6px;";
+        slot.style.cssText = "flex: 1 1 280px; min-width: 0; max-width: 360px;";
         const domain = entityId.split(".")[0] ?? "";
         buildEntityCard({ entity_id: entityId, kind: "entity", domain }, this.deps, slot);
         root.appendChild(slot);
