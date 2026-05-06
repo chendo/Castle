@@ -207,6 +207,26 @@ export function isNumericState(s: string): boolean {
   return !isNaN(n) && isFinite(n);
 }
 
+/** Render one entity's state for ha_get_states output: `<id>[ (<friendly>)]: <state>[ <unit>]`.
+ *  unit_of_measurement is only appended when the state parses as a number;
+ *  showing "unavailable °C" would be noise. Friendly name is omitted when it
+ *  matches the entity_id verbatim. */
+export function formatEntityStateLine(entity: {
+  entity_id: string;
+  state: string;
+  attributes: Record<string, unknown>;
+}): string {
+  const friendly = typeof entity.attributes.friendly_name === "string"
+    ? entity.attributes.friendly_name
+    : undefined;
+  const suffix = friendly && friendly !== entity.entity_id ? ` (${friendly})` : "";
+  const unit = typeof entity.attributes.unit_of_measurement === "string"
+    ? entity.attributes.unit_of_measurement
+    : "";
+  const state = unit && isNumericState(entity.state) ? `${entity.state} ${unit}` : entity.state;
+  return `${entity.entity_id}${suffix}: ${state}`;
+}
+
 /**
  * Parse HA history into ordered state changes. Accepts both the modern WS
  * shape ({ "<entity_id>": [{ s, lu, ... }] }) and the legacy REST shape
@@ -1361,7 +1381,7 @@ export function buildTools(
         if (params.entity_id) {
           const s = ha.getState(params.entity_id);
           if (!s) return ok(`Unknown entity: ${params.entity_id}`);
-          return okText(`${s.entity_id}: ${s.state}\nAttributes: ${JSON.stringify(s.attributes)}`, { maxBytes: 4 * 1024 });
+          return okText(`${formatEntityStateLine(s)}\nAttributes: ${JSON.stringify(s.attributes)}`, { maxBytes: 4 * 1024 });
         }
         let re: RegExp | null = null;
         if (params.filter && params.filter.trim().length > 0) {
@@ -1390,11 +1410,7 @@ export function buildTools(
           if (!params.filter && params.domain) tips.push(`add a \`filter\` to search by friendly_name within ${params.domain}`);
           return ok(`No entities match (${scope}). The catalog above is only exposed entities — this search covered every entity HA knows about, so this entity genuinely doesn't exist or your terms don't match it. Before giving up: ${tips.join("; ")}.`);
         }
-        const lines = all.map((s) => {
-          const friendly = s.attributes.friendly_name as string | undefined;
-          const suffix = friendly && friendly !== s.entity_id ? ` (${friendly})` : "";
-          return `${s.entity_id}${suffix}: ${s.state}`;
-        });
+        const lines = all.map(formatEntityStateLine);
         // Pick a hint that points the agent at the next narrower step.
         let hint: string;
         if (re) hint = `narrow with \`entity_id=<id>\` once you've spotted the right entity`;

@@ -1,5 +1,5 @@
 import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@1";
-import { dashboardStubLine, okText, okList, renderDashboardNode, summarizeDashboard, walkPath } from "../tools.ts";
+import { dashboardStubLine, formatEntityStateLine, okText, okList, renderDashboardNode, summarizeDashboard, walkPath } from "../tools.ts";
 
 Deno.test("okText — under budget passes through unchanged", () => {
   const r = okText("hello world", { maxBytes: 1024 });
@@ -220,4 +220,40 @@ Deno.test("renderDashboardNode — oversized non-array object child stubs to one
   assertEquals(parsed.type, "area");
   assertEquals(typeof parsed.massive_field, "string");
   assertStringIncludes(parsed.massive_field, "drill: views.0.sections.0.cards.0.massive_field");
+});
+
+Deno.test("formatEntityStateLine — appends unit_of_measurement when state is numeric", () => {
+  const line = formatEntityStateLine({
+    entity_id: "sensor.outdoor_temperature",
+    state: "21.5",
+    attributes: { friendly_name: "Outdoor Temperature", unit_of_measurement: "°C" },
+  });
+  assertEquals(line, "sensor.outdoor_temperature (Outdoor Temperature): 21.5 °C");
+});
+
+Deno.test("formatEntityStateLine — omits unit when state is non-numeric (unavailable)", () => {
+  const line = formatEntityStateLine({
+    entity_id: "sensor.broken",
+    state: "unavailable",
+    attributes: { friendly_name: "Broken", unit_of_measurement: "°C" },
+  });
+  assertEquals(line, "sensor.broken (Broken): unavailable");
+});
+
+Deno.test("formatEntityStateLine — no unit attribute leaves state untouched", () => {
+  const line = formatEntityStateLine({
+    entity_id: "light.kitchen",
+    state: "on",
+    attributes: { friendly_name: "Kitchen Light" },
+  });
+  assertEquals(line, "light.kitchen (Kitchen Light): on");
+});
+
+Deno.test("formatEntityStateLine — drops friendly_name when it equals entity_id", () => {
+  const line = formatEntityStateLine({
+    entity_id: "sensor.x",
+    state: "7",
+    attributes: { friendly_name: "sensor.x", unit_of_measurement: "kWh" },
+  });
+  assertEquals(line, "sensor.x: 7 kWh");
 });
