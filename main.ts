@@ -609,6 +609,39 @@ async function handleSocket(socket: WebSocket): Promise<void> {
       return;
     }
 
+    if (msg.type === "service_call") {
+      // Direct UI-initiated service call (entity card toggles, sliders, etc.).
+      // Goes through the same HA WS connection the agent uses for
+      // ha_call_service, but skips the agent loop entirely — no LLM round-
+      // trip, no permission filter, no truncation. Used by interactive
+      // entity cards to mutate state on click. Errors come back to the
+      // caller via the returned ack frame so the card can revert its
+      // optimistic UI.
+      const m = msg as unknown as {
+        id?: string;
+        domain?: string;
+        service?: string;
+        entity_id?: string;
+        service_data?: Record<string, unknown>;
+      };
+      if (typeof m.domain !== "string" || typeof m.service !== "string") {
+        socket.send(JSON.stringify({ type: "service_call_ack", id: m.id, ok: false, error: "domain + service required" }));
+        return;
+      }
+      try {
+        await ha.callService(
+          m.domain,
+          m.service,
+          m.entity_id ? { entity_id: m.entity_id } : undefined,
+          m.service_data,
+        );
+        socket.send(JSON.stringify({ type: "service_call_ack", id: m.id, ok: true }));
+      } catch (err) {
+        socket.send(JSON.stringify({ type: "service_call_ack", id: m.id, ok: false, error: (err as Error).message }));
+      }
+      return;
+    }
+
     if (msg.type === "set_exposure") {
       const payload = msg as unknown as { entity_ids?: string[]; expose?: boolean };
       const ids = Array.isArray(payload.entity_ids) ? payload.entity_ids.filter((s) => typeof s === "string") : [];

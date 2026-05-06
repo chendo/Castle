@@ -1,5 +1,6 @@
 import { showEntityDetail } from "./EntityDetail";
-import type { EntityState, EntityStateChange, WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
+import type { EntityState, WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
+import { entityCache } from "./EntityStateCache";
 
 type State = EntityState;
 
@@ -233,22 +234,14 @@ export function buildSidebar(agent: WebSocketRemoteAgent): { root: HTMLElement; 
     render();
   };
 
-  // Bootstrap + live updates over the WS. The server sends a full
-  // states_snapshot after hello, then a state_change frame for every HA
-  // state_changed event. On reconnect a fresh snapshot rebases the map.
-  agent.onStatesSnapshot = (states) => {
+  // Bootstrap + live updates routed through the shared EntityStateCache so
+  // sidebar and entity-cards (and any future widget) all observe the same
+  // state stream without clobbering one another's handler.
+  entityCache.subscribeAll((states) => {
     entities.clear();
     for (const s of states) entities.set(s.entity_id, s);
     requestRender();
-  };
-  agent.onStateChange = (change: EntityStateChange) => {
-    if ("removed" in change && change.removed) {
-      entities.delete(change.entity_id);
-    } else {
-      entities.set(change.entity_id, change as State);
-    }
-    requestRender();
-  };
+  });
 
   return {
     root,

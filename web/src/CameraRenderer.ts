@@ -5,6 +5,7 @@ import { summaryWithDuration } from "./ToolHeader";
 import { html } from "lit";
 import { createRef, ref } from "lit/directives/ref.js";
 import { Camera, Video } from "lucide";
+import { buildEntityCard, type CardDeps } from "./EntityCard";
 
 interface CameraArgs {
   entity_id: string;
@@ -233,9 +234,12 @@ interface PresentCard {
 /** Dispatcher renderer for `ha_present_card`. The server's tool result
  *  carries a `details.cards: PresentCard[]` array describing which kind of
  *  widget to render per entity. Cameras get the live-feed builder; every
- *  other kind falls through to a small inline entity card. The tool
- *  accepts a list of entity_ids, so we render each card stacked. */
+ *  other kind goes through buildEntityCard, which renders a domain-tailored
+ *  interactive card (toggles for switches, sliders for lights, target-temp
+ *  controls for climate, etc.) and live-updates from the entity state cache. */
 class PresentCardRenderer implements ToolRenderer {
+  constructor(private readonly deps: CardDeps) {}
+
   render(rawArgs: any, result: ToolResultMessage | undefined, isStreaming?: boolean): ToolRenderResult {
     const argsObj = (() => {
       let p: any = rawArgs;
@@ -296,23 +300,9 @@ class PresentCardRenderer implements ToolRenderer {
           if (card.kind === "camera") {
             buildLiveFeed({ entity_id: card.entity_id }, slot);
           } else {
-            // Inline entity-card placeholder: small badge with id + domain.
-            // Replaceable with a richer per-domain renderer later (light
-            // controls, climate panel, media_player widget, …).
-            slot.style.cssText += `
-              padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px;
-              font: 13px ui-sans-serif, system-ui, sans-serif; color: var(--foreground);
-              background: var(--card, var(--background));
-              display: flex; align-items: center; justify-content: space-between; gap: 12px;
-            `;
-            const left = document.createElement("div");
-            left.style.cssText = "min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;";
-            left.textContent = card.entity_id;
-            const right = document.createElement("div");
-            right.style.cssText = "font-size: 11px; color: var(--muted-foreground); flex-shrink: 0;";
-            right.textContent = card.domain;
-            slot.appendChild(left);
-            slot.appendChild(right);
+            // Domain-tailored interactive card. Live-updates from the
+            // entity cache; controls fire ha_call_service via /ws.
+            buildEntityCard(card, this.deps, slot);
           }
           root.appendChild(slot);
         }
@@ -332,7 +322,7 @@ class PresentCardRenderer implements ToolRenderer {
   }
 }
 
-export function registerCameraRenderer(): void {
-  registerToolRenderer("ha_present_card", new PresentCardRenderer());
+export function registerCameraRenderer(deps: CardDeps): void {
+  registerToolRenderer("ha_present_card", new PresentCardRenderer(deps));
   registerToolRenderer("ha_get_camera_snapshot", new GetCameraSnapshotRenderer());
 }

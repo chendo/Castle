@@ -67,6 +67,7 @@ type Frame =
   | { type: "sessions_list"; sessions: SessionInfo[] }
   | { type: "session_resumed"; path: string }
   | { type: "session_deleted"; path: string }
+  | { type: "service_call_ack"; id?: string; ok: boolean; error?: string }
   | { type: "error"; message: string };
 
 /**
@@ -157,6 +158,46 @@ export class WebSocketRemoteAgent extends RemoteAgent {
     this.send(frame);
   }
 
+  /** Fire-and-forget service call from the UI. Bypasses the agent loop —
+   *  for entity cards' toggle / slider interactions, where you don't want
+   *  an LLM round-trip per click. Returns a promise that resolves with
+   *  `{ok, error?}` once the server acks. */
+  callService(
+    domain: string,
+    service: string,
+    entityId?: string,
+    serviceData?: Record<string, unknown>,
+  ): Promise<{ ok: boolean; error?: string }> {
+    const id = `svc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    const promise = new Promise<{ ok: boolean; error?: string }>((resolve) => {
+      const handler = (ack: { id?: string; ok: boolean; error?: string }) => {
+        if (ack.id !== id) return;
+        this.serviceCallResolvers.delete(id);
+        if (!ack.ok) {
+          console.warn(`[ws] service_call(${domain}.${service}, ${entityId ?? ""}) failed:`, ack.error);
+        }
+        resolve({ ok: ack.ok, error: ack.error });
+      };
+      this.serviceCallResolvers.set(id, handler);
+      // Safety: 5s timeout so callers don't hang forever if the server
+      // forgets to ack.
+      setTimeout(() => {
+        if (this.serviceCallResolvers.has(id)) {
+          this.serviceCallResolvers.delete(id);
+          console.warn(`[ws] service_call(${domain}.${service}) ack timeout — server didn't respond in 5s`);
+          resolve({ ok: false, error: "timed out waiting for ack" });
+        }
+      }, 5000);
+    });
+    if (this.ws?.readyState !== WebSocket.OPEN) {
+      console.warn(`[ws] service_call(${domain}.${service}) dropped — socket not open (state=${this.ws?.readyState})`);
+    }
+    this.send({ type: "service_call", id, domain, service, entity_id: entityId, service_data: serviceData });
+    return promise;
+  }
+
+  private serviceCallResolvers = new Map<string, (ack: { id?: string; ok: boolean; error?: string }) => void>();
+
   private send(frame: any): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(frame));
@@ -204,6 +245,11 @@ export class WebSocketRemoteAgent extends RemoteAgent {
         // No callback needed — the server broadcasts a snapshot after resume.
       } else if (frame.type === "session_deleted") {
         this.onDeleteSession?.(frame.path);
+      } else if (frame.type === "service_call_ack") {
+        if (frame.id) {
+          const resolver = this.serviceCallResolvers.get(frame.id);
+          if (resolver) resolver(frame);
+        }
       } else if (frame.type === "error") {
         console.error("[ws] server error:", frame.message);
         this.onError?.(frame.message);

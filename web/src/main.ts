@@ -25,7 +25,9 @@ import { mountTimingHud } from "./TimingHud";
 
 registerHAToolRenderers();
 registerChartRenderer();
-registerCameraRenderer();
+// registerCameraRenderer is called below, after the WebSocketRemoteAgent
+// exists — its PresentCardRenderer needs the agent + state cache to wire
+// interactive entity cards.
 
 const settings = new SettingsStore();
 const providerKeys = new ProviderKeysStore();
@@ -57,6 +59,17 @@ await providerKeys.set("local", "remote");
 
 const wsUrl = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
 const agent = new WebSocketRemoteAgent(wsUrl);
+
+// Wire the entity-state cache to the agent before any consumer subscribes.
+// Sidebar and the entity-card renderer both read from this cache so they
+// share one stream of state updates instead of fighting over the agent's
+// onStatesSnapshot/onStateChange handlers.
+import { entityCache } from "./EntityStateCache";
+entityCache.attachToAgent(agent);
+
+// Now safe to register the camera/present-card renderer — it needs the
+// cache + the agent (for ha_call_service via /ws service_call).
+registerCameraRenderer({ agent, cache: entityCache });
 
 // Tools we don't have a bespoke widget for get a generic collapsed renderer.
 // Catch them both from the snapshot's tool list (covers the steady state) and
