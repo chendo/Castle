@@ -116,9 +116,19 @@ function buildToggleBody(
 
 function buildLightBody(state: EntityState | null, set: ServiceCaller): HTMLElement {
   const wrap = el("div", "display: flex; flex-direction: column; gap: 6px;");
-  const supported = Number(state?.attributes?.supported_features ?? 0);
   const isOn = state?.state === "on";
   const brightness = Number(state?.attributes?.brightness ?? 0); // 0..255
+  // Modern HA tracks brightness via supported_color_modes (anything but
+  // "onoff" implies brightness is settable). Legacy installs use bit 0
+  // of supported_features. Fall back to "brightness attribute exists at
+  // all" as a third signal — covers anything that has reported a level
+  // even if neither feature flag is set right.
+  const colorModes = state?.attributes?.supported_color_modes as string[] | undefined;
+  const hasColorModeBrightness = Array.isArray(colorModes) && colorModes.some((m) => m !== "onoff");
+  const supportedFeatures = Number(state?.attributes?.supported_features ?? 0);
+  const hasLegacyBrightness = (supportedFeatures & SUPPORT_BRIGHTNESS) !== 0;
+  const hasBrightnessAttr = state?.attributes?.brightness !== undefined;
+  const supportsBrightness = hasColorModeBrightness || hasLegacyBrightness || hasBrightnessAttr;
 
   const row = el("div", "display: flex; align-items: center; justify-content: space-between; gap: 12px;");
   const stateText = el("span", "font-size: 13px; color: var(--muted-foreground);", isOn ? `${Math.round((brightness / 255) * 100)}%` : "off");
@@ -139,25 +149,35 @@ function buildLightBody(state: EntityState | null, set: ServiceCaller): HTMLElem
   row.append(stateText, btn);
   wrap.appendChild(row);
 
-  if (isOn && (supported & SUPPORT_BRIGHTNESS)) {
-    const slider = el("input", "width: 100%;");
+  // Always render the brightness slider for dimmable lights, on or off.
+  // When off, dragging the slider turns the light on at the chosen
+  // brightness in one service call (HA's turn_on accepts brightness_pct
+  // as both "set value" and "turn on"). UX-wise this is what the user
+  // expects: see the slider, want this brightness, drag to set.
+  if (supportsBrightness) {
+    const sliderRow = el("div", "display: flex; align-items: center; gap: 8px;");
+    const slider = el("input", "flex: 1;");
     slider.type = "range";
     slider.min = "0";
     slider.max = "100";
     slider.step = "1";
-    slider.value = String(Math.round((brightness / 255) * 100));
-    let pending: number | null = null;
+    slider.value = String(isOn ? Math.round((brightness / 255) * 100) : 0);
+    const valueLabel = el("span", "font-size: 11px; color: var(--muted-foreground); min-width: 36px; text-align: right;", `${slider.value}%`);
+    slider.oninput = () => { valueLabel.textContent = `${slider.value}%`; };
     let scheduled = false;
-    slider.oninput = () => { pending = Number(slider.value); };
     slider.onchange = async () => {
-      if (pending === null || scheduled) return;
+      if (scheduled) return;
       scheduled = true;
-      const pct = pending;
-      pending = null;
-      await set("light", "turn_on", { brightness_pct: pct });
+      const pct = Number(slider.value);
+      // 0% is "turn off"; everything else turns on at that level.
+      const r = pct === 0
+        ? await set("light", "turn_off")
+        : await set("light", "turn_on", { brightness_pct: pct });
       scheduled = false;
+      if (!r.ok) console.warn(`[entity-card] light brightness ${pct}% failed:`, r.error);
     };
-    wrap.appendChild(slider);
+    sliderRow.append(slider, valueLabel);
+    wrap.appendChild(sliderRow);
   }
   return wrap;
 }
