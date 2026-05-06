@@ -28,9 +28,53 @@ const authStorage = AuthStorage.create(`${AGENT_DIR}/auth.json`);
 
 let activeModelId: string = Deno.env.get("MODEL_NAME") ?? "";
 
+// Mirror of settings.disableThinking, refreshed every time the agent
+// session is (re)built. The fetch wrapper installed below reads this
+// to decide whether to inject `chat_template_kwargs.enable_thinking=false`
+// onto outgoing chat completions.
+let disableThinkingFlag = false;
+
 export function getActiveModelId(): string {
   return activeModelId;
 }
+
+// Wrap globalThis.fetch once at module load. /no_think in the user
+// message is only reliably honored when the chat template scans for it,
+// and Qwen3 variants vary in what position they accept; the official
+// recipe is `chat_template_kwargs: { enable_thinking: false }` on the
+// OpenAI-compat request body. pi-ai doesn't expose a passthrough for
+// extra body fields, so we splice it in at the fetch layer.
+//
+// Filter: only POST /chat/completions to the configured LLM host gets
+// touched, so this is a no-op for HA / model-list / any other fetch.
+(() => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async (input: Request | URL | string, init?: RequestInit): Promise<Response> => {
+    if (!disableThinkingFlag) return original(input, init);
+    const urlString = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    if (!urlString.includes("/chat/completions")) return original(input, init);
+    if (!urlString.startsWith(llmUrl().replace(/\/$/, ""))) return original(input, init);
+    // input could be a Request — collapse into url+init so we can rewrite the body cleanly.
+    const url = urlString;
+    let mergedInit: RequestInit = { ...(init ?? {}) };
+    if (input instanceof Request) {
+      mergedInit = {
+        method: input.method,
+        headers: new Headers(input.headers),
+        body: await input.clone().text(),
+        ...mergedInit,
+      };
+    }
+    if (typeof mergedInit.body !== "string") return original(input, init);
+    let body: Record<string, unknown>;
+    try { body = JSON.parse(mergedInit.body); } catch { return original(input, init); }
+    if (!body || typeof body !== "object") return original(input, init);
+    const existing = (body.chat_template_kwargs ?? {}) as Record<string, unknown>;
+    body.chat_template_kwargs = { ...existing, enable_thinking: false };
+    mergedInit.body = JSON.stringify(body);
+    return original(url, mergedInit);
+  };
+})();
 
 /** LLM endpoint base URL. Single accessor so renames stay surgical and the
  *  default is consistent across probe / models-list / models.json writers. */
@@ -251,6 +295,9 @@ export function getAgentSession(ha: HAClient): Promise<AgentSession> {
   if (!sessionPromise) {
     sessionPromise = (async () => {
       const settings = await loadSettings();
+      // Refresh the fetch-wrapper flag so the next request to the LLM
+      // includes chat_template_kwargs.enable_thinking=false.
+      disableThinkingFlag = settings.disableThinking;
       const model = getLocalModel();
       // Override the bundled-in models.json contextWindow with the user-configured
       // value. The model object is mutated in place because pi-coding-agent reads
