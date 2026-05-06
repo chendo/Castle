@@ -183,6 +183,14 @@ EOF
 # directive, which still reads .env into the container at runtime.
 COMPOSE_ARGS=(--env-file "$PROJECT_DIR/.env.test.compose" "${COMPOSE_FILES[@]}")
 
+# Restore the canonical automations.yaml from its fixture so each run starts
+# from a known state. ha_update_automation persists changes back to
+# automations.yaml via HA's REST API — without this, a previous failed run
+# (or a half-completed mutation) leaks into the next run's discovery.
+HA_CFG="$PROJECT_DIR/tests/integration/ha-demo-config"
+cp "$HA_CFG/automations.yaml.fixture" "$HA_CFG/automations.yaml"
+log "Seeded automations.yaml from fixture."
+
 # Start ha-demo first; we need it healthy before we can mint an HA_TOKEN, and
 # castle must boot with that token already in its environment so the initial
 # HA-connect succeeds. Two-phase startup beats restarting castle.

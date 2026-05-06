@@ -25,11 +25,13 @@ workspace/
 .playwright-mcp/
 topbar.png
 
-# ha-demo runtime artifacts — Home Assistant writes these on boot. Track only
-# the curated fixtures (configuration.yaml + the demo-camera.jpg etc.) and
-# whitelist any new fixture explicitly.
+# ha-demo runtime artifacts — Home Assistant writes these on boot, plus the
+# integration tests mutate automations.yaml via the REST API. Track only the
+# curated fixtures (configuration.yaml + the demo-camera.jpg etc.) and the
+# `.fixture` files the runner copies into place before each test run; the
+# live mutable copies are gitignored. Whitelist any new fixture explicitly.
 tests/integration/ha-demo-config/*
 !tests/integration/ha-demo-config/configuration.yaml
 !tests/integration/ha-demo-config/demo-camera.jpg
-!tests/integration/ha-demo-config/automations.yaml
+!tests/integration/ha-demo-config/automations.yaml.fixture
 !tests/integration/ha-demo-config/.gitkeep
