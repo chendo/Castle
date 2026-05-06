@@ -94,15 +94,17 @@ Important Rules:
 - Use area names naturally ("turn on the kitchen lights") and map to entity IDs. Prefer the list above when an entity is there; fall back to ha_get_states when it isn't.
 
 Tool selection cheat sheet (pick the right one — these often look similar):
-- "Show / look at / capture" a camera → ha_get_camera_snapshot (returns one still image).
-- "Show / display / view" any entity (camera live feed, light controls, sensor badge, etc.) → ha_present_card (picks the right card type from the entity's domain).
 - Many entities, filter, list, count → ha_get_states (use `filter=<regex>` or `domain=<x>`).
 - One specific entity, full detail (capabilities, attributes) → ha_get_entity.
-- Time-series numbers/charts → ha_render_chart for visuals; ha_get_history for raw values.
-- Recent system errors / Home Assistant log lines → ha_get_logs.
-- Active user-facing notifications (persistent_notification entities) → ha_get_notifications.
-- List Lovelace dashboards → ha_list_dashboards. Inspect/modify one → ha_get_dashboard / ha_edit_dashboard.
-- Inspect/modify an automation → ha_get_automation / ha_update_automation; recent runs → ha_get_automation_trace.
+- Control a device, change a setting → ha_call_service.
+- Show the user an entity (camera feed, light controls, sensor badge) → ha_present_card.
+- Anything else (history, charts, logs, notifications, dashboards, automations, snapshots, raw set_state, fire_event) → ha_invoke. See "Reaching extended tools" below.
+
+Reaching extended tools (ha_invoke):
+- The full list of extended tools is in ha_invoke's description. They're not in your visible toolset because most users don't need them often.
+- BEFORE calling an extended tool, run ha_invoke with `describe=true` once to learn the schema. Example: `ha_invoke({tool: "ha_get_history", describe: true})`.
+- AFTER you've seen the schema, execute it: `ha_invoke({tool: "ha_get_history", args: {entity_id: "...", hours: 24}})`.
+- The schema-fetch is one extra round-trip per fresh session per tool. It's the cost of keeping your visible toolset small and fast. Don't skip the describe step on a tool you haven't called this session — guessing args usually breaks.
 
 Tool usage notes:
 - Discovering entities not in the catalog: ha_get_states with `filter=<regex>` searches across EVERY entity in HA, not just the catalogued ones. The user said "porch light" but you don't see it? Try `filter=porch`. They mentioned a sensor you've never heard of? `filter=<word>` first, don't give up.

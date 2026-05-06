@@ -10,7 +10,13 @@ import {
 import type { HAClient } from "./ha-client.ts";
 import { buildTools } from "./tools.ts";
 import { buildInvokeTool } from "./umbrella.ts";
-import { loadSettings } from "./settings.ts";
+import { loadRecentUsage, selectAutoPins, wrapWithUsageLog } from "./tool-usage.ts";
+import {
+  CORE_TOOL_NAMES,
+  EXTENDED_TOOL_NAMES,
+  loadSettings,
+  type ToolName,
+} from "./settings.ts";
 
 const AGENT_DIR = new URL(".pi-agent/", import.meta.url).pathname.replace(/\/$/, "");
 const CWD = new URL(".", import.meta.url).pathname.replace(/\/$/, "");
@@ -28,6 +34,36 @@ const authStorage = AuthStorage.create(`${AGENT_DIR}/auth.json`);
 // ---------------------------------------------------------------------------
 
 let activeModelId: string = Deno.env.get("MODEL_NAME") ?? "";
+
+// ---------------------------------------------------------------------------
+// Auto-pin selection.
+//
+// On boot, look at the recent tool-call history and pick up to 3 extended
+// tools that have been used at least 5 times in the last 14 days as
+// "auto-pinned" — they get full schemas in the prefix this session.
+// Recomputed only at process startup so prefix stays stable across
+// conversations (no mid-chat KV-cache invalidation when usage flips).
+// ---------------------------------------------------------------------------
+
+const AUTO_PIN_TOP_K = 3;
+const AUTO_PIN_FLOOR = 5;
+const AUTO_PIN_WINDOW_DAYS = 14;
+
+const autoPinSetPromise: Promise<Set<ToolName>> = (async () => {
+  const settings = await loadSettings();
+  // Only tools the user has flagged as "auto" are eligible. "always" is
+  // already pinned by hand; "off" stays behind ha_invoke.
+  const candidates: ToolName[] = EXTENDED_TOOL_NAMES.filter(
+    (n) => settings.toolPins[n] === "auto" && settings.enabledTools.includes(n),
+  );
+  if (candidates.length === 0) return new Set<ToolName>();
+  const stats = await loadRecentUsage(AUTO_PIN_WINDOW_DAYS);
+  const picked = selectAutoPins(stats, candidates, AUTO_PIN_TOP_K, AUTO_PIN_FLOOR);
+  if (picked.length > 0) {
+    console.log(`[agent] auto-pinned tools: ${picked.join(", ")}`);
+  }
+  return new Set(picked as ToolName[]);
+})();
 
 export function getActiveModelId(): string {
   return activeModelId;
@@ -208,14 +244,46 @@ export function getAgentSession(ha: HAClient): Promise<AgentSession> {
         multimodal: isMultimodal,
         dashboardCache,
         allowUnexposedWrites: settings.allowUnexposedWrites,
-      });
-      // ha_invoke is a uniform dispatcher — given a tool name + args it
-      // forwards to that tool's execute. Right now every tool is also
-      // visible directly in the prefix, so ha_invoke is just an alternate
-      // path; once we land per-tool pin policy (settings tri-state), the
-      // tools NOT pinned to the prefix will be reachable only here.
-      const customTools = [...haTools, buildInvokeTool({ allTools: haTools })];
-      const enabledTools = [...settings.enabledTools, "ha_invoke"];
+      })
+        // Drop tools the user has disabled before anything else sees them
+        // — neither the prefix nor ha_invoke should reach them.
+        .filter((t) => settings.enabledTools.includes(t.name as ToolName))
+        // Record successful invocations so the auto-pin selector has data
+        // to work with on the next boot. Wrapping at this layer means
+        // tools called directly OR through ha_invoke both log (the
+        // umbrella's dispatch table is built from this same wrapped list).
+        .map(wrapWithUsageLog);
+
+      // Resolve the prefix-visible subset:
+      //   core         → always visible
+      //   pin "always" → visible
+      //   pin "auto" + auto-selector picked it → visible
+      //   else         → umbrella-only (in dispatch table, not the prefix)
+      const autoPins = await autoPinSetPromise;
+      const isPrefixVisible = (name: string): boolean => {
+        if ((CORE_TOOL_NAMES as readonly string[]).includes(name)) return true;
+        const pin = settings.toolPins[name as ToolName];
+        if (pin === "always") return true;
+        if (pin === "auto" && autoPins.has(name as ToolName)) return true;
+        return false;
+      };
+      const visibleTools = haTools.filter((t) => isPrefixVisible(t.name));
+      const umbrellaOnlyNames = haTools
+        .filter((t) => !isPrefixVisible(t.name))
+        .map((t) => t.name as string);
+      // ha_invoke gets the FULL haTools list as its dispatch table (so it
+      // can also reach core tools — useful for tests / power users), but
+      // its description-listing only advertises the umbrella-only names
+      // so the model isn't told to detour for tools already visible.
+      const customTools = [
+        ...visibleTools,
+        buildInvokeTool({ allTools: haTools, extendedNames: umbrellaOnlyNames }),
+      ];
+      const enabledTools = [...visibleTools.map((t) => t.name as string), "ha_invoke"];
+      console.log(
+        `[agent] prefix tools: ${enabledTools.join(", ")} ` +
+          `(umbrella-only: ${umbrellaOnlyNames.length})`,
+      );
 
       const result = await createAgentSession({
         cwd: CWD,
