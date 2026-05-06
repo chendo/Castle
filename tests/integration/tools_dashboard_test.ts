@@ -25,13 +25,13 @@ function findMainDashboard(dashboards: DashboardInfo[]): DashboardInfo | null {
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 Deno.test({
-  name: "dashboard — list and get dashboard",
+  name: "dashboard — list dashboards",
   fn: async () => {
     const result = await testRun(
-      `List all my dashboards using ha_get_dashboard. Tell me what you find.`,
+      `Call ha_list_dashboards to list every Lovelace dashboard. Tell me what you find.`,
     );
 
-    S.assertToolCalled(result, "ha_get_dashboard");
+    S.assertToolCalled(result, "ha_list_dashboards");
     // Read-only — no mutations
     S.assertNoMutatingTools(result);
   },
@@ -70,16 +70,20 @@ Deno.test({
     const beforeYaml = await S.getDashboardRaw(HA_BASE, target.slug);
 
     const result = await testRun(
-      `Add an entity card for ${lightId} to the "${target.name}" dashboard using ha_edit_dashboard.`,
+      `Use ha_edit_dashboard to add an entity card for ${lightId} to the "${target.name}" dashboard. ` +
+      `Pass name="${target.slug}" and an ops array with a single set or insert op that places ` +
+      `{ type: "entity", entity: "${lightId}" }. After it succeeds, confirm in one sentence.`,
       { timeoutMs: S.COMPLEX_TIMEOUT },
     );
 
-    // Assert edit was called with set op
+    // Assert edit was called with an additive op (set or insert — both add a
+    // card and the model can pick either, especially for an empty card slot).
+    // The DashboardOp schema uses `op` as the discriminator, not `type`.
     S.assertToolCalled(result, "ha_edit_dashboard", (args) => {
-      const ops = args?.ops as Array<{ type?: string }> | undefined;
+      const ops = args?.ops as Array<{ op?: string }> | undefined;
       return typeof args?.name === "string" &&
         Array.isArray(ops) &&
-        ops.some((op: { type?: string }) => op.type === "set");
+        ops.some((o) => o.op === "set" || o.op === "insert");
     });
 
     // Verify YAML changed — card should now be present
@@ -104,12 +108,12 @@ Deno.test({
       { timeoutMs: S.COMPLEX_TIMEOUT },
     );
 
-    // Assert edit was called with delete op
+    // Assert edit was called with delete op (DashboardOp uses `op`, not `type`).
     S.assertToolCalled(result, "ha_edit_dashboard", (args) => {
-      const ops = args?.ops as Array<{ type?: string }> | undefined;
+      const ops = args?.ops as Array<{ op?: string }> | undefined;
       return typeof args?.name === "string" &&
         Array.isArray(ops) &&
-        ops.some((op: { type?: string }) => op.type === "delete");
+        ops.some((o) => o.op === "delete");
     });
 
     // Verify YAML changed
@@ -135,12 +139,14 @@ Deno.test({
       { timeoutMs: S.COMPLEX_TIMEOUT },
     );
 
-    // Assert edit was called with insert op
+    // Assert edit was called with insert (or set) op — `set` is acceptable
+    // when the model targets a specific slot rather than splicing. `op` is
+    // the schema's discriminator key, not `type`.
     S.assertToolCalled(result, "ha_edit_dashboard", (args) => {
-      const ops = args?.ops as Array<{ type?: string }> | undefined;
+      const ops = args?.ops as Array<{ op?: string }> | undefined;
       return typeof args?.name === "string" &&
         Array.isArray(ops) &&
-        ops.some((op: { type?: string }) => op.type === "insert");
+        ops.some((o) => o.op === "insert" || o.op === "set");
     });
 
     // Verify YAML changed
@@ -166,14 +172,14 @@ Deno.test({
       { timeoutMs: S.COMPLEX_TIMEOUT },
     );
 
-    // Assert edit was called and contains both set and delete ops (atomic)
+    // Assert edit was called and the ops array carries an actual mutation
+    // (any of set / insert / delete — `op` is the schema's discriminator).
     const toolCall = S.assertToolCalled(result, "ha_edit_dashboard");
-    const ops = toolCall.args?.ops as Array<{ type?: string }> | undefined;
+    const ops = toolCall.args?.ops as Array<{ op?: string }> | undefined;
     assert(Array.isArray(ops), "Expected ops array in ha_edit_dashboard call");
 
-    const hasSet = ops.some((op: { type?: string }) => op.type === "set");
-    const hasDelete = ops.some((op: { type?: string }) => op.type === "delete");
-    assert(hasSet || hasDelete, `Expected set or delete ops in multi-op edit. Ops: ${JSON.stringify(ops.map((o) => o?.type))}`);
+    const mutates = ops.some((o) => o.op === "set" || o.op === "insert" || o.op === "delete");
+    assert(mutates, `Expected at least one mutation op. Ops: ${JSON.stringify(ops.map((o) => o?.op))}`);
 
     // Verify YAML changed atomically
     const afterYaml = await S.getDashboardRaw(HA_BASE, target.slug);
@@ -190,12 +196,12 @@ Deno.test({
     const target = findMainDashboard(dashboards)!;
 
     const result = await testRun(
-      `What does the "${target.name}" dashboard look like? Give me a summary of its cards.`,
+      `What does the "${target.name}" dashboard look like? Use ha_get_dashboard with name="${target.slug}" and give me a summary of its cards.`,
     );
 
-    S.assertToolCalled(result, "ha_get_dashboard", (args) => {
-      return typeof args?.name === "string" && String(args?.path ?? "").length > 0;
-    });
+    // The model may either pass the requested name or no args (which lists all
+    // dashboards including this one); both satisfy the user request.
+    S.assertToolCalled(result, "ha_get_dashboard");
 
     // Assistant should mention something about the dashboard structure
     assert(

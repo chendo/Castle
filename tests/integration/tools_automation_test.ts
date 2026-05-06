@@ -102,7 +102,7 @@ Deno.test({
 
     try {
       const result = await testRun(
-        `Create an automation that turns on light.nonexistent_entity when door opens using ha_update_automation with strict validation.`,
+        `Call ha_update_automation with automation_id=${auto.id} and strict=true to update ${auto.entity_id} so it turns on light.nonexistent_entity when a door opens. The strict flag should surface a warning about the unknown entity_id.`,
         { timeoutMs: S.COMPLEX_TIMEOUT },
       );
 

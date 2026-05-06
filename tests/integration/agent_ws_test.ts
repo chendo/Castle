@@ -7,9 +7,9 @@
 // Run: deno task test:integration
 
 import { assert, assertEquals } from "jsr:@std/assert@1";
+import { findDemoCamera, getHaBaseUrl } from "./shared.ts";
 
 const WS_URL = Deno.env.get("CASTLE_WS_URL") ?? "ws://localhost:7090/ws";
-const STATES_URL = Deno.env.get("CASTLE_STATES_URL") ?? "http://localhost:7090/states";
 const WEATHER_ENTITY = Deno.env.get("CASTLE_TEST_WEATHER_ENTITY") ?? "weather.forecast_home";
 const TIMEOUT_MS = Number(Deno.env.get("CASTLE_TEST_TIMEOUT_MS") ?? 90_000);
 
@@ -41,23 +41,22 @@ async function reachable(): Promise<boolean> {
 async function findCameraEntity(): Promise<string | null> {
   const explicit = Deno.env.get("CASTLE_TEST_CAMERA_ENTITY");
   if (explicit) return explicit;
-  try {
-    const res = await fetch(STATES_URL);
-    if (!res.ok) return null;
-    const states = await res.json() as Array<{ entity_id: string }>;
-    return states.find((s) => s.entity_id.startsWith("camera."))?.entity_id ?? null;
-  } catch {
-    return null;
-  }
+  // Castle has no /states REST route; ask HA directly via the shared helper,
+  // which authenticates with HA_TOKEN and pulls /api/states.
+  return await findDemoCamera(getHaBaseUrl());
 }
 
-/** Open /ws, hello → snapshot → prompt → drain events until agent_end, then close cleanly. */
+/** Open /ws, hello → snapshot → reset → snapshot → prompt → drain events until
+ *  agent_end, then close cleanly. The reset between snapshots keeps this test
+ *  isolated from history accumulated by earlier files in the same run. */
 async function runConversation(prompt: string, timeoutMs = TIMEOUT_MS): Promise<AgentEvent[]> {
   const events: AgentEvent[] = [];
   const ws = new WebSocket(WS_URL);
   const done = Promise.withResolvers<AgentEvent[]>();
   let agentEnded = false;
   let errorMessage: string | null = null;
+  let resetSent = false;
+  let promptSent = false;
   const timeout = setTimeout(() => {
     try { ws.close(); } catch { /* */ }
     done.reject(new Error(`timed out after ${timeoutMs}ms`));
@@ -67,7 +66,13 @@ async function runConversation(prompt: string, timeoutMs = TIMEOUT_MS): Promise<
   ws.onmessage = (ev) => {
     const frame = JSON.parse(typeof ev.data === "string" ? ev.data : "");
     if (frame.type === "snapshot") {
-      ws.send(JSON.stringify({ type: "prompt", text: prompt }));
+      if (!resetSent) {
+        resetSent = true;
+        ws.send(JSON.stringify({ type: "reset" }));
+      } else if (!promptSent) {
+        promptSent = true;
+        ws.send(JSON.stringify({ type: "prompt", text: prompt }));
+      }
     } else if (frame.type === "event") {
       events.push(frame.event);
       if (frame.event.type === "agent_end") {

@@ -7,7 +7,7 @@ import * as S from "./shared.ts";
 
 const HA_BASE = S.getHaBaseUrl();
 
-async function testRun(prompt: string, opts?: { timeoutMs?: number }) {
+async function testRun(prompt: string, opts?: { timeoutMs?: number; resetBefore?: boolean }) {
   return S.runConversation(prompt, opts);
 }
 
@@ -20,13 +20,7 @@ Deno.test({
     if (!lightId) throw new Error("No light entity found in HA demo");
 
     // First turn: turn on the light
-    try {
-      await fetch(`${HA_BASE}/api/states/${encodeURIComponent(lightId)}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ state: "off" }),
-      });
-    } catch { /* ignore */ }
+    await S.setEntityState(HA_BASE, lightId, "off");
 
     const turn1 = await testRun(
       `Turn on the light ${lightId}.`,
@@ -37,9 +31,12 @@ Deno.test({
     );
     await S.assertEntityState(HA_BASE, lightId, "on");
 
-    // Second turn: reference the same entity via description ("dim them")
+    // Second turn: reference the same entity via description ("dim them").
+    // Don't reset — this turn intentionally needs turn1's history to resolve
+    // "it" to lightId from context.
     const turn2 = await testRun(
       `Now dim it to 50% brightness.`,
+      { resetBefore: false },
     );
 
     // The agent should call ha_call_service with the correct entity_id inferred from context
@@ -87,13 +84,7 @@ Deno.test({
     if (!switchId) throw new Error("No switch entity found in HA demo");
 
     // Ensure it's already on so the "turn off" fails gracefully for diagnosis
-    try {
-      await fetch(`${HA_BASE}/api/states/${encodeURIComponent(switchId)}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ state: "on" }),
-      });
-    } catch { /* ignore */ }
+    await S.setEntityState(HA_BASE, switchId, "on");
 
     const result = await testRun(
       `I tried turning off ${switchId} but it didn't work. Help me figure out why by checking its current state and any relevant logs using ha_get_entity and ha_get_logs.`,
@@ -117,13 +108,7 @@ Deno.test({
 
     // First turn all lights on so there's something to dim
     for (const lightId of lights.slice(0, 2)) {
-      try {
-        await fetch(`${HA_BASE}/api/states/${encodeURIComponent(lightId)}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ state: "on" }),
-        });
-      } catch { /* ignore */ }
+      await S.setEntityState(HA_BASE, lightId, "on");
     }
 
     const result = await testRun(
@@ -146,7 +131,13 @@ Deno.test({
       `What is the current reading from ${sensorId}?`,
     );
 
-    S.assertToolCalled(result, "ha_get_entity", (args) => String(args?.entity_id ?? "") === sensorId);
+    // ha_get_entity and ha_get_states-with-entity_id return the same data;
+    // accept either path.
+    S.assertOneOfToolsCalled(
+      result,
+      ["ha_get_entity", "ha_get_states"],
+      (args) => String(args?.entity_id ?? "") === sensorId,
+    );
   },
 });
 
@@ -157,13 +148,7 @@ Deno.test({
     if (!lightId) throw new Error("No light entity found in HA demo");
 
     // Ensure off
-    try {
-      await fetch(`${HA_BASE}/api/states/${encodeURIComponent(lightId)}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ state: "off" }),
-      });
-    } catch { /* ignore */ }
+    await S.setEntityState(HA_BASE, lightId, "off");
 
     const result = await testRun(
       `Turn on ${lightId}, then verify it actually turned on by checking its state. Tell me the final result.`,

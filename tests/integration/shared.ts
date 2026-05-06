@@ -58,11 +58,20 @@ interface RunConversationOpts {
   timeoutMs?: number;
   /** WS URL — defaults to CASTLE_WS_URL env var or ws://localhost:7092/ws. */
   wsUrl?: string;
+  /** When true (default), reset the agent session before sending the prompt
+   *  so this turn doesn't inherit history from prior tests. Set false for
+   *  follow-up turns in multi-turn tests that intentionally need continuity. */
+  resetBefore?: boolean;
 }
 
 /**
- * Open /ws, hello → snapshot → prompt → drain until agent_end → close cleanly.
- * Returns structured events and tool call records.
+ * Open /ws, hello → snapshot → reset → snapshot → prompt → drain until
+ * agent_end → close cleanly. The reset is critical: every test case opens its
+ * own WS, but the server keeps a single long-lived agent session whose
+ * message history persists across connections. Without a reset between cases
+ * the model's tool selection drifts (it sees 20 prior turns of context and
+ * starts echoing the previous test's tool). Returns structured events and
+ * tool call records.
  */
 export async function runConversation(
   prompt: string,
@@ -70,13 +79,15 @@ export async function runConversation(
 ): Promise<AgentRunResult> {
   const wsUrl = opts.wsUrl ?? Deno.env.get("CASTLE_WS_URL") ?? "ws://localhost:7092/ws";
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT;
+  const resetBefore = opts.resetBefore ?? true;
 
   return new Promise<AgentRunResult>((resolve, reject) => {
     const ws = new WebSocket(wsUrl);
     const events: AgentEvent[] = [];
     let agentEnded = false;
     let errorMessage: string | null = null;
-    let _snapshotReceived = false;
+    // Pretend the reset has already happened when the caller opted out.
+    let resetSent = !resetBefore;
     let promptSent = false;
 
     const timeout = setTimeout(() => {
@@ -85,7 +96,7 @@ export async function runConversation(
     }, timeoutMs);
 
     ws.onopen = () => {
-      // hello → wait for snapshot → send prompt
+      // hello → snapshot → reset → snapshot → prompt
       ws.send(JSON.stringify({ type: "hello" }));
     };
 
@@ -93,8 +104,11 @@ export async function runConversation(
       const frame: WsFrame = JSON.parse(typeof ev.data === "string" ? ev.data : "");
 
       if (frame.type === "snapshot") {
-        _snapshotReceived = true;
-        if (!promptSent) {
+        if (!resetSent) {
+          resetSent = true;
+          ws.send(JSON.stringify({ type: "reset" }));
+        } else if (!promptSent) {
+          // Second snapshot arrives after the reset — agent is fresh; send prompt.
           promptSent = true;
           ws.send(JSON.stringify({ type: "prompt", text: prompt }));
         }
@@ -177,6 +191,32 @@ export function assertToolCalled(
   return match ?? found[0];
 }
 
+/** Assert that at least one of the named tools was called. Returns the first
+ *  matching call. Use this for behavioural tests where multiple tools are
+ *  semantically interchangeable (e.g. snapshot vs live-feed for "show me the
+ *  camera"). An optional argsMatcher receives the matched call's args and
+ *  must return true; the matcher does NOT see the toolName, so write it to
+ *  accept either tool's argument shape. */
+export function assertOneOfToolsCalled(
+  result: AgentRunResult,
+  names: string[],
+  argsMatcher?: (args: Record<string, unknown> | null) => boolean,
+): ToolCallRecord {
+  const found = result.toolCalls.filter((tc) => names.includes(tc.toolName));
+  if (found.length === 0) {
+    throw new Error(
+      `Expected one of [${names.join(", ")}] to be called. Called tools: [${result.toolCalls.map((t) => t.toolName).join(", ")}]`,
+    );
+  }
+  const match = argsMatcher ? found.find((tc) => argsMatcher(tc.args)) : found[0];
+  if (!match && argsMatcher) {
+    throw new Error(
+      `Expected one of [${names.join(", ")}] called with matching args. Calls: [${found.map((t) => `${t.toolName}(${JSON.stringify(t.args)})`).join(", ")}]`,
+    );
+  }
+  return match ?? found[0];
+}
+
 /** Assert that no mutating tools were called. */
 export function assertNoMutatingTools(result: AgentRunResult): void {
   const mutating = result.toolCalls.filter((tc) =>
@@ -245,6 +285,31 @@ function haFetch(input: string, init?: RequestInit): Promise<Response> {
   return fetch(input, { ...init, headers });
 }
 
+/** Drain a response body without parsing it. Deno's resource tracker flags
+ *  any unread response body as a leak — use this on the not-ok branch of
+ *  every haFetch call where we'd otherwise just `return null`. */
+async function drain(res: Response): Promise<void> {
+  try { await res.body?.cancel(); } catch { /* already consumed or closed */ }
+}
+
+/** POST a state value to the HA REST API and discard the response body.
+ *  Used by tests to set up deterministic preconditions before driving the
+ *  agent; failures are swallowed because callers treat this as best-effort. */
+export async function setEntityState(
+  haBaseUrl: string,
+  entityId: string,
+  state: string,
+): Promise<void> {
+  try {
+    const res = await haFetch(`${haBaseUrl}/api/states/${encodeURIComponent(entityId)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ state }),
+    });
+    await drain(res);
+  } catch { /* best-effort */ }
+}
+
 /** Query an entity's current state via HA REST API. */
 export async function getEntityState(
   haBaseUrl: string,
@@ -253,7 +318,7 @@ export async function getEntityState(
   const url = `${haBaseUrl}/api/states/${encodeURIComponent(entityId)}`;
   try {
     const res = await haFetch(url);
-    if (!res.ok) return null;
+    if (!res.ok) { await drain(res); return null; }
     const json = await res.json() as { state: string; attributes: Record<string, unknown> };
     return json;
   } catch {
@@ -266,7 +331,7 @@ export async function getAllStates(haBaseUrl: string): Promise<Record<string, { 
   const url = `${haBaseUrl}/api/states`;
   try {
     const res = await haFetch(url);
-    if (!res.ok) return {};
+    if (!res.ok) { await drain(res); return {}; }
     const json = await res.json();
     const list = Array.isArray(json) ? json : [];
     const result: Record<string, { state: string; attributes: Record<string, unknown> }> = {};
@@ -360,14 +425,20 @@ async function haWsCall<T>(haBaseUrl: string, msg: Record<string, unknown>): Pro
   return new Promise<T | null>((resolve) => {
     const ws = new WebSocket(wsUrl);
     const reqId = 1;
-    let resolved = false;
-    const finish = (val: T | null) => {
-      if (resolved) return;
-      resolved = true;
+    let captured = false;
+    let result: T | null = null;
+    // Capture-and-close: stash the result, ask the WS to close, but DON'T
+    // resolve until ws.onclose fires. Resolving on close (not on receive)
+    // is what stops Deno's resource tracker from flagging "serverWebSocket
+    // not cleaned up" — closing is async and the test's await would
+    // otherwise return before the socket finishes shutting down.
+    const captureAndClose = (val: T | null) => {
+      if (captured) return;
+      captured = true;
+      result = val;
       try { ws.close(); } catch { /* ignore */ }
-      resolve(val);
     };
-    const timeout = setTimeout(() => finish(null), 5000);
+    const timeout = setTimeout(() => captureAndClose(null), 5000);
     ws.onmessage = (ev) => {
       try {
         const m = JSON.parse(typeof ev.data === "string" ? ev.data : "") as { type?: string; id?: number; success?: boolean; result?: T };
@@ -377,14 +448,18 @@ async function haWsCall<T>(haBaseUrl: string, msg: Record<string, unknown>): Pro
           ws.send(JSON.stringify({ id: reqId, ...msg }));
         } else if (m.type === "auth_invalid") {
           clearTimeout(timeout);
-          finish(null);
+          captureAndClose(null);
         } else if (m.id === reqId) {
           clearTimeout(timeout);
-          finish(m.success ? (m.result ?? null) : null);
+          captureAndClose(m.success ? (m.result ?? null) : null);
         }
       } catch { /* malformed frame */ }
     };
-    ws.onerror = () => { clearTimeout(timeout); finish(null); };
+    ws.onerror = () => { clearTimeout(timeout); captureAndClose(null); };
+    ws.onclose = () => {
+      clearTimeout(timeout);
+      resolve(result);
+    };
   });
 }
 
@@ -457,7 +532,7 @@ export async function getAutomationConfig(
 ): Promise<unknown | null> {
   try {
     const res = await haFetch(`${haBaseUrl}/api/config/automation/config/${encodeURIComponent(String(automationId))}`);
-    if (!res.ok) return null;
+    if (!res.ok) { await drain(res); return null; }
     return await res.json();
   } catch {
     return null;
@@ -475,7 +550,9 @@ export async function updateAutomationConfig(
       `${haBaseUrl}/api/config/automation/config/${encodeURIComponent(String(automationId))}`,
       { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(config) },
     );
-    return res.ok;
+    const ok = res.ok;
+    await drain(res);
+    return ok;
   } catch {
     return false;
   }
