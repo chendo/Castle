@@ -1688,33 +1688,43 @@ export function buildTools(
     },
 
     {
+      name: "ha_list_dashboards",
+      label: "List Dashboards",
+      description: "List every Lovelace dashboard with its url_path and title. Use this first when the user references a dashboard by name; pass the discovered url_path to ha_get_dashboard to inspect it. Returns a flat list with `(default)` as the main dashboard.",
+      parameters: Type.Object({}),
+      async execute(): Promise<ToolResult> {
+        try {
+          const list = await ha.call<Array<Record<string, unknown>>>({ type: "lovelace/dashboards/list" });
+          const entries = Array.isArray(list) ? list : [];
+          const lines = entries.map((d) => {
+            const path = d.url_path ?? "(default)";
+            const title = d.title ?? "(no title)";
+            const mode = d.mode ? ` [${d.mode}]` : "";
+            return `${path} — ${title}${mode}`;
+          });
+          // The auto-created Overview dashboard has no url_path and never
+          // appears in lovelace/dashboards/list — surface it explicitly so
+          // the agent knows `(default)` is callable.
+          if (!entries.find((d) => !d.url_path)) lines.unshift("(default) — main dashboard");
+          return okList("", lines, { maxBytes: 4 * 1024 });
+        } catch (err) {
+          return ok(`Failed to list dashboards: ${(err as Error).message}`);
+        }
+      },
+    },
+
+    {
       name: "ha_get_dashboard",
       label: "Get Dashboard",
-      description: "List Lovelace dashboards (when name is omitted), get a dashboard's top-level summary (name only), or drill into a subtree (name + path). Path is dot-separated, numeric segments index arrays — e.g. `views.0`, `views.2.cards.3`. The full config is fetched once per agent turn and cached; drill-downs are free. Use `(default)` for the main dashboard.",
+      description: "Fetch a Lovelace dashboard's top-level summary (name only) or drill into a subtree (name + path). Path is dot-separated, numeric segments index arrays — e.g. `views.0`, `views.2.cards.3`. The full config is fetched once per agent turn and cached; drill-downs are free. Use `(default)` for the main dashboard. To enumerate dashboards, call ha_list_dashboards.",
       parameters: Type.Object({
-        name: Type.Optional(Type.String({ description: "Dashboard url_path. Omit to list all. Use '(default)' for the main dashboard." })),
+        name: Type.String({ description: "Dashboard url_path. Use '(default)' for the main dashboard. Run ha_list_dashboards to discover available url_paths." }),
         path: Type.Optional(Type.String({ description: "Dot-separated path into the config (e.g. `views.0.cards.3`). Omit for top-level summary." })),
       }),
       async execute(
         _id: string,
-        params: { name?: string; path?: string },
+        params: { name: string; path?: string },
       ): Promise<ToolResult> {
-        if (!params.name) {
-          try {
-            const list = await ha.call<Array<Record<string, unknown>>>({ type: "lovelace/dashboards/list" });
-            const entries = Array.isArray(list) ? list : [];
-            const lines = entries.map((d) => {
-              const path = d.url_path ?? "(default)";
-              const title = d.title ?? "(no title)";
-              const mode = d.mode ? ` [${d.mode}]` : "";
-              return `${path} — ${title}${mode}`;
-            });
-            if (!entries.find((d) => !d.url_path)) lines.unshift("(default) — main dashboard");
-            return okList("", lines, { maxBytes: 4 * 1024 });
-          } catch (err) {
-            return ok(`Failed to list dashboards: ${(err as Error).message}`);
-          }
-        }
         try {
           let config = dashboardCache.get(params.name);
           if (config === undefined) {
