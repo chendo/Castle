@@ -47,42 +47,8 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
   ha_get_automation_trace: "inspect a recent automation run to see why it did or didn't fire",
 };
 
-/** Tools that are *always* in the prefix regardless of pin policy. These
- *  cover the everyday turn ("look up an entity, control a device, show
- *  the user a card"). Everything else is "extended" and only appears in
- *  the prefix when explicitly pinned. */
-export const CORE_TOOL_NAMES: readonly ToolName[] = [
-  "ha_call_service",
-  "ha_get_states",
-  "ha_get_entity",
-  "ha_present_card",
-] as const;
-
-/** Names of every tool that CAN be pinned (i.e. is not already core).
- *  Pinning a core tool is a no-op (it's already always pinned). */
-export const EXTENDED_TOOL_NAMES: readonly ToolName[] = ALL_TOOL_NAMES.filter(
-  (n): n is ToolName => !(CORE_TOOL_NAMES as readonly string[]).includes(n),
-);
-
-/** Per-tool pin policy. Three states:
- *   - `off`    — extended tool, only reachable via ha_invoke. Default.
- *   - `auto`   — extended tool, eligible for auto-pinning if the
- *                tool-usage selector picks it as "hot" at boot.
- *   - `always` — manually pinned to the prefix every session, no matter
- *                the usage history.
- *  Core tools ignore this field; they're always in the prefix. */
-export type ToolPin = "off" | "auto" | "always";
-
 export interface Settings {
   enabledTools: ToolName[];
-  /**
-   * Per-tool pin state. Keys are tool names. Missing keys default to "off"
-   * (extended-only). Core tools' entries are ignored at runtime — they're
-   * always in the prefix. The auto-pin selector picks at most a few tools
-   * from the "auto" pool at boot based on recent usage; "always" wins
-   * unconditionally.
-   */
-  toolPins: Partial<Record<ToolName, ToolPin>>;
   // LLM context window in tokens. Drives compaction thresholds in the agent.
   // Floored at 8k so things still work; no upper bound — user knows their backend.
   contextWindow: number;
@@ -115,7 +81,6 @@ const DEFAULT_CONVERSATION_CAP_MB = 100;
 
 const DEFAULTS: Settings = {
   enabledTools: [...ALL_TOOL_NAMES],
-  toolPins: {},
   contextWindow: DEFAULT_CONTEXT_WINDOW,
   allowUnexposedWrites: false,
   conversationCapMb: DEFAULT_CONVERSATION_CAP_MB,
@@ -125,17 +90,9 @@ let cached: Settings | null = null;
 
 function sanitize(s: Partial<Settings> | null | undefined): Settings {
   const enabled = Array.isArray(s?.enabledTools) ? s!.enabledTools : DEFAULTS.enabledTools;
-  // Core tools are always enabled — disabling them would leave the agent
-  // unable to do its basic job (read state, control devices, present
-  // cards). Force-include them regardless of what's in the user's saved
-  // list. Side effect: a stale settings.json from before a tool rename
-  // (e.g. ha_show_camera → ha_present_card) heals automatically.
-  const enabledSet = new Set<ToolName>();
-  for (const name of CORE_TOOL_NAMES) enabledSet.add(name);
-  for (const name of enabled) {
-    if ((ALL_TOOL_NAMES as readonly string[]).includes(name)) enabledSet.add(name as ToolName);
-  }
-  const filtered = [...enabledSet];
+  const filtered = enabled.filter((n): n is ToolName =>
+    (ALL_TOOL_NAMES as readonly string[]).includes(n)
+  );
   const cwRaw = typeof s?.contextWindow === "number" ? s!.contextWindow : DEFAULTS.contextWindow;
   const contextWindow = Number.isFinite(cwRaw) && cwRaw >= MIN_CONTEXT_WINDOW
     ? Math.floor(cwRaw)
@@ -147,19 +104,8 @@ function sanitize(s: Partial<Settings> | null | undefined): Settings {
   const conversationCapMb = Number.isFinite(capRaw) && capRaw >= MIN_CONVERSATION_CAP_MB
     ? Math.floor(capRaw)
     : DEFAULTS.conversationCapMb;
-  // Drop unknown tool names and unknown pin states. Empty / missing
-  // toolPins is fine — defaults to "off" everywhere via the lookup.
-  const pinsRaw = (s?.toolPins ?? {}) as Record<string, unknown>;
-  const toolPins: Partial<Record<ToolName, ToolPin>> = {};
-  const validPins: ReadonlyArray<ToolPin> = ["off", "auto", "always"];
-  for (const [name, pin] of Object.entries(pinsRaw)) {
-    if (!(ALL_TOOL_NAMES as readonly string[]).includes(name)) continue;
-    if (typeof pin !== "string" || !validPins.includes(pin as ToolPin)) continue;
-    toolPins[name as ToolName] = pin as ToolPin;
-  }
   return {
     enabledTools: filtered.length ? filtered : [...ALL_TOOL_NAMES],
-    toolPins,
     contextWindow,
     allowUnexposedWrites,
     conversationCapMb,
