@@ -1,11 +1,10 @@
 import type { HealthSnapshot, WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
-import { openSettingsDialog } from "./SettingsDialog";
-import { openSessionBrowser } from "./SessionBrowser";
 
 /**
- * Lightweight topbar above the ChatPanel. Layout:
- *   [≡] Castle  [● homeassistant.local:8123] [● host.docker.internal:1234]   [📄 prompt] [⚙] [⟲ New chat]
+ * Lightweight topbar above the dashboard / chat. Layout:
+ *   [≡ sidebar] [▤ dashboard] Castle  [● HA] [● LLM]   [warm] [↻ rebuild] [⟲ new chat] [theme]
  *
+ * Settings, History, and Prompt have moved into the sidebar's footer.
  * Each pill's bubble reflects that backend's reachability:
  * - green when the WS link is up AND the backend reports OK
  * - red when the WS link is up AND the backend reports unreachable
@@ -39,7 +38,11 @@ function setBubble(dot: HTMLElement, state: "ok" | "bad" | "unknown"): void {
   dot.style.background = color;
 }
 
-export function buildTopbar(agent: WebSocketRemoteAgent, onToggleSidebar?: () => void): HTMLElement {
+export function buildTopbar(
+  agent: WebSocketRemoteAgent,
+  onToggleSidebar?: () => void,
+  onToggleDashboard?: () => void,
+): HTMLElement {
   const root = document.createElement("div");
   root.style.cssText = `
     display: flex; align-items: center; justify-content: space-between;
@@ -66,6 +69,18 @@ export function buildTopbar(agent: WebSocketRemoteAgent, onToggleSidebar?: () =>
     left.appendChild(toggle);
   }
 
+  if (onToggleDashboard) {
+    const toggle = document.createElement("button");
+    toggle.innerHTML = "&#9636;";
+    toggle.title = "Toggle dashboard";
+    toggle.style.cssText = `
+      background: transparent; border: none; color: inherit; cursor: pointer;
+      font-size: 16px; padding: 4px 8px; line-height: 1;
+    `;
+    toggle.onclick = onToggleDashboard;
+    left.appendChild(toggle);
+  }
+
   const logo = document.createElement("span");
   logo.textContent = "Castle";
   logo.style.cssText = "font-weight: 700; color: var(--primary, #58a6ff); flex-shrink: 0;";
@@ -79,19 +94,6 @@ export function buildTopbar(agent: WebSocketRemoteAgent, onToggleSidebar?: () =>
 
   const right = document.createElement("div");
   right.style.cssText = "display: flex; align-items: center; gap: 8px;";
-
-  const promptBtn = document.createElement("a");
-  promptBtn.href = "/agents.md";
-  promptBtn.target = "_blank";
-  promptBtn.rel = "noopener";
-  promptBtn.title = "View the rendered system prompt (AGENTS.md) the agent sees";
-  promptBtn.textContent = "📄 prompt";
-  promptBtn.style.cssText = `
-    padding: 4px 10px; font-size: 12px; cursor: pointer; text-decoration: none;
-    background: transparent; color: var(--foreground);
-    border: 1px solid var(--border); border-radius: 6px;
-  `;
-  right.append(promptBtn);
 
   const warmBtn = document.createElement("button");
   warmBtn.textContent = "🔥 warm cache";
@@ -190,35 +192,6 @@ export function buildTopbar(agent: WebSocketRemoteAgent, onToggleSidebar?: () =>
   };
   right.append(regenBtn);
 
-  // <theme-toggle> is registered by importing @mariozechner/mini-lit/dist/ThemeToggle.js
-  // in main.ts. includeSystem=true cycles light → dark → system; default is system.
-  const themeToggle = document.createElement("theme-toggle") as HTMLElement & { includeSystem?: boolean };
-  themeToggle.setAttribute("includeSystem", "");
-  themeToggle.style.color = "var(--foreground)";
-  right.append(themeToggle);
-
-  const settingsBtn = document.createElement("button");
-  settingsBtn.title = "Settings";
-  settingsBtn.innerHTML = "⚙";
-  settingsBtn.style.cssText = `
-    padding: 4px 10px; font-size: 16px; cursor: pointer;
-    background: transparent; color: var(--foreground);
-    border: 1px solid var(--border); border-radius: 6px; line-height: 1;
-  `;
-  settingsBtn.onclick = () => openSettingsDialog(agent);
-  right.append(settingsBtn);
-
-  const historyBtn = document.createElement("button");
-  historyBtn.title = "Session history — view and resume past conversations";
-  historyBtn.textContent = "🕑 History";
-  historyBtn.style.cssText = `
-    padding: 4px 10px; font-size: 12px; cursor: pointer;
-    background: transparent; color: var(--foreground);
-    border: 1px solid var(--border); border-radius: 6px;
-  `;
-  historyBtn.onclick = () => openSessionBrowser(agent);
-  right.append(historyBtn);
-
   const resetBtn = document.createElement("button");
   resetBtn.textContent = "⟲ New chat";
   resetBtn.style.cssText = `
@@ -228,6 +201,13 @@ export function buildTopbar(agent: WebSocketRemoteAgent, onToggleSidebar?: () =>
   `;
   resetBtn.onclick = () => agent.reset();
   right.append(resetBtn);
+
+  // <theme-toggle> is registered by importing @mariozechner/mini-lit/dist/ThemeToggle.js
+  // in main.ts. includeSystem=true cycles light → dark → system; default is system.
+  const themeToggle = document.createElement("theme-toggle") as HTMLElement & { includeSystem?: boolean };
+  themeToggle.setAttribute("includeSystem", "");
+  themeToggle.style.color = "var(--foreground)";
+  right.append(themeToggle);
 
   root.append(left, right);
 

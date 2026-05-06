@@ -5,15 +5,18 @@
 // entity cards rendered by ha_present_card, future widgets — can react
 // to the same stream without clobbering each other.
 
-import type { EntityState, EntityStateChange, WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
+import type { AreaInfo, EntityState, EntityStateChange, WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
 
 type AnyListener = (states: EntityState[]) => void;
 type EntityListener = (s: EntityState | null) => void;
+type AreaListener = (areas: AreaInfo[]) => void;
 
 export class EntityStateCache {
   private states = new Map<string, EntityState>();
   private allListeners = new Set<AnyListener>();
   private perEntity = new Map<string, Set<EntityListener>>();
+  private areas: AreaInfo[] = [];
+  private areaListeners = new Set<AreaListener>();
 
   /** Wire the cache to the agent's WS frames. Replaces whatever single
    *  handler was previously assigned to onStatesSnapshot / onStateChange,
@@ -21,6 +24,33 @@ export class EntityStateCache {
   attachToAgent(agent: WebSocketRemoteAgent): void {
     agent.onStatesSnapshot = (states) => this.replaceAll(states);
     agent.onStateChange = (change) => this.applyChange(change);
+    agent.onAreasSnapshot = (areas) => {
+      this.areas = areas;
+      for (const fn of this.areaListeners) fn(this.areas);
+    };
+  }
+
+  /** Snapshot of areas as last pushed by the server. */
+  getAreas(): AreaInfo[] {
+    return this.areas;
+  }
+
+  /** Map from entity_id to its area_id, derived from the last areas snapshot. */
+  getEntityAreaMap(): Map<string, string> {
+    const map = new Map<string, string>();
+    for (const a of this.areas) {
+      for (const eid of a.entity_ids) map.set(eid, a.area_id);
+    }
+    return map;
+  }
+
+  /** Subscribe to area-list updates. Fires immediately with the current list
+   *  (which may be empty pre-bootstrap) so consumers don't need to handle
+   *  the cold-start case. */
+  subscribeAreas(fn: AreaListener): () => void {
+    this.areaListeners.add(fn);
+    fn(this.areas);
+    return () => { this.areaListeners.delete(fn); };
   }
 
   get(entityId: string): EntityState | undefined {

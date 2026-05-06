@@ -41,6 +41,12 @@ export type EntityStateChange =
   | EntityState
   | { entity_id: string; removed: true };
 
+export interface AreaInfo {
+  area_id: string;
+  name: string;
+  entity_ids: string[];
+}
+
 export interface HealthSnapshot {
   ha_ok: boolean;
   ha_url: string;
@@ -55,6 +61,7 @@ type Frame =
   | { type: "settings"; settings: ServerSettings; all_tools: string[] }
   | { type: "states_snapshot"; states: EntityState[] }
   | { type: "state_change"; entity: EntityStateChange }
+  | { type: "areas_snapshot"; areas: AreaInfo[] }
   | { type: "health"; health: HealthSnapshot }
   | { type: "catalog_regenerated" }
   | { type: "cache_warmed"; at: number; durationMs: number }
@@ -82,6 +89,9 @@ export class WebSocketRemoteAgent extends RemoteAgent {
   public onStatesSnapshot?: (states: EntityState[]) => void;
   /** Single entity update streamed as HA emits state_changed. */
   public onStateChange?: (change: EntityStateChange) => void;
+  /** HA area registry. Pushed on hello and after the catalog regenerates;
+   *  stable for long stretches because area assignments rarely change. */
+  public onAreasSnapshot?: (areas: AreaInfo[]) => void;
   /** Server health snapshot — pushed on hello and on HA / ws-client / query changes. */
   public onHealth?: (health: HealthSnapshot) => void;
   /** Session list response from `list_sessions`. */
@@ -223,6 +233,8 @@ export class WebSocketRemoteAgent extends RemoteAgent {
         this.onSettings?.(frame.settings, frame.all_tools);
       } else if (frame.type === "states_snapshot") {
         this.onStatesSnapshot?.(frame.states);
+      } else if (frame.type === "areas_snapshot") {
+        this.onAreasSnapshot?.(frame.areas);
       } else if (frame.type === "state_change") {
         this.onStateChange?.(frame.entity);
       } else if (frame.type === "health") {

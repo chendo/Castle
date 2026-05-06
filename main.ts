@@ -33,6 +33,10 @@ async function regenerateCatalog(): Promise<void> {
     const exposedList = await ha.getExposedEntities();
     const exposed = exposedList ? new Set(exposedList) : undefined;
     const areas = await ha.getAreas();
+    // Areas may have shifted (HA UI lets users rename / reassign while we run).
+    // Drop the cached frame so the next hello / catalog_regenerated push picks
+    // up the fresh data.
+    invalidateAreasCache();
     const houseInfo = await ha.getHouseInfo();
     const services = await ha.getServices();
     const states = ha.getAllStates();
@@ -427,6 +431,28 @@ function serializeStates() {
   }));
 }
 
+/** Snapshot of HA's area registry for the sidebar tree + dashboard area
+ *  cards. Cached on first build and refreshed when the catalog regenerates
+ *  (entity ↔ area mapping changes are rare; no need for a per-WS-frame
+ *  push for every state_changed event). */
+let cachedAreasFrame: string | null = null;
+
+async function buildAreasFrame(): Promise<string> {
+  if (cachedAreasFrame) return cachedAreasFrame;
+  const areas = await ha.getAreas();
+  const list = [...areas.entries()].map(([area_id, info]) => ({
+    area_id,
+    name: info.name,
+    entity_ids: [...info.entities],
+  }));
+  cachedAreasFrame = JSON.stringify({ type: "areas_snapshot", areas: list });
+  return cachedAreasFrame;
+}
+
+function invalidateAreasCache(): void {
+  cachedAreasFrame = null;
+}
+
 /**
  * Wire the HA state_changed → WS clients fan-out exactly once. Idempotent:
  * subsequent calls are no-ops. Called from startup AFTER the HA connection
@@ -510,6 +536,7 @@ async function handleSocket(socket: WebSocket): Promise<void> {
         // Bootstrap the entity catalog over the WS. After this, state_change
         // frames are pushed for every HA state_changed event.
         socket.send(JSON.stringify({ type: "states_snapshot", states: serializeStates() }));
+        socket.send(await buildAreasFrame());
         // Initial health frame; further updates are pushed when HA connection
         // state flips or the periodic LLM probe transitions ok ↔ bad.
         socket.send(JSON.stringify({ type: "health", health: buildHealth() }));
@@ -684,8 +711,12 @@ async function handleSocket(socket: WebSocket): Promise<void> {
         await ensureAgentBroadcast();
         const session = await getAgentSession(ha);
         const snapshot = JSON.stringify({ type: "snapshot", state: serializeSnapshot(session) });
+        const areasFrame = await buildAreasFrame();
         for (const ws of sockets) {
-          if (ws.readyState === WebSocket.OPEN) ws.send(snapshot);
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(snapshot);
+            ws.send(areasFrame);
+          }
         }
         socket.send(JSON.stringify({ type: "catalog_regenerated" }));
         console.log("[ws] catalog manually regenerated");

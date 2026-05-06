@@ -20,6 +20,7 @@ import { registerChartRenderer } from "./ChartRenderer";
 import { registerCameraRenderer } from "./CameraRenderer";
 import { buildTopbar } from "./Topbar";
 import { buildSidebar } from "./Sidebar";
+import { buildDashboard } from "./Dashboard";
 import { openModelPickerDialog } from "./ModelPickerDialog";
 import { mountTimingHud } from "./TimingHud";
 
@@ -105,16 +106,21 @@ app.style.flexDirection = "column";
 app.style.height = "100vh";
 
 const sidebar = buildSidebar(agent);
+const dashboard = buildDashboard(agent);
 
-const topbar = buildTopbar(agent, sidebar.toggle);
+const topbar = buildTopbar(agent, sidebar.toggle, dashboard.toggle);
 app.appendChild(topbar);
 
 const layout = document.createElement("div");
 layout.style.cssText = "flex: 1; min-height: 0; display: flex; overflow: hidden;";
 layout.appendChild(sidebar.root);
+layout.appendChild(dashboard.root);
 
 const chatWrap = document.createElement("div");
-chatWrap.style.cssText = "flex: 1; min-width: 0; min-height: 0; position: relative;";
+// Pinned 480px-wide agent column on the right. The dashboard scroll-
+// stickies on its own; the chat panel remains the focused interaction
+// surface alongside it.
+chatWrap.style.cssText = "width: 480px; flex-shrink: 0; min-width: 0; min-height: 0; position: relative; display: flex; flex-direction: column; border-left: 1px solid var(--border);";
 chatWrap.appendChild(chatPanel);
 layout.appendChild(chatWrap);
 
