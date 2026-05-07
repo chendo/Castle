@@ -30,12 +30,20 @@ interface CapturedFrame {
 }
 
 export async function fireTask(task: Task, triggerKind: string, ha: HAClient): Promise<FireOutcome> {
-  const frames: CapturedFrame[] = [];
-  if (task.context.cameraFrames) {
-    const cap = await captureFrame(task, ha);
-    if (cap) frames.push(cap);
+  // Reminder path: any task without external observation context (cameras
+  // today; state-history etc. in the future) short-circuits past the LLM.
+  // The brief is the notification verbatim — no decision branch needed,
+  // because there's nothing to decide. Avoids hour-of-thinking on a "remind
+  // me at 5pm" task and avoids leaving the task stuck in `watching` if the
+  // model arbitrarily picks `wait`.
+  if (!task.context.cameraFrames) {
+    return fireReminder(task, triggerKind);
   }
-  const recentFramePaths = collectRecentFramePaths(task, task.context.cameraFrames?.lastN ?? 5);
+
+  const frames: CapturedFrame[] = [];
+  const cap = await captureFrame(task, ha);
+  if (cap) frames.push(cap);
+  const recentFramePaths = collectRecentFramePaths(task, task.context.cameraFrames.lastN);
   const newFramePaths = frames.map((f) => f.diskPath);
 
   const decision = await askDecision(task, frames, triggerKind);
@@ -61,6 +69,29 @@ export async function fireTask(task: Task, triggerKind: string, ha: HAClient): P
     };
   }
   return { observation, notification };
+}
+
+function fireReminder(task: Task, triggerKind: string): FireOutcome {
+  const ts = Date.now();
+  const observation: Observation = {
+    id: mintObservationId(),
+    ts,
+    triggerKind,
+    framePaths: [],
+    narrative: `Reminder fired (${triggerKind}).`,
+    decision: "notify",
+    confidence: 1,
+  };
+  return {
+    observation,
+    notification: {
+      summary: task.brief,
+      confidence: 1,
+      evidence: { triggerKind, kind: "reminder" },
+      observationId: observation.id,
+      ts,
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

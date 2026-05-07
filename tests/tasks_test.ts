@@ -1,6 +1,7 @@
 import { assertEquals, assertThrows } from "jsr:@std/assert@1";
-import { validateTaskSpec } from "../tasks.ts";
-import { parseDecision } from "../tasks-fire.ts";
+import { type Task, validateTaskSpec } from "../tasks.ts";
+import { fireTask, parseDecision } from "../tasks-fire.ts";
+import type { HAClient } from "../ha-client.ts";
 
 Deno.test("validateTaskSpec — accepts a minimal at-trigger reminder", () => {
   const out = validateTaskSpec({
@@ -147,4 +148,27 @@ Deno.test("parseDecision — strips code fences", () => {
 Deno.test("parseDecision — non-JSON falls back to wait", () => {
   const r = parseDecision("I'm waiting for the delivery");
   assertEquals(r.decision, "wait");
+});
+
+Deno.test("fireTask — reminder (no cameraFrames) short-circuits LLM and notifies with brief", async () => {
+  const task: Task = {
+    id: "t1",
+    brief: "Take your medication.",
+    trigger: { kind: "at", ts: Date.now() },
+    context: { parentThread: true },
+    termination: { kind: "one_shot_on_fire" },
+    status: "watching",
+    observations: [],
+    cost: { fires: 0, framesAnalyzed: 0 },
+    createdAt: Date.now(),
+    ttlAfterFireMs: 1000,
+    maxObservations: 10,
+    minIntervalMs: 5000,
+  };
+  // ha is unused on this code path — pass an empty stub.
+  const out = await fireTask(task, "at", {} as HAClient);
+  assertEquals(out.observation.decision, "notify");
+  assertEquals(out.observation.framePaths.length, 0);
+  assertEquals(out.notification?.summary, "Take your medication.");
+  assertEquals(out.notification?.confidence, 1);
 });

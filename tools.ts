@@ -2204,16 +2204,19 @@ Trigger shapes (pass under \`trigger\`):
 - React to a non-state HA bus event: { kind: "on_event", eventType: "zha_event", dataMatch?: { command: "double" } }
 - Either-or composite: { kind: "any_of", triggers: [<a>, <b>] }
 
-Optional \`context\` adds vision input — frames captured each fire and passed to the watcher LLM:
-{ cameraFrames: { entity: "camera.front_door", lastN: 5 } }
+Two modes, distinguished by whether \`context.cameraFrames\` is set:
+- REMINDER (no cameraFrames): the trigger fires and the user is notified with the \`brief\` verbatim. No LLM decision loop. Use for "remind me at 5pm", recurring brief reports, etc. The brief should read as the message you want the user to see.
+- WATCHER (cameraFrames set): the trigger fires, fresh frames are captured, and a watcher LLM decides whether to notify. The brief tells the watcher what to look for. Use for "wake me when delivery arrives", "tell me when the dog leaves the yard", etc.
+
+Vision context shape: { cameraFrames: { entity: "camera.front_door", lastN: 5 } }
 
 Optional \`termination\`:
 - { kind: "one_shot_on_fire" } (default — task ends on first notification)
 - { kind: "expires", ttlMs: <ms> } (auto-stop if condition never met)
 - { kind: "manual" } (only stops when the user calls cancel_task)
 
-The \`brief\` is read by the watcher LLM verbatim each fire — be specific about what to look for and when to notify. Examples:
-- Reminder: brief="Notify the user it's time to take their medication." trigger={kind:"at", ts:...}
+Examples:
+- Reminder: brief="Time to take your medication." trigger={kind:"at", delayMs: 1800000}
 - Delivery watch: brief="Notify when a delivery van or courier arrives at the front door." trigger={kind:"any_of", triggers:[{kind:"on_state", entity:"binary_sensor.gate"}, {kind:"every", intervalMs: 60000}]} context={cameraFrames:{entity:"camera.front_door", lastN:5}} termination={kind:"expires", ttlMs:14400000}`,
       parameters: Type.Object({
         brief: Type.String({ description: "Plain-English description of what the task is watching for. Read by the watcher LLM each fire." }),
