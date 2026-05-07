@@ -18,7 +18,6 @@ import { WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
 import { ensureCollapsibleRenderer, registerHAToolRenderers } from "./HAToolRenderer";
 import { registerChartRenderer } from "./ChartRenderer";
 import { registerCameraRenderer } from "./CameraRenderer";
-import { buildSidebar } from "./Sidebar";
 import { buildDashboard } from "./Dashboard";
 import { openModelPickerDialog } from "./ModelPickerDialog";
 import { buildShell } from "./Shell";
@@ -96,9 +95,8 @@ await chatPanel.setAgent(agent as any, {
   onModelSelect: () => openModelPickerDialog(agent),
 });
 
-const sidebar = buildSidebar(agent);
 const dashboard = buildDashboard(agent);
 
 const app = document.getElementById("app")!;
 app.style.cssText = "display: flex; flex-direction: column; height: 100vh; height: 100dvh;";
-app.appendChild(buildShell({ agent, chatPanel, sidebar, dashboard }));
+app.appendChild(buildShell({ agent, chatPanel, dashboard }));

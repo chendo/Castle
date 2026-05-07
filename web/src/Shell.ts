@@ -7,7 +7,6 @@
 // available.
 
 import type { ChatPanel } from "@mariozechner/pi-web-ui";
-import type { SidebarHandle } from "./Sidebar";
 import type { DashboardHandle } from "./Dashboard";
 import type { WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
 import { buildVoiceButton } from "./VoiceButton";
@@ -17,6 +16,7 @@ import { openSettingsDialog } from "./SettingsDialog";
 import { recentEntitiesStore } from "./RecentEntitiesStore";
 import { entityCache } from "./EntityStateCache";
 import { buildEntityCard, type CardHandle } from "./EntityCard";
+import { buildAppMenu } from "./AppMenu";
 
 type Route = "now" | "dashboard" | "chat";
 
@@ -34,11 +34,10 @@ function isEmbed(): boolean {
 interface ShellInputs {
   agent: WebSocketRemoteAgent;
   chatPanel: ChatPanel;
-  sidebar: SidebarHandle;
   dashboard: DashboardHandle;
 }
 
-export function buildShell({ agent, chatPanel, sidebar, dashboard }: ShellInputs): HTMLElement {
+export function buildShell({ agent, chatPanel, dashboard }: ShellInputs): HTMLElement {
   const shell = document.createElement("div");
   shell.style.cssText = `
     display: flex; flex-direction: column;
@@ -105,10 +104,11 @@ export function buildShell({ agent, chatPanel, sidebar, dashboard }: ShellInputs
     z-index: 100; display: flex; flex-direction: column;
     box-shadow: 4px 0 24px rgba(0,0,0,0.2);
   `;
-  // Reuse the existing sidebar (search + tree + Settings/History/Prompt).
-  sidebar.root.style.height = "100%";
-  sidebar.root.style.borderRight = "none";
-  drawer.appendChild(sidebar.root);
+  // Slim app menu — entity browser lives behind a button here, not directly
+  // in the drawer (per the spec: "move the entity stuff into settings for
+  // now"). Keeps the drawer fast to scan and avoids an entity tree taking
+  // up the whole screen on mobile.
+  drawer.appendChild(buildAppMenu(agent));
 
   const scrim = document.createElement("div");
   scrim.style.cssText = `
