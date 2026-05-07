@@ -136,7 +136,7 @@ export function buildShell({ agent, chatPanel, dashboard }: ShellInputs): HTMLEl
   // ── Main content area ──────────────────────────────────────────────────
   const main = document.createElement("main");
   main.style.cssText = `
-    flex: 1; min-height: 0; display: flex; overflow: hidden;
+    flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden;
   `;
 
   // Route panes — only the active one is mounted into contentArea.
