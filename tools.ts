@@ -1,8 +1,6 @@
 import { Type } from "npm:@sinclair/typebox";
 import { encodeBase64 } from "jsr:@std/encoding@1/base64";
 import type { HAClient } from "./ha-client.ts";
-import type { EventTimeline } from "./event-timeline.ts";
-import { loadSettings, saveSettings } from "./settings.ts";
 import { getTasksSingleton, type Task } from "./tasks.ts";
 
 type ToolContent = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
@@ -1265,12 +1263,11 @@ export function formatAutomationTrace(trace: Record<string, unknown>, tz: string
 
 export function buildTools(
   ha: HAClient,
-  opts: { multimodal?: boolean; dashboardCache?: Map<string, unknown>; allowUnexposedWrites?: boolean; timeline?: EventTimeline } = {},
+  opts: { multimodal?: boolean; dashboardCache?: Map<string, unknown>; allowUnexposedWrites?: boolean } = {},
 ) {
   const isMultimodal = opts.multimodal === true;
   const dashboardCache = opts.dashboardCache ?? new Map<string, unknown>();
   const allowUnexposedWrites = opts.allowUnexposedWrites === true;
-  const timeline = opts.timeline;
 
   // Collect every entity_id a service call would target — top-level entity_id
   // plus any in service_data (HA accepts string or array).
@@ -1342,13 +1339,6 @@ export function buildTools(
           warnings.push(`${params.domain}.${params.service} does not return a response — return_response will error in HA`);
         }
 
-        // Tag the timeline before the call so echo suppression is in place
-        // by the time the resulting state_changed lands. viaAgent: true
-        // marks the row with the 🤖 indicator in the UI.
-        const targets = collectTargets(params.entity_id, params.service_data);
-        if (timeline && targets.length > 0) {
-          timeline.noteAgentAction(params.domain, params.service, targets, true);
-        }
         const result = await ha.callService(
           params.domain,
           params.service,
@@ -2149,46 +2139,6 @@ export function buildTools(
           return okText(formatHistorySummary(params.entity_id, points, changes, start, end, intervalMin, tz), { maxBytes: 16 * 1024 });
         }
         return okText(formatStateChangeSummary(params.entity_id, changes, start, end, tz), { maxBytes: 16 * 1024 });
-      },
-    },
-
-    {
-      name: "castle_timeline_mute",
-      label: "Timeline mute",
-      description: "Mute or unmute entities for the dashboard's Activity timeline (chatty motion sensors, flapping switches the user doesn't want surfaced). ONLY use this when the user explicitly asks to silence/hide/mute an entity from the activity feed. Not a general listing tool — for entity state use ha_get_states; for HA notifications use ha_get_notifications.",
-      parameters: Type.Object({
-        action: Type.Union([
-          Type.Literal("mute"),
-          Type.Literal("unmute"),
-          Type.Literal("list"),
-        ], { description: "What to do with the mute list" }),
-        entity_ids: Type.Optional(Type.Array(Type.String(), {
-          description: "Required for 'mute' / 'unmute'. Each must be a domain.id string (e.g. binary_sensor.flaky_motion).",
-        })),
-      }),
-      async execute(
-        _id: string,
-        params: { action: "mute" | "unmute" | "list"; entity_ids?: string[] },
-      ): Promise<ToolResult> {
-        const settings = await loadSettings();
-        const current = new Set(settings.timelineMutes);
-        if (params.action === "list") {
-          if (current.size === 0) return ok("Timeline mute list is empty.");
-          return ok(`Currently muted (${current.size}): ${[...current].sort().join(", ")}`);
-        }
-        const ids = (params.entity_ids ?? []).filter((s) => typeof s === "string" && /^[a-z0-9_]+\.[a-z0-9_]+$/i.test(s));
-        if (ids.length === 0) return ok(`Refused: ${params.action} requires entity_ids (each shaped like domain.id).`);
-        const before = current.size;
-        if (params.action === "mute") {
-          for (const id of ids) current.add(id);
-        } else {
-          for (const id of ids) current.delete(id);
-        }
-        const next = [...current].sort();
-        const saved = await saveSettings({ timelineMutes: next });
-        if (timeline) timeline.setMutes(saved.timelineMutes);
-        const delta = current.size - before;
-        return ok(`${params.action === "mute" ? "Muted" : "Unmuted"} ${ids.length} entit${ids.length === 1 ? "y" : "ies"} (set size ${before} → ${current.size}, ${delta >= 0 ? "+" : ""}${delta}). Now muted: ${next.length === 0 ? "(none)" : next.join(", ")}`);
       },
     },
 

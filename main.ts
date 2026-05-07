@@ -1,5 +1,4 @@
 import { HAClient } from "./ha-client.ts";
-import { EventTimeline, setTimelineSingleton } from "./event-timeline.ts";
 import { setTasksSingleton, TasksManager, type Task, type TaskEvent } from "./tasks.ts";
 import { buildAgentsMd, buildCatalogData, buildServicesData, extractDomains } from "./catalog.ts";
 import {
@@ -29,8 +28,6 @@ const PORT = Number(Deno.env.get("PORT") ?? "7090");
 const AUTH_TOKEN = Deno.env.get("CASTLE_AUTH_TOKEN") ?? "";
 
 const ha = new HAClient(HA_URL, HA_TOKEN);
-const timeline = new EventTimeline(ha);
-setTimelineSingleton(timeline);
 const tasks = new TasksManager(ha);
 setTasksSingleton(tasks);
 
@@ -81,22 +78,6 @@ async function regenerateCatalog(): Promise<void> {
  * triggers a catalog refresh; transitions also flush a health frame to the UI.
  */
 let warmupKicked = false;
-
-/**
- * Collect every entity_id a service call is going to touch — top-level
- * entity_id + any inside service_data (HA accepts string or array). Used to
- * register agent-action echo suppression with the timeline.
- */
-function collectServiceTargets(entityId: string | undefined, serviceData: Record<string, unknown> | undefined): string[] {
-  const out: string[] = [];
-  if (typeof entityId === "string" && entityId.length > 0) out.push(entityId);
-  const sd = serviceData?.entity_id;
-  if (typeof sd === "string") out.push(sd);
-  else if (Array.isArray(sd)) {
-    for (const v of sd) if (typeof v === "string") out.push(v);
-  }
-  return out;
-}
 
 function setupHaSupervisor(): void {
   let firstReady = false;
@@ -533,27 +514,6 @@ let stateBroadcastWired = false;
 function wireStateBroadcast(): void {
   if (stateBroadcastWired) return;
   stateBroadcastWired = true;
-  // Timeline ingestion — pre-state-change so the synthetic agent rows we
-  // emit from service_call / ha_call_service have already registered echo
-  // suppression by the time the HA state_changed lands.
-  ha.onStateTransition((entityId, oldState, newState) => {
-    timeline.ingestStateChange(entityId, oldState, newState);
-  });
-  ha.onBusEvent("automation_triggered", (data) => {
-    timeline.ingestBusEvent("automation_triggered", data);
-  });
-  ha.onBusEvent("script_started", (data) => {
-    timeline.ingestBusEvent("script_started", data);
-  });
-  // Fan timeline emits out to every connected browser.
-  timeline.subscribe((event) => {
-    const frame = JSON.stringify({ type: "timeline_event", event });
-    for (const ws of sockets) {
-      if (ws.readyState === WebSocket.OPEN) {
-        try { ws.send(frame); } catch (err) { console.error("[ws] timeline push failed:", err); }
-      }
-    }
-  });
   ha.onStateChange((entityId, newState) => {
     const payload = newState
       ? {
@@ -629,7 +589,6 @@ async function handleSocket(socket: WebSocket): Promise<void> {
         // Bootstrap the entity catalog over the WS. After this, state_change
         // frames are pushed for every HA state_changed event.
         socket.send(JSON.stringify({ type: "states_snapshot", states: serializeStates() }));
-        socket.send(JSON.stringify({ type: "timeline_snapshot", events: timeline.snapshot() }));
         socket.send(JSON.stringify({ type: "tasks_snapshot", tasks: tasks.list().map(serializeTask) }));
         socket.send(await buildAreasFrame());
         // Initial health frame; further updates are pushed when HA connection
@@ -679,9 +638,8 @@ async function handleSocket(socket: WebSocket): Promise<void> {
     }
 
     if (msg.type === "set_settings") {
-      const incoming = (msg as unknown as { settings: { enabledTools?: ToolName[]; contextWindow?: number; allowUnexposedWrites?: boolean; conversationCapMb?: number; timelineMutes?: string[] } }).settings;
+      const incoming = (msg as unknown as { settings: { enabledTools?: ToolName[]; contextWindow?: number; allowUnexposedWrites?: boolean; conversationCapMb?: number } }).settings;
       const saved = await saveSettings(incoming);
-      timeline.setMutes(saved.timelineMutes ?? []);
       // Refresh AGENTS.md *before* rebuilding the session — the new agent reads
       // .pi-agent/AGENTS.md on construction, so a stale file would leave it
       // unaware of the just-flipped disabled-tool set until the next reconnect.
@@ -751,12 +709,6 @@ async function handleSocket(socket: WebSocket): Promise<void> {
         return;
       }
       try {
-        // Tag the timeline before the call so the resulting state_changed
-        // echo gets suppressed in the same emit that this row gets posted.
-        const targets = collectServiceTargets(m.entity_id, m.service_data);
-        if (targets.length > 0) {
-          timeline.noteAgentAction(m.domain, m.service, targets, false);
-        }
         await ha.callService(
           m.domain,
           m.service,
@@ -969,13 +921,6 @@ function abortIfOrphaned(): void {
 }
 
 await writeModelsJson();
-// Hydrate the timeline mute set from persisted settings before the first event
-// can land — otherwise the early-boot stretch of state_changed events would
-// skip the filter the user previously configured.
-{
-  const settings = await loadSettings();
-  timeline.setMutes(settings.timelineMutes ?? []);
-}
 setupHaSupervisor(); // wires HAClient's auto-reconnect loop; runs in background
 startLlmProbe();     // periodically pings LLM_URL/models so the UI bubble reflects reality
 // Restore tasks from disk and re-arm their triggers. Listener subscriptions are
