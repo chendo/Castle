@@ -5,11 +5,11 @@
     "test:unit": "deno test --allow-all tests/ --ignore=tests/integration/",
     "test:integration": "deno test --allow-all tests/integration/",
     "test:smoke": "deno test --allow-all tests/integration/smoke_test.ts",
-    "check": "deno check main.ts agent.ts catalog.ts ha-client.ts tool-usage.ts tools.ts umbrella.ts && deno lint",
+    "check": "deno check main.ts agent.ts catalog.ts ha-client.ts tool-usage.ts tools.ts umbrella.ts tasks.ts tasks-fire.ts && deno lint",
     "lint": "deno lint"
   },
   "lint": {
-    "include": ["main.ts", "agent.ts", "catalog.ts", "ha-client.ts", "tool-usage.ts", "tools.ts", "umbrella.ts", "tests/**/*.ts"],
+    "include": ["main.ts", "agent.ts", "catalog.ts", "ha-client.ts", "tool-usage.ts", "tools.ts", "umbrella.ts", "tasks.ts", "tasks-fire.ts", "tests/**/*.ts"],
     "rules": {
       "exclude": [
         "no-import-prefix",
