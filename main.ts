@@ -1,5 +1,6 @@
 import { HAClient } from "./ha-client.ts";
 import { EventTimeline, setTimelineSingleton } from "./event-timeline.ts";
+import { setTasksSingleton, TasksManager, type Task, type TaskEvent } from "./tasks.ts";
 import { buildAgentsMd, buildCatalogData, buildServicesData, extractDomains } from "./catalog.ts";
 import {
   getActiveModelId,
@@ -30,6 +31,8 @@ const AUTH_TOKEN = Deno.env.get("CASTLE_AUTH_TOKEN") ?? "";
 const ha = new HAClient(HA_URL, HA_TOKEN);
 const timeline = new EventTimeline(ha);
 setTimelineSingleton(timeline);
+const tasks = new TasksManager(ha);
+setTasksSingleton(tasks);
 
 
 async function regenerateCatalog(): Promise<void> {
@@ -444,6 +447,37 @@ function broadcastCacheWarmed(result: { at: number; durationMs: number }): void 
   }
 }
 
+function serializeTask(t: Task) {
+  // Keep the wire shape lean — frame paths and full observation history are
+  // omitted from the live push. The UI fetches them on demand for a card view.
+  return {
+    id: t.id,
+    brief: t.brief,
+    trigger: t.trigger,
+    context: t.context,
+    termination: t.termination,
+    status: t.status,
+    notification: t.notification,
+    observationCount: t.observations.length,
+    lastObservation: t.observations.at(-1),
+    cost: t.cost,
+    createdAt: t.createdAt,
+    firedAt: t.firedAt,
+    expiresAt: t.expiresAt,
+  };
+}
+
+function broadcastTaskEvent(event: TaskEvent): void {
+  const frame = event.type === "task_deleted"
+    ? JSON.stringify({ type: "task_deleted", id: event.id })
+    : JSON.stringify({ type: event.type, task: serializeTask(event.task) });
+  for (const ws of sockets) {
+    if (ws.readyState === WebSocket.OPEN) {
+      try { ws.send(frame); } catch (err) { console.error("[ws] task push failed:", err); }
+    }
+  }
+}
+
 // Cache of entity_id → short "Name" from HA's entity registry. Surfaced
 // in every state push so the UI can label an entity without repeating
 // the device/area prefix that friendly_name usually includes. Refreshed
@@ -595,6 +629,7 @@ async function handleSocket(socket: WebSocket): Promise<void> {
         // frames are pushed for every HA state_changed event.
         socket.send(JSON.stringify({ type: "states_snapshot", states: serializeStates() }));
         socket.send(JSON.stringify({ type: "timeline_snapshot", events: timeline.snapshot() }));
+        socket.send(JSON.stringify({ type: "tasks_snapshot", tasks: tasks.list().map(serializeTask) }));
         socket.send(await buildAreasFrame());
         // Initial health frame; further updates are pushed when HA connection
         // state flips or the periodic LLM probe transitions ok ↔ bad.
@@ -841,6 +876,41 @@ async function handleSocket(socket: WebSocket): Promise<void> {
       return;
     }
 
+    if (msg.type === "list_tasks") {
+      socket.send(JSON.stringify({ type: "tasks_snapshot", tasks: tasks.list().map(serializeTask) }));
+      return;
+    }
+
+    if (msg.type === "cancel_task") {
+      const id = (msg as unknown as { id?: string }).id;
+      if (typeof id !== "string" || !id) {
+        socket.send(JSON.stringify({ type: "error", message: "cancel_task: id required" }));
+        return;
+      }
+      try {
+        const ok = await tasks.cancel(id);
+        socket.send(JSON.stringify({ type: "task_cancel_ack", id, ok }));
+      } catch (err) {
+        socket.send(JSON.stringify({ type: "error", message: `cancel_task failed: ${(err as Error).message}` }));
+      }
+      return;
+    }
+
+    if (msg.type === "delete_task") {
+      const id = (msg as unknown as { id?: string }).id;
+      if (typeof id !== "string" || !id) {
+        socket.send(JSON.stringify({ type: "error", message: "delete_task: id required" }));
+        return;
+      }
+      try {
+        const ok = await tasks.delete(id);
+        socket.send(JSON.stringify({ type: "task_delete_ack", id, ok }));
+      } catch (err) {
+        socket.send(JSON.stringify({ type: "error", message: `delete_task failed: ${(err as Error).message}` }));
+      }
+      return;
+    }
+
     if (msg.type === "delete_session") {
       const path = (msg as unknown as { path?: string }).path;
       if (typeof path !== "string" || !path) {
@@ -907,4 +977,8 @@ await writeModelsJson();
 }
 setupHaSupervisor(); // wires HAClient's auto-reconnect loop; runs in background
 startLlmProbe();     // periodically pings LLM_URL/models so the UI bubble reflects reality
+// Restore tasks from disk and re-arm their triggers. Listener subscriptions are
+// local; HA-side subscriptions are queued in HAClient and applied on connect.
+await tasks.init();
+tasks.subscribe(broadcastTaskEvent);
 Deno.serve({ port: PORT }, handler);
