@@ -22,6 +22,9 @@ export const ALL_TOOL_NAMES = [
   "ha_update_automation",
   "ha_get_automation_trace",
   "castle_timeline_mute",
+  "schedule_task",
+  "list_tasks",
+  "cancel_task",
 ] as const;
 export type ToolName = typeof ALL_TOOL_NAMES[number];
 
@@ -47,6 +50,9 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
   ha_update_automation: "create or modify automations",
   ha_get_automation_trace: "inspect a recent automation run to see why it did or didn't fire",
   castle_timeline_mute: "mute or unmute specific entities from the dashboard's Activity timeline (chatty entities the user explicitly wants hidden)",
+  schedule_task: "set up a scheduled / triggered task (reminders, recurring checks, watch a camera or sensor and notify on a condition)",
+  list_tasks: "list all scheduled tasks the home agent is currently watching",
+  cancel_task: "stop a watching task by id",
 };
 
 export interface Settings {
