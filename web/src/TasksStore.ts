@@ -1,7 +1,7 @@
 import type { TaskWire, WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
 
 /**
- * Local mirror of the server's task registry. Topbar chip + dialog both
+ * Local mirror of the server's task registry. Shell chip + dialog both
  * subscribe here so they share a single stream of WS task events.
  *
  * Wired once from main.ts via attachToAgent(); subsequent calls are no-ops.
