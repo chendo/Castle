@@ -24,6 +24,7 @@ import { openModelPickerDialog } from "./ModelPickerDialog";
 import { buildShell } from "./Shell";
 import { entityCache } from "./EntityStateCache";
 import { tasksStore } from "./TasksStore";
+import { recentEntitiesStore } from "./RecentEntitiesStore";
 
 registerHAToolRenderers();
 registerChartRenderer();
@@ -59,10 +60,11 @@ await providerKeys.set("local", "remote");
 const wsUrl = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
 const agent = new WebSocketRemoteAgent(wsUrl);
 
-// Wire the entity-state cache + tasks store to the agent before any consumer
-// subscribes. Both share a single stream of WS frames.
+// Wire the shared stores to the agent before any consumer subscribes — each
+// reads from a single stream of WS frames.
 entityCache.attachToAgent(agent);
 tasksStore.attachToAgent(agent);
+recentEntitiesStore.attachToAgent(agent);
 
 // Now safe to register the camera/present-card renderer — it needs the
 // cache + the agent (for ha_call_service via /ws service_call).

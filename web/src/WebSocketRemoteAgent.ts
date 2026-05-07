@@ -81,6 +81,11 @@ export interface TaskObservationWire {
   errorMessage?: string;
 }
 
+export interface RecentEntityWire {
+  entity_id: string;
+  ts: number;
+}
+
 /** Wire shape from main.ts serializeTask — full observation history is omitted; ask the server if you want it. */
 export interface TaskWire {
   id: string;
@@ -120,6 +125,7 @@ type Frame =
   | { type: "task_deleted"; id: string }
   | { type: "task_cancel_ack"; id: string; ok: boolean }
   | { type: "task_delete_ack"; id: string; ok: boolean }
+  | { type: "recent_entities_snapshot"; entities: RecentEntityWire[] }
   | { type: "error"; message: string };
 
 /**
@@ -158,6 +164,8 @@ export class WebSocketRemoteAgent extends RemoteAgent {
     | { type: "task_created"; task: TaskWire }
     | { type: "task_updated"; task: TaskWire }
     | { type: "task_deleted"; id: string }) => void;
+  /** Global LRU of agent-touched entities. Pushed on hello + on every change. */
+  public onRecentEntitiesSnapshot?: (entities: RecentEntityWire[]) => void;
   private catalogListeners = new Set<() => void>();
 
   /**
@@ -322,6 +330,8 @@ export class WebSocketRemoteAgent extends RemoteAgent {
         this.onTaskEvent?.(frame);
       } else if (frame.type === "task_cancel_ack" || frame.type === "task_delete_ack") {
         // No bespoke handler yet — UI re-renders from the broadcasted task_updated/task_deleted.
+      } else if (frame.type === "recent_entities_snapshot") {
+        this.onRecentEntitiesSnapshot?.(frame.entities);
       } else if (frame.type === "error") {
         console.error("[ws] server error:", frame.message);
         this.onError?.(frame.message);

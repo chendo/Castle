@@ -15,6 +15,9 @@ import { buildVoiceButton } from "./VoiceButton";
 import { tasksStore } from "./TasksStore";
 import { openTasksDialog } from "./TasksDialog";
 import { openSettingsDialog } from "./SettingsDialog";
+import { recentEntitiesStore } from "./RecentEntitiesStore";
+import { entityCache } from "./EntityStateCache";
+import { buildEntityCard, type CardHandle } from "./EntityCard";
 
 type Route = "now" | "dashboard" | "chat";
 
@@ -138,7 +141,7 @@ export function buildShell({ agent, chatPanel, sidebar, dashboard }: ShellInputs
   `;
 
   // Route panes — only the active one is mounted.
-  const nowPane = buildNowPane();
+  const nowPane = buildNowPane(agent);
   const dashPane = dashboard.root;
   // Chat pane wraps ChatPanel + StarterPrompts + voice button.
   const chatPane = buildChatPane(chatPanel, agent);
@@ -229,7 +232,7 @@ function iconButton(text: string, title: string): HTMLButtonElement {
   return b;
 }
 
-function buildNowPane(): HTMLElement {
+function buildNowPane(agent: WebSocketRemoteAgent): HTMLElement {
   const pane = document.createElement("section");
   pane.style.cssText = `
     flex: 1; min-height: 0; overflow-y: auto;
@@ -239,10 +242,64 @@ function buildNowPane(): HTMLElement {
   heading.textContent = "Now";
   heading.style.cssText = "font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted-foreground); margin: 0 0 12px;";
   pane.appendChild(heading);
+
   const empty = document.createElement("p");
   empty.style.cssText = "font-size: 14px; color: var(--muted-foreground); line-height: 1.5;";
-  empty.textContent = "Nothing yet. Recently-referenced entities will appear here as the agent looks at things.";
+  empty.textContent = "Nothing yet. As the agent looks at entities, they'll show up here.";
   pane.appendChild(empty);
+
+  const grid = document.createElement("div");
+  grid.style.cssText = `
+    display: grid; gap: 12px;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    align-content: start;
+  `;
+  pane.appendChild(grid);
+
+  // Reuse existing entity-card containers across renders so toggles, sliders
+  // etc. don't get torn out from under a click. Map by entity_id.
+  const cards = new Map<string, { container: HTMLElement; handle: CardHandle }>();
+
+  const render = (entities: { entity_id: string }[]) => {
+    if (entities.length === 0) {
+      empty.style.display = "";
+      grid.style.display = "none";
+      // Tear down any leftover handles.
+      for (const { handle } of cards.values()) handle.dispose();
+      cards.clear();
+      return;
+    }
+    empty.style.display = "none";
+    grid.style.display = "";
+    const seen = new Set<string>();
+    grid.innerHTML = "";
+    for (const { entity_id } of entities) {
+      seen.add(entity_id);
+      let entry = cards.get(entity_id);
+      if (!entry) {
+        const container = document.createElement("div");
+        const state = entityCache.get(entity_id);
+        const domain = entity_id.split(".")[0];
+        const handle = buildEntityCard(
+          { entity_id, kind: "entity", domain: state?.domain ?? domain },
+          { agent, cache: entityCache },
+          container,
+        );
+        entry = { container, handle };
+        cards.set(entity_id, entry);
+      }
+      grid.appendChild(entry.container);
+    }
+    // Drop entries that fell out of the LRU.
+    for (const [id, { handle }] of cards) {
+      if (!seen.has(id)) {
+        handle.dispose();
+        cards.delete(id);
+      }
+    }
+  };
+
+  recentEntitiesStore.subscribe(render);
   return pane;
 }
 
