@@ -9,6 +9,7 @@ import {
 } from "npm:@mariozechner/pi-coding-agent";
 import type { HAClient } from "./ha-client.ts";
 import { buildTools } from "./tools.ts";
+import { getTimelineSingleton } from "./event-timeline.ts";
 import { loadSettings, type ToolName } from "./settings.ts";
 
 const AGENT_DIR = new URL(".pi-agent/", import.meta.url).pathname.replace(/\/$/, "");
@@ -274,6 +275,7 @@ export function getAgentSession(ha: HAClient): Promise<AgentSession> {
         multimodal: isMultimodal,
         dashboardCache,
         allowUnexposedWrites: settings.allowUnexposedWrites,
+        timeline: getTimelineSingleton() ?? undefined,
       }).filter((t) => settings.enabledTools.includes(t.name as ToolName));
       const enabledTools = customTools.map((t) => t.name as string);
       console.log(`[agent] enabled tools: ${enabledTools.join(", ")}`);

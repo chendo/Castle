@@ -17,7 +17,7 @@
 //   - The user can hide areas they don't care about; hidden areas
 //     come back via a "Show hidden" checkbox.
 
-import type { AreaInfo, EntityState, WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
+import type { AreaInfo, EntityState, TimelineEvent, WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
 import { entityCache } from "./EntityStateCache";
 import { showEntityDetail } from "./EntityDetail";
 import { entityLabel } from "./EntityLabel";
@@ -27,6 +27,9 @@ const FAV_KEY = "castle-sidebar-favourites";
 const COLLAPSED_KEY = "castle-dashboard-collapsed";
 const HIDDEN_AREAS_KEY = "castle-dashboard-hidden-areas";
 const SHOW_HIDDEN_KEY = "castle-dashboard-show-hidden";
+const ACTIVITY_COLLAPSED_KEY = "castle-dashboard-activity-collapsed";
+
+const ACTIVITY_INITIAL_VISIBLE = 8;
 
 const SHORTCUT_PRIORITY: Record<string, number> = {
   light: 1,
@@ -399,6 +402,210 @@ function buildAreaCard(opts: {
   return { root, refresh, dispose };
 }
 
+// ── Activity timeline section ─────────────────────────────────────────────
+//
+// Collapsible feed of recent meaningful state changes. Server filters / ring-
+// buffers so the client just paints rows. Two ticks: incoming events repaint
+// the visible rows; a 30s interval refreshes the relative "Xm ago" labels so
+// they don't go stale while the panel sits open.
+
+interface ActivitySectionHandle {
+  root: HTMLElement;
+  dispose: () => void;
+}
+
+function formatRelativeTime(ms: number): string {
+  if (ms < 60_000) return "just now";
+  const m = Math.floor(ms / 60_000);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  return `${d}d ago`;
+}
+
+function formatAbsoluteTime(ts: number): string {
+  const d = new Date(ts);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+function buildActivitySection(): ActivitySectionHandle {
+  const section = el("section", "margin-bottom: 18px;");
+
+  const header = el("button", `
+    display: flex; align-items: center; gap: 6px; width: 100%;
+    background: transparent; border: none; padding: 0; margin-bottom: 8px;
+    font: inherit; cursor: pointer; color: var(--muted-foreground);
+    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
+  `);
+  const chevron = el("span", "display: inline-block; transition: transform 120ms; width: 10px;", "▸");
+  const titleSpan = el("span", "", "Activity");
+  const countBadge = el("span", `
+    margin-left: auto; padding: 1px 6px; border-radius: 999px;
+    background: var(--primary, #58a6ff); color: var(--primary-foreground, white);
+    font-size: 10px; font-weight: 600; letter-spacing: 0;
+    text-transform: none;
+  `);
+  countBadge.style.display = "none";
+  header.append(chevron, titleSpan, countBadge);
+  section.appendChild(header);
+
+  const body = el("div", "display: flex; flex-direction: column; gap: 4px;");
+  body.style.display = "none";
+  const empty = el("div", "font-size: 12px; color: var(--muted-foreground); font-style: italic;", "No activity yet.");
+  empty.style.display = "none";
+  body.appendChild(empty);
+  const list = el("div", "display: flex; flex-direction: column; gap: 2px;");
+  body.appendChild(list);
+  const moreBtn = el("button", `
+    align-self: flex-start; margin-top: 6px;
+    background: transparent; border: none; padding: 0;
+    font-size: 11px; color: var(--muted-foreground); cursor: pointer;
+  `);
+  moreBtn.style.display = "none";
+  body.appendChild(moreBtn);
+  section.appendChild(body);
+
+  // ── State ──────────────────────────────────────────────────────────────
+  let collapsed = readBool(ACTIVITY_COLLAPSED_KEY);
+  // Default to collapsed on first visit (no key set). readBool returns false
+  // for unset, which we want, so collapsed defaults to false ⇒ EXPANDED.
+  // Plan asks for collapsed by default; treat unset key as collapsed.
+  if (localStorage.getItem(ACTIVITY_COLLAPSED_KEY) === null) collapsed = true;
+  let expandedAll = false;
+  let events: TimelineEvent[] = [];
+  let unreadSinceCollapsed = 0;
+  let lastSeenId: string | null = null;
+
+  function applyCollapsedStyles(): void {
+    body.style.display = collapsed ? "none" : "flex";
+    chevron.style.transform = collapsed ? "rotate(0deg)" : "rotate(90deg)";
+    if (collapsed) {
+      countBadge.style.display = unreadSinceCollapsed > 0 ? "" : "none";
+      countBadge.textContent = unreadSinceCollapsed > 0 ? `${unreadSinceCollapsed} new` : "";
+    } else {
+      countBadge.style.display = "none";
+      unreadSinceCollapsed = 0;
+      lastSeenId = events.length ? events[events.length - 1].id : null;
+    }
+  }
+
+  header.onclick = () => {
+    collapsed = !collapsed;
+    writeBool(ACTIVITY_COLLAPSED_KEY, collapsed);
+    applyCollapsedStyles();
+    if (!collapsed) renderRows();
+  };
+
+  function buildRow(e: TimelineEvent): HTMLElement {
+    const row = el("div", `
+      display: flex; align-items: baseline; gap: 8px;
+      padding: 3px 0; font-size: 12px; color: var(--foreground);
+      border-bottom: 1px solid transparent;
+    `);
+    const time = el("span", "font-family: ui-monospace, monospace; color: var(--muted-foreground); flex-shrink: 0;", formatAbsoluteTime(e.timestamp));
+    const icon = el("span", "flex-shrink: 0; width: 16px; text-align: center;", e.icon);
+    const text = el("span", "flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;");
+    text.append(
+      el("span", "font-weight: 500;", e.subject),
+      document.createTextNode(" "),
+      el("span", "color: var(--muted-foreground);", e.verb),
+    );
+    if (e.entity_id) {
+      text.style.cursor = "pointer";
+      text.title = e.entity_id;
+      text.onclick = () => {
+        const state = entityCache.get(e.entity_id!);
+        if (state) showEntityDetail(state);
+      };
+    }
+    const rel = el("span", "color: var(--muted-foreground); font-size: 11px; flex-shrink: 0; min-width: 60px; text-align: right;", formatRelativeTime(Date.now() - e.timestamp));
+    rel.dataset.timestamp = String(e.timestamp);
+    row.append(time, icon, text);
+    if (e.via_agent) {
+      const bot = el("span", "color: var(--muted-foreground); font-size: 11px; flex-shrink: 0;", "🤖");
+      bot.title = "Action initiated by Castle agent";
+      row.appendChild(bot);
+    }
+    row.appendChild(rel);
+    return row;
+  }
+
+  function renderRows(): void {
+    list.innerHTML = "";
+    if (events.length === 0) {
+      empty.style.display = "block";
+      moreBtn.style.display = "none";
+      return;
+    }
+    empty.style.display = "none";
+
+    // Most-recent first.
+    const ordered = [...events].reverse();
+    const visible = expandedAll ? ordered : ordered.slice(0, ACTIVITY_INITIAL_VISIBLE);
+    for (const e of visible) list.appendChild(buildRow(e));
+
+    const remaining = ordered.length - visible.length;
+    if (remaining > 0 && !expandedAll) {
+      moreBtn.textContent = `⋯ show ${remaining} more`;
+      moreBtn.style.display = "";
+    } else if (expandedAll && ordered.length > ACTIVITY_INITIAL_VISIBLE) {
+      moreBtn.textContent = `show fewer`;
+      moreBtn.style.display = "";
+    } else {
+      moreBtn.style.display = "none";
+    }
+  }
+
+  moreBtn.onclick = () => {
+    expandedAll = !expandedAll;
+    renderRows();
+  };
+
+  function refreshRelative(): void {
+    if (collapsed) return;
+    const now = Date.now();
+    list.querySelectorAll<HTMLElement>("[data-timestamp]").forEach((el) => {
+      const ts = Number(el.dataset.timestamp);
+      if (Number.isFinite(ts)) el.textContent = formatRelativeTime(now - ts);
+    });
+  }
+
+  const tick = setInterval(refreshRelative, 30_000);
+
+  const unsub = entityCache.subscribeTimeline((next) => {
+    if (collapsed && lastSeenId !== null) {
+      // Count events strictly newer than lastSeenId.
+      let unread = 0;
+      for (let i = next.length - 1; i >= 0; i--) {
+        if (next[i].id === lastSeenId) break;
+        unread++;
+      }
+      unreadSinceCollapsed = unread;
+    } else if (collapsed) {
+      // First snapshot in collapsed state: don't claim anything is "new".
+      // The user can expand to see the backlog.
+      unreadSinceCollapsed = 0;
+      lastSeenId = next.length ? next[next.length - 1].id : null;
+    } else {
+      lastSeenId = next.length ? next[next.length - 1].id : null;
+    }
+    events = next;
+    if (!collapsed) renderRows();
+    applyCollapsedStyles();
+  });
+
+  applyCollapsedStyles();
+
+  return {
+    root: section,
+    dispose: () => {
+      clearInterval(tick);
+      unsub();
+    },
+  };
+}
+
 // ── Public entry point ────────────────────────────────────────────────────
 
 export interface DashboardHandle {
@@ -420,6 +627,9 @@ export function buildDashboard(agent: WebSocketRemoteAgent): DashboardHandle {
 
   const heading = el("div", "font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted-foreground); margin-bottom: 10px;", "Dashboard");
   root.appendChild(heading);
+
+  const activity = buildActivitySection();
+  root.appendChild(activity.root);
 
   // Favourites: full domain-tailored cards.
   const favSection = el("section", "margin-bottom: 18px;");

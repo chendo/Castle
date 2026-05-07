@@ -213,8 +213,18 @@ export class HAClient {
     console.log(`[ha] loaded ${this.states.size} entities`);
   }
 
-  private subscribeStateChanges(): Promise<unknown> {
-    return this.call({ type: "subscribe_events", event_type: "state_changed" });
+  private async subscribeStateChanges(): Promise<void> {
+    await this.call({ type: "subscribe_events", event_type: "state_changed" });
+    // Bus event subscriptions used by the activity timeline. Fail-soft: a token
+    // that lacks event-bus access shouldn't break the connection — log and move
+    // on so state_changed still flows.
+    for (const eventType of ["automation_triggered", "script_started"]) {
+      try {
+        await this.call({ type: "subscribe_events", event_type: eventType });
+      } catch (err) {
+        console.warn(`[ha] failed to subscribe to ${eventType}:`, (err as Error).message);
+      }
+    }
   }
 
   /**
@@ -222,10 +232,43 @@ export class HAClient {
    * internal state map is updated. Used by main.ts to fan out to WS clients.
    */
   private stateChangeListeners = new Set<(entityId: string, newState: HAState | null) => void>();
+  private stateTransitionListeners = new Set<(entityId: string, oldState: HAState | null, newState: HAState | null) => void>();
+  private busEventListeners = new Map<string, Set<(data: Record<string, unknown>, timeFired: string | undefined) => void>>();
 
   onStateChange(listener: (entityId: string, newState: HAState | null) => void): () => void {
     this.stateChangeListeners.add(listener);
     return () => { this.stateChangeListeners.delete(listener); };
+  }
+
+  /**
+   * Sibling of onStateChange that also delivers the previous HAState. Useful
+   * for consumers that need to detect transitions ("off → on") rather than
+   * "current value changed". Fired AFTER the internal state map updates, so
+   * `getState(id)` inside the callback returns `newState`.
+   */
+  onStateTransition(listener: (entityId: string, oldState: HAState | null, newState: HAState | null) => void): () => void {
+    this.stateTransitionListeners.add(listener);
+    return () => { this.stateTransitionListeners.delete(listener); };
+  }
+
+  /**
+   * Subscribe to a non-state HA bus event by type (automation_triggered,
+   * script_started, etc.). Listener gets the event's `data` payload and
+   * `time_fired` ISO string when present.
+   */
+  onBusEvent(eventType: string, listener: (data: Record<string, unknown>, timeFired: string | undefined) => void): () => void {
+    let bucket = this.busEventListeners.get(eventType);
+    if (!bucket) {
+      bucket = new Set();
+      this.busEventListeners.set(eventType, bucket);
+    }
+    bucket.add(listener);
+    return () => {
+      const b = this.busEventListeners.get(eventType);
+      if (!b) return;
+      b.delete(listener);
+      if (b.size === 0) this.busEventListeners.delete(eventType);
+    };
   }
 
   private connectionListeners = new Set<(connected: boolean) => void>();
@@ -241,7 +284,19 @@ export class HAClient {
   }
 
   private handleEvent(msg: EventMsg): void {
-    const { entity_id, new_state } = msg.event.data;
+    const eventType = msg.event.event_type;
+    if (eventType && eventType !== "state_changed") {
+      const bucket = this.busEventListeners.get(eventType);
+      if (!bucket) return;
+      const data = (msg.event.data ?? {}) as Record<string, unknown>;
+      for (const l of bucket) {
+        try { l(data, msg.event.time_fired); }
+        catch (err) { console.warn(`[ha] bus_event(${eventType}) listener threw:`, (err as Error).message); }
+      }
+      return;
+    }
+    const { entity_id, new_state, old_state } = msg.event.data;
+    if (typeof entity_id !== "string") return;
     if (new_state) this.states.set(entity_id, new_state);
     else this.states.delete(entity_id);
     // Notify listeners after the local map update so anyone reading from
@@ -249,6 +304,10 @@ export class HAClient {
     for (const l of this.stateChangeListeners) {
       try { l(entity_id, new_state ?? null); }
       catch (err) { console.warn("[ha] state_change listener threw:", (err as Error).message); }
+    }
+    for (const l of this.stateTransitionListeners) {
+      try { l(entity_id, old_state ?? null, new_state ?? null); }
+      catch (err) { console.warn("[ha] state_transition listener threw:", (err as Error).message); }
     }
   }
 
@@ -507,9 +566,17 @@ interface Result {
 
 interface EventMsg {
   event: {
+    event_type?: string;
+    time_fired?: string;
     data: {
-      entity_id: string;
-      new_state: HAState;
+      // state_changed shape — entity_id + new_state, plus old_state on
+      // every modern HA build.
+      entity_id?: string;
+      new_state?: HAState;
+      old_state?: HAState;
+      // Bus events (automation_triggered, script_started, etc.) carry
+      // free-form data; we narrow it at the call site.
+      [k: string]: unknown;
     };
   };
 }

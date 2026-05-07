@@ -5,11 +5,14 @@
 // entity cards rendered by ha_present_card, future widgets — can react
 // to the same stream without clobbering each other.
 
-import type { AreaInfo, EntityState, EntityStateChange, WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
+import type { AreaInfo, EntityState, EntityStateChange, TimelineEvent, WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
 
 type AnyListener = (states: EntityState[]) => void;
 type EntityListener = (s: EntityState | null) => void;
 type AreaListener = (areas: AreaInfo[]) => void;
+type TimelineListener = (events: TimelineEvent[]) => void;
+
+const TIMELINE_MAX = 200;
 
 export class EntityStateCache {
   private states = new Map<string, EntityState>();
@@ -17,6 +20,9 @@ export class EntityStateCache {
   private perEntity = new Map<string, Set<EntityListener>>();
   private areas: AreaInfo[] = [];
   private areaListeners = new Set<AreaListener>();
+  // Most-recent-last; trimmed to TIMELINE_MAX on append.
+  private timeline: TimelineEvent[] = [];
+  private timelineListeners = new Set<TimelineListener>();
 
   /** Wire the cache to the agent's WS frames. Replaces whatever single
    *  handler was previously assigned to onStatesSnapshot / onStateChange,
@@ -27,6 +33,20 @@ export class EntityStateCache {
     agent.onAreasSnapshot = (areas) => {
       this.areas = areas;
       for (const fn of this.areaListeners) fn(this.areas);
+    };
+    agent.onTimelineSnapshot = (events) => {
+      // Server returns oldest-first; the dashboard wants most-recent-first
+      // for rendering, but we keep the cache in chronological order so
+      // appends are always at the end. The dashboard does its own reverse.
+      this.timeline = events.slice(-TIMELINE_MAX);
+      this.notifyTimeline();
+    };
+    agent.onTimelineEvent = (event) => {
+      this.timeline.push(event);
+      if (this.timeline.length > TIMELINE_MAX) {
+        this.timeline.splice(0, this.timeline.length - TIMELINE_MAX);
+      }
+      this.notifyTimeline();
     };
   }
 
@@ -120,6 +140,25 @@ export class EntityStateCache {
     if (this.allListeners.size === 0) return;
     const snap = this.all();
     for (const fn of this.allListeners) fn(snap);
+  }
+
+  /** Snapshot of the activity timeline (chronological, oldest first). */
+  getTimeline(): TimelineEvent[] {
+    return [...this.timeline];
+  }
+
+  /** Subscribe to timeline updates. Fires immediately with the current
+   *  buffer (which may be empty pre-bootstrap) and on every change. */
+  subscribeTimeline(fn: TimelineListener): () => void {
+    this.timelineListeners.add(fn);
+    fn(this.getTimeline());
+    return () => { this.timelineListeners.delete(fn); };
+  }
+
+  private notifyTimeline(): void {
+    if (this.timelineListeners.size === 0) return;
+    const snap = this.getTimeline();
+    for (const fn of this.timelineListeners) fn(snap);
   }
 }
 

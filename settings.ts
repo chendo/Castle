@@ -21,6 +21,7 @@ export const ALL_TOOL_NAMES = [
   "ha_get_automation",
   "ha_update_automation",
   "ha_get_automation_trace",
+  "castle_timeline_mute",
 ] as const;
 export type ToolName = typeof ALL_TOOL_NAMES[number];
 
@@ -45,6 +46,7 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
   ha_get_automation: "fetch an automation's YAML config",
   ha_update_automation: "create or modify automations",
   ha_get_automation_trace: "inspect a recent automation run to see why it did or didn't fire",
+  castle_timeline_mute: "mute or unmute specific entities from the dashboard's Activity timeline (chatty entities the user explicitly wants hidden)",
 };
 
 export interface Settings {
@@ -65,6 +67,12 @@ export interface Settings {
    * deleted. Floored at 10 MiB; no upper bound.
    */
   conversationCapMb: number;
+  /**
+   * Entities the user doesn't want surfaced in the dashboard activity
+   * timeline. Set via `castle_timeline_mute` (agent tool). De-duplicated and
+   * filtered on save.
+   */
+  timelineMutes: string[];
 }
 
 // 64k chosen per the roadmap; modern open-weights models comfortably support it.
@@ -84,6 +92,7 @@ const DEFAULTS: Settings = {
   contextWindow: DEFAULT_CONTEXT_WINDOW,
   allowUnexposedWrites: false,
   conversationCapMb: DEFAULT_CONVERSATION_CAP_MB,
+  timelineMutes: [],
 };
 
 let cached: Settings | null = null;
@@ -104,11 +113,18 @@ function sanitize(s: Partial<Settings> | null | undefined): Settings {
   const conversationCapMb = Number.isFinite(capRaw) && capRaw >= MIN_CONVERSATION_CAP_MB
     ? Math.floor(capRaw)
     : DEFAULTS.conversationCapMb;
+  const rawMutes = Array.isArray(s?.timelineMutes) ? s!.timelineMutes : [];
+  const timelineMutes = [
+    ...new Set(
+      rawMutes.filter((id): id is string => typeof id === "string" && /^[a-z0-9_]+\.[a-z0-9_]+$/i.test(id)),
+    ),
+  ];
   return {
     enabledTools: filtered.length ? filtered : [...ALL_TOOL_NAMES],
     contextWindow,
     allowUnexposedWrites,
     conversationCapMb,
+    timelineMutes,
   };
 }
 
