@@ -18,18 +18,15 @@ import { WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
 import { ensureCollapsibleRenderer, registerHAToolRenderers } from "./HAToolRenderer";
 import { registerChartRenderer } from "./ChartRenderer";
 import { registerCameraRenderer } from "./CameraRenderer";
-import { buildTopbar } from "./Topbar";
 import { buildSidebar } from "./Sidebar";
 import { buildDashboard } from "./Dashboard";
-import { buildStarterPrompts } from "./StarterPrompts";
 import { openModelPickerDialog } from "./ModelPickerDialog";
-import { mountTimingHud } from "./TimingHud";
+import { buildShell } from "./Shell";
+import { entityCache } from "./EntityStateCache";
+import { tasksStore } from "./TasksStore";
 
 registerHAToolRenderers();
 registerChartRenderer();
-// registerCameraRenderer is called below, after the WebSocketRemoteAgent
-// exists — its PresentCardRenderer needs the agent + state cache to wire
-// interactive entity cards.
 
 const settings = new SettingsStore();
 const providerKeys = new ProviderKeysStore();
@@ -62,16 +59,9 @@ await providerKeys.set("local", "remote");
 const wsUrl = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
 const agent = new WebSocketRemoteAgent(wsUrl);
 
-// Wire the entity-state cache to the agent before any consumer subscribes.
-// Sidebar and the entity-card renderer both read from this cache so they
-// share one stream of state updates instead of fighting over the agent's
-// onStatesSnapshot/onStateChange handlers.
-import { entityCache } from "./EntityStateCache";
+// Wire the entity-state cache + tasks store to the agent before any consumer
+// subscribes. Both share a single stream of WS frames.
 entityCache.attachToAgent(agent);
-
-// Tasks store — same pattern as entityCache. Topbar chip + TasksDialog both
-// subscribe; the agent only routes the WS frames in.
-import { tasksStore } from "./TasksStore";
 tasksStore.attachToAgent(agent);
 
 // Now safe to register the camera/present-card renderer — it needs the
@@ -79,8 +69,6 @@ tasksStore.attachToAgent(agent);
 registerCameraRenderer({ agent, cache: entityCache });
 
 // Tools we don't have a bespoke widget for get a generic collapsed renderer.
-// Catch them both from the snapshot's tool list (covers the steady state) and
-// from tool execution events (covers anything new the agent surfaces mid-turn).
 agent.subscribe((event) => {
   if (event.type === "tool_execution_start" || event.type === "tool_execution_end") {
     ensureCollapsibleRenderer(event.toolName);
@@ -106,31 +94,9 @@ await chatPanel.setAgent(agent as any, {
   onModelSelect: () => openModelPickerDialog(agent),
 });
 
-const app = document.getElementById("app")!;
-app.style.display = "flex";
-app.style.flexDirection = "column";
-app.style.height = "100vh";
-
 const sidebar = buildSidebar(agent);
 const dashboard = buildDashboard(agent);
 
-const topbar = buildTopbar(agent, sidebar.toggle, dashboard.toggle);
-app.appendChild(topbar);
-
-const layout = document.createElement("div");
-layout.style.cssText = "flex: 1; min-height: 0; display: flex; overflow: hidden;";
-layout.appendChild(sidebar.root);
-layout.appendChild(dashboard.root);
-
-const chatWrap = document.createElement("div");
-// Pinned 480px-wide agent column on the right. The dashboard scroll-
-// stickies on its own; the chat panel remains the focused interaction
-// surface alongside it.
-chatWrap.style.cssText = "width: 480px; flex-shrink: 0; min-width: 0; min-height: 0; position: relative; display: flex; flex-direction: column; border-left: 1px solid var(--border);";
-chatWrap.appendChild(chatPanel);
-chatWrap.appendChild(buildStarterPrompts(agent));
-layout.appendChild(chatWrap);
-
-app.appendChild(layout);
-
-mountTimingHud(chatWrap, chatPanel);
+const app = document.getElementById("app")!;
+app.style.cssText = "display: flex; flex-direction: column; height: 100vh; height: 100dvh;";
+app.appendChild(buildShell({ agent, chatPanel, sidebar, dashboard }));

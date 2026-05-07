@@ -264,6 +264,15 @@ async function handler(req: Request): Promise<Response> {
   if (req.method === "GET") {
     const staticResponse = await serveStatic(url.pathname);
     if (staticResponse) return staticResponse;
+    // SPA fallback: any GET that didn't match a static file or another
+    // explicit route falls through to index.html so client-side routes
+    // like /chat, /dashboard work on hard reload + HA-card iframe embed.
+    // /ws and any path containing a dot are excluded so a missing asset
+    // still 404s instead of silently returning HTML.
+    if (url.pathname !== "/ws" && !url.pathname.includes(".")) {
+      const indexHtml = await serveStatic("/");
+      if (indexHtml) return indexHtml;
+    }
   }
 
   if (url.pathname === "/ws") {
