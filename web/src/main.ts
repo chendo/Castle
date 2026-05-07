@@ -69,6 +69,11 @@ const agent = new WebSocketRemoteAgent(wsUrl);
 import { entityCache } from "./EntityStateCache";
 entityCache.attachToAgent(agent);
 
+// Tasks store — same pattern as entityCache. Topbar chip + TasksDialog both
+// subscribe; the agent only routes the WS frames in.
+import { tasksStore } from "./TasksStore";
+tasksStore.attachToAgent(agent);
+
 // Now safe to register the camera/present-card renderer — it needs the
 // cache + the agent (for ha_call_service via /ws service_call).
 registerCameraRenderer({ agent, cache: entityCache });

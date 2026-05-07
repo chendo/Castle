@@ -72,6 +72,46 @@ export interface HealthSnapshot {
   llm_url: string;
 }
 
+export type TaskStatus = "watching" | "fired" | "expired" | "stopped" | "errored";
+
+export interface TaskNotificationWire {
+  summary: string;
+  confidence?: number;
+  ts: number;
+  observationId: string;
+  // deno-lint-ignore no-explicit-any
+  evidence?: any;
+}
+
+export interface TaskObservationWire {
+  id: string;
+  ts: number;
+  triggerKind: string;
+  framePaths: string[];
+  narrative: string;
+  decision: "wait" | "notify" | "error";
+  confidence?: number;
+  errorMessage?: string;
+}
+
+/** Wire shape from main.ts serializeTask — full observation history is omitted; ask the server if you want it. */
+export interface TaskWire {
+  id: string;
+  brief: string;
+  // deno-lint-ignore no-explicit-any
+  trigger: { kind: string; [k: string]: any };
+  context: { cameraFrames?: { entity: string; lastN: number }; parentThread?: boolean };
+  termination: { kind: string; ttlMs?: number };
+  status: TaskStatus;
+  notification?: TaskNotificationWire;
+  observationCount: number;
+  lastObservation?: TaskObservationWire;
+  cost: { fires: number; framesAnalyzed: number };
+  createdAt: number;
+  firedAt?: number;
+  expiresAt?: number;
+}
+
 type Frame =
   | { type: "snapshot"; state: any }
   | { type: "event"; event: AgentEvent }
@@ -88,6 +128,12 @@ type Frame =
   | { type: "session_resumed"; path: string }
   | { type: "session_deleted"; path: string }
   | { type: "service_call_ack"; id?: string; ok: boolean; error?: string }
+  | { type: "tasks_snapshot"; tasks: TaskWire[] }
+  | { type: "task_created"; task: TaskWire }
+  | { type: "task_updated"; task: TaskWire }
+  | { type: "task_deleted"; id: string }
+  | { type: "task_cancel_ack"; id: string; ok: boolean }
+  | { type: "task_delete_ack"; id: string; ok: boolean }
   | { type: "error"; message: string };
 
 /**
@@ -123,6 +169,13 @@ export class WebSocketRemoteAgent extends RemoteAgent {
   public onDeleteSession?: (path: string) => void;
   /** Most recent prompt-cache warmup (sent on hello and after every warm). */
   public onCacheWarmed?: (at: number, durationMs: number) => void;
+  /** Full snapshot of scheduled tasks pushed on hello + on explicit list. */
+  public onTasksSnapshot?: (tasks: TaskWire[]) => void;
+  /** Per-task lifecycle events streamed as the server emits them. */
+  public onTaskEvent?: (event:
+    | { type: "task_created"; task: TaskWire }
+    | { type: "task_updated"; task: TaskWire }
+    | { type: "task_deleted"; id: string }) => void;
   private catalogListeners = new Set<() => void>();
 
   /**
@@ -283,6 +336,14 @@ export class WebSocketRemoteAgent extends RemoteAgent {
           const resolver = this.serviceCallResolvers.get(frame.id);
           if (resolver) resolver(frame);
         }
+      } else if (frame.type === "tasks_snapshot") {
+        this.onTasksSnapshot?.(frame.tasks);
+      } else if (frame.type === "task_created" || frame.type === "task_updated") {
+        this.onTaskEvent?.(frame);
+      } else if (frame.type === "task_deleted") {
+        this.onTaskEvent?.(frame);
+      } else if (frame.type === "task_cancel_ack" || frame.type === "task_delete_ack") {
+        // No bespoke handler yet — UI re-renders from the broadcasted task_updated/task_deleted.
       } else if (frame.type === "error") {
         console.error("[ws] server error:", frame.message);
         this.onError?.(frame.message);

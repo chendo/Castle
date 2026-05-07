@@ -1,4 +1,6 @@
 import type { HealthSnapshot, WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
+import { tasksStore } from "./TasksStore";
+import { openTasksDialog } from "./TasksDialog";
 
 /**
  * Lightweight topbar above the dashboard / chat. Layout:
@@ -94,6 +96,33 @@ export function buildTopbar(
 
   const right = document.createElement("div");
   right.style.cssText = "display: flex; align-items: center; gap: 8px;";
+
+  // Tasks chip — visible only when there's something to show. Click → dialog.
+  const tasksChip = document.createElement("button");
+  tasksChip.style.cssText = `
+    display: none; align-items: center; gap: 6px;
+    padding: 3px 10px; font-size: 12px; cursor: pointer;
+    background: transparent; color: var(--foreground);
+    border: 1px solid var(--border); border-radius: 999px;
+    line-height: 1;
+  `;
+  tasksChip.title = "Scheduled tasks";
+  tasksChip.onclick = () => openTasksDialog(agent);
+  const renderChip = () => {
+    const list = tasksStore.list();
+    if (list.length === 0) {
+      tasksChip.style.display = "none";
+      return;
+    }
+    const active = tasksStore.activeCount();
+    const fired = list.filter((t) => t.status === "fired").length;
+    const dot = active > 0 ? `<span style="width:6px;height:6px;border-radius:50%;background:#10b981;display:inline-block;"></span>` : "";
+    const firedSuffix = fired > 0 ? ` · ${fired} fired` : "";
+    tasksChip.innerHTML = `${dot}<span>👁 ${active} watching${firedSuffix}</span>`;
+    tasksChip.style.display = "inline-flex";
+  };
+  tasksStore.subscribe(renderChip);
+  right.append(tasksChip);
 
   const warmBtn = document.createElement("button");
   warmBtn.textContent = "🔥 warm cache";
