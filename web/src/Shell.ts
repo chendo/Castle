@@ -10,7 +10,6 @@ import type { ChatPanel } from "@mariozechner/pi-web-ui";
 import type { SidebarHandle } from "./Sidebar";
 import type { DashboardHandle } from "./Dashboard";
 import type { WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
-import { buildStarterPrompts } from "./StarterPrompts";
 import { buildVoiceButton } from "./VoiceButton";
 import { tasksStore } from "./TasksStore";
 import { openTasksDialog } from "./TasksDialog";
@@ -143,8 +142,8 @@ export function buildShell({ agent, chatPanel, sidebar, dashboard }: ShellInputs
   // Route panes — only the active one is mounted.
   const nowPane = buildNowPane(agent);
   const dashPane = dashboard.root;
-  // Chat pane wraps ChatPanel + StarterPrompts + voice button.
-  const chatPane = buildChatPane(chatPanel, agent);
+  // Chat pane wraps ChatPanel + voice button.
+  const chatPane = buildChatPane(chatPanel);
 
   // Desktop pinned chat: same chat panel can't exist in two trees, so we
   // reparent on layout transitions. Simpler: only mount the chat pane in
@@ -303,14 +302,13 @@ function buildNowPane(agent: WebSocketRemoteAgent): HTMLElement {
   return pane;
 }
 
-function buildChatPane(chatPanel: ChatPanel, agent: WebSocketRemoteAgent): HTMLElement {
+function buildChatPane(chatPanel: ChatPanel): HTMLElement {
   const wrap = document.createElement("section");
   wrap.style.cssText = `
     flex: 1; min-width: 0; min-height: 0;
     display: flex; flex-direction: column; position: relative;
   `;
   wrap.appendChild(chatPanel as unknown as HTMLElement);
-  wrap.appendChild(buildStarterPrompts(agent));
 
   // Voice button — pinned bottom-right, above the chat input. UI stub.
   const voice = buildVoiceButton();
