@@ -248,6 +248,17 @@ function stableJsonStringify(v: unknown): string {
   return "{" + keys.map((k) => JSON.stringify(k) + ":" + stableJsonStringify(obj[k])).join(",") + "}";
 }
 
+/**
+ * Non-building accessor for the live session. Returns the in-flight session
+ * promise if one exists, or null when no session has been built. Callers that
+ * only want to peek (e.g. to abort a running turn from a WS close handler)
+ * should use this instead of `getAgentSession`, which lazily builds a fresh
+ * session on first call — wasteful if there's nothing to operate on.
+ */
+export function peekAgentSession(): Promise<AgentSession> | null {
+  return sessionPromise;
+}
+
 export function getAgentSession(ha: HAClient): Promise<AgentSession> {
   if (!sessionPromise) {
     sessionPromise = (async () => {

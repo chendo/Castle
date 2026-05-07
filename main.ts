@@ -9,6 +9,7 @@ import {
   listSessions,
   listUpstreamModels,
   newConversation,
+  peekAgentSession,
   recreateAgentSession,
   resumeSession,
   setActiveModel,
@@ -866,8 +867,34 @@ async function handleSocket(socket: WebSocket): Promise<void> {
     }
   };
 
-  socket.onclose = () => { sockets.delete(socket); };
-  socket.onerror = () => { sockets.delete(socket); };
+  socket.onclose = () => { sockets.delete(socket); abortIfOrphaned(); };
+  socket.onerror = () => { sockets.delete(socket); abortIfOrphaned(); };
+}
+
+/**
+ * If the last connected client just dropped while the agent is mid-stream,
+ * abort the in-flight run. Two reasons:
+ *  - Production: the user closed the only tab; pumping LLM tokens into the
+ *    void wastes their backend's GPU and runs up tokens nobody will read.
+ *  - Tests: shared.ts closes the WS on a per-test timeout. Without this hook,
+ *    the abandoned run's eventual `agent_end` lands on whichever WS the next
+ *    test opens, terminates that test with no tool calls, and cascades the
+ *    failure across the rest of the suite. (Diagnosed via integration runs
+ *    where one slow LLM turn poisoned every subsequent test.)
+ *
+ * Peeks rather than building a session so an idle server doesn't pay the
+ * lazy-build cost on every disconnect.
+ */
+function abortIfOrphaned(): void {
+  if (sockets.size > 0) return;
+  const live = peekAgentSession();
+  if (!live) return;
+  void live.then((session) => {
+    if (session.agent.state.isStreaming) {
+      console.log("[ws] last client disconnected mid-stream — aborting in-flight agent run");
+      session.agent.abort();
+    }
+  }).catch(() => { /* session never finished building — nothing to abort */ });
 }
 
 await writeModelsJson();
