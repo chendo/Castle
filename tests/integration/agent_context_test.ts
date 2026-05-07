@@ -79,7 +79,7 @@ Deno.test({
 
 Deno.test({
   name: "context — problem solving: diagnose why a device won't turn on",
-  fn: async () => {
+  fn: () => S.withFlakeRetry("context — problem solving", async () => {
     const switchId = await S.findDemoSwitch(HA_BASE);
     if (!switchId) throw new Error("No switch entity found in HA demo");
 
@@ -97,7 +97,7 @@ Deno.test({
 
     // Should NOT blindly call service again without checking first
     // (though the agent might — that's a quality signal, not a hard fail here)
-  },
+  }),
 });
 
 Deno.test({

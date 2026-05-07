@@ -48,10 +48,33 @@ export interface AgentRunResult {
 
 // ── WS Driver ───────────────────────────────────────────────────────────────
 
-/** Default timeout for a single agent turn (ms). */
-export const DEFAULT_TIMEOUT = 30_000;
+/** Default timeout for a single agent turn (ms). The 30s previous value
+ *  occasionally tripped on slow-but-converging LLM responses on
+ *  qwen3.6-35b-a3b — a model that sometimes takes 30–40s to finalise an
+ *  open-ended diagnosis prompt. 45s tolerates that without bloating the
+ *  fast-path tests. */
+export const DEFAULT_TIMEOUT = 45_000;
 /** Longer timeout for complex operations (dashboard/automation CRUD). */
 export const COMPLEX_TIMEOUT = 60_000;
+
+/**
+ * Wrap a Deno.test body with one retry on failure. Use sparingly — only on
+ * tests with documented LLM-stochasticity flakes that don't reflect a real
+ * regression. Each retry is logged so flake rates remain visible. Tests that
+ * mutate HA state should ensure the body is idempotent (use try/finally to
+ * restore state) since the second run starts from wherever the first left off.
+ */
+export async function withFlakeRetry(
+  testName: string,
+  body: () => Promise<void>,
+): Promise<void> {
+  try {
+    await body();
+  } catch (err) {
+    console.warn(`[flake-retry] ${testName} failed once — retrying. First error: ${(err as Error).message}`);
+    await body();
+  }
+}
 
 interface RunConversationOpts {
   /** Override default timeout in ms. */

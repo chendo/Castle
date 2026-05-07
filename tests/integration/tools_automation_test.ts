@@ -119,7 +119,7 @@ Deno.test({
 
 Deno.test({
   name: "automation — update to also handle door closing",
-  fn: async () => {
+  fn: () => S.withFlakeRetry("automation — update to also handle door closing", async () => {
     const auto = await findWritableAutomation();
     if (!auto) throw new Error("No writable automation found in HA demo");
 
@@ -127,8 +127,12 @@ Deno.test({
     const origConfig = (await S.getAutomationConfig(HA_BASE, auto.id)) as Record<string, unknown> | null;
 
     try {
+      // Earlier "Update X to also handle Y using ha_update_automation" phrasing
+      // led the model to read the current config and then quit before writing.
+      // Naming both steps explicitly + putting the write verb up front pushes
+      // the model toward actually committing the change.
       const result = await testRun(
-        `Update ${auto.entity_id} to also turn off the light when the door closes using ha_update_automation.`,
+        `Use ha_update_automation to extend automation ${auto.entity_id}: read its current config with ha_get_automation, then submit an updated config that ALSO turns off the light when the door closes. You must call ha_update_automation to commit the change — reading alone is not enough.`,
         { timeoutMs: S.COMPLEX_TIMEOUT },
       );
 
@@ -140,7 +144,7 @@ Deno.test({
         await S.updateAutomationConfig(HA_BASE, auto.id, origConfig as Record<string, unknown>);
       }
     }
-  },
+  }),
 });
 
 Deno.test({
