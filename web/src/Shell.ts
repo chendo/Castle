@@ -139,18 +139,22 @@ export function buildShell({ agent, chatPanel, dashboard }: ShellInputs): HTMLEl
     flex: 1; min-height: 0; display: flex; overflow: hidden;
   `;
 
-  // Route panes — only the active one is mounted.
+  // Route panes — only the active one is mounted into contentArea.
   const nowPane = buildNowPane(agent);
   const dashPane = dashboard.root;
-  // Chat pane wraps ChatPanel + voice button.
-  const chatPane = buildChatPane(chatPanel);
 
-  // Desktop pinned chat: same chat panel can't exist in two trees, so we
-  // reparent on layout transitions. Simpler: only mount the chat pane in
-  // the active route slot. Desktop "pinned chat" defers to v2.
+  // Stacked layout: contentArea (Now or Dashboard) on top, chatDock below.
+  // Desktop sees both at once on `/` and `/dashboard`; mobile sees only the
+  // routed pane unless the user explicitly navigates to `/chat`. The chat
+  // panel lives permanently inside chatDock so we never reparent it.
   const contentArea = document.createElement("div");
   contentArea.style.cssText = "flex: 1; min-width: 0; min-height: 0; display: flex;";
-  main.appendChild(contentArea);
+
+  const chatDock = buildChatDock(chatPanel);
+  // Subtle separator between dashboard and chat in desktop split mode.
+  chatDock.style.borderTop = "1px solid var(--border)";
+
+  main.append(contentArea, chatDock);
 
   // ── Bottom nav (mobile) ────────────────────────────────────────────────
   const bottomNav = document.createElement("nav");
@@ -190,7 +194,17 @@ export function buildShell({ agent, chatPanel, dashboard }: ShellInputs): HTMLEl
     closeDrawer();
   }
 
+  // Track viewport so render() can decide whether to show chat alongside
+  // the routed pane (desktop) or only on /chat (mobile).
+  const desktopMQ = matchMedia("(min-width: 768px)");
+  let isDesktop = desktopMQ.matches;
+  desktopMQ.addEventListener("change", (e) => {
+    isDesktop = e.matches;
+    render(resolveRoute());
+  });
+
   function render(route: Route): void {
+    // 1. Load the routed pane into contentArea (Now / Dashboard / nothing-on-chat).
     contentArea.innerHTML = "";
     if (route === "now") contentArea.appendChild(nowPane);
     else if (route === "dashboard") {
@@ -198,15 +212,40 @@ export function buildShell({ agent, chatPanel, dashboard }: ShellInputs): HTMLEl
       // baked into its root from a prior session; force-show it on mount.
       dashPane.style.display = "";
       contentArea.appendChild(dashPane);
-    } else contentArea.appendChild(chatPane);
+    }
+    // /chat: contentArea stays empty so the dock can take the full main column.
+
+    // 2. Layout: split-with-dock (desktop, non-chat) vs full-pane vs full-chat.
+    const embed = isEmbed() && route === "chat";
+    if (route === "chat") {
+      contentArea.style.display = "none";
+      chatDock.style.display = "flex";
+      chatDock.style.flex = "1";
+      chatDock.style.height = "auto";
+      chatDock.style.minHeight = "0";
+      chatDock.style.borderTop = "none";
+    } else if (isDesktop) {
+      contentArea.style.display = "flex";
+      contentArea.style.flex = "1 1 60%";
+      chatDock.style.display = "flex";
+      chatDock.style.flex = "0 0 40%";
+      chatDock.style.minHeight = "240px";
+      chatDock.style.height = "";
+      chatDock.style.borderTop = "1px solid var(--border)";
+    } else {
+      contentArea.style.display = "flex";
+      contentArea.style.flex = "1";
+      chatDock.style.display = "none";
+    }
+
     for (const btn of bottomNav.querySelectorAll<HTMLButtonElement>("button")) {
       const active = btn.dataset.route === route;
       btn.style.color = active ? "var(--primary, #58a6ff)" : "var(--muted-foreground)";
     }
-    // Hide everything but the chat pane when embedded for HA card use.
-    const embed = isEmbed() && route === "chat";
+
     topbar.style.display = embed ? "none" : "flex";
-    bottomNav.style.display = embed ? "none" : "flex";
+    // Bottom nav is mobile-only navigation — desktop uses the AppMenu drawer.
+    bottomNav.style.display = embed || isDesktop ? "none" : "flex";
   }
 
   globalThis.addEventListener("popstate", () => render(resolveRoute()));
@@ -302,11 +341,12 @@ function buildNowPane(agent: WebSocketRemoteAgent): HTMLElement {
   return pane;
 }
 
-function buildChatPane(chatPanel: ChatPanel): HTMLElement {
+function buildChatDock(chatPanel: ChatPanel): HTMLElement {
   const wrap = document.createElement("section");
   wrap.style.cssText = `
-    flex: 1; min-width: 0; min-height: 0;
+    min-width: 0; min-height: 0;
     display: flex; flex-direction: column; position: relative;
+    background: var(--background);
   `;
   wrap.appendChild(chatPanel as unknown as HTMLElement);
 
