@@ -1,13 +1,23 @@
 // Integration tests: camera operations — snapshot capture, live feed display,
 // and context-based entity reference resolution.
 
-import { assert as _assert, assertEquals } from "jsr:@std/assert@1";
+import { assert as _assert, assertEquals as _assertEquals } from "jsr:@std/assert@1";
 import * as S from "./shared.ts";
 
 const HA_BASE = S.getHaBaseUrl();
 
 async function testRun(prompt: string, opts?: { timeoutMs?: number }) {
   return S.runConversation(prompt, opts);
+}
+
+/** True when the call targets the given camera, whether the agent passed
+ *  `entity_id` (ha_get_camera_snapshot) or `entity_ids: string[]` (ha_present_card). */
+function targetsCamera(args: Record<string, unknown> | null, cameraId: string): boolean {
+  if (!args) return false;
+  if (typeof args.entity_id === "string" && args.entity_id === cameraId) return true;
+  const ids = args.entity_ids;
+  if (Array.isArray(ids) && ids.includes(cameraId)) return true;
+  return false;
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -26,8 +36,8 @@ Deno.test({
     // as the agent targeted the right camera and the call succeeded.
     const call = S.assertOneOfToolsCalled(
       result,
-      ["ha_get_camera_snapshot", "ha_show_camera"],
-      (args) => String(args?.entity_id ?? "") === cameraId,
+      ["ha_get_camera_snapshot", "ha_present_card"],
+      (args) => targetsCamera(args, cameraId),
     );
     S.assertToolSucceeded(result, call.toolCallId);
 
@@ -43,13 +53,13 @@ Deno.test({
     if (!cameraId) throw new Error("No camera entity found in HA demo");
 
     const result = await testRun(
-      `Show me the live camera feed from ${cameraId} using ha_show_camera.`,
+      `Show me the live camera feed from ${cameraId} using ha_present_card.`,
     );
 
     S.assertOneOfToolsCalled(
       result,
-      ["ha_show_camera", "ha_get_camera_snapshot"],
-      (args) => String(args?.entity_id ?? "") === cameraId,
+      ["ha_present_card", "ha_get_camera_snapshot"],
+      (args) => targetsCamera(args, cameraId),
     );
   },
 });
@@ -67,13 +77,13 @@ Deno.test({
     // establishing it in a prior session.
 
     const result = await testRun(
-      `Take a snapshot from ${cameraId}. Now show me the live feed from the same camera using ha_show_camera.`,
+      `Take a snapshot from ${cameraId}. Now show me the live feed from the same camera using ha_present_card.`,
     );
 
     // The agent should produce at least two camera-tool calls targeting the
     // same entity; either tool counts since the model treats them as a pair.
     const cameraCalls = result.toolCalls.filter((tc) =>
-      tc.toolName === "ha_get_camera_snapshot" || tc.toolName === "ha_show_camera"
+      tc.toolName === "ha_get_camera_snapshot" || tc.toolName === "ha_present_card"
     );
     if (cameraCalls.length < 2) {
       throw new Error(
@@ -81,7 +91,11 @@ Deno.test({
       );
     }
     for (const c of cameraCalls) {
-      assertEquals(c.args?.entity_id, cameraId);
+      if (!targetsCamera(c.args, cameraId)) {
+        throw new Error(
+          `Expected ${c.toolName} to target ${cameraId}, got args: ${JSON.stringify(c.args)}`,
+        );
+      }
     }
   },
 });
@@ -101,8 +115,12 @@ Deno.test({
 
     S.assertOneOfToolsCalled(
       result,
-      ["ha_get_camera_snapshot", "ha_show_camera"],
-      (args) => typeof args?.entity_id === "string" && args.entity_id.startsWith("camera."),
+      ["ha_get_camera_snapshot", "ha_present_card"],
+      (args) => {
+        if (typeof args?.entity_id === "string" && args.entity_id.startsWith("camera.")) return true;
+        const ids = args?.entity_ids;
+        return Array.isArray(ids) && ids.some((id) => typeof id === "string" && id.startsWith("camera."));
+      },
     );
   },
 });

@@ -15,6 +15,16 @@ async function testRun(prompt: string, opts?: { timeoutMs?: number }) {
   return result;
 }
 
+/** True when the call targets the given camera, whether the agent passed
+ *  `entity_id` (ha_get_camera_snapshot) or `entity_ids: string[]` (ha_present_card). */
+function targetsCamera(args: Record<string, unknown> | null, cameraId: string): boolean {
+  if (!args) return false;
+  if (typeof args.entity_id === "string" && args.entity_id === cameraId) return true;
+  const ids = args.entity_ids;
+  if (Array.isArray(ids) && ids.includes(cameraId)) return true;
+  return false;
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 Deno.test({
@@ -188,26 +198,26 @@ Deno.test({
 
     S.assertOneOfToolsCalled(
       result,
-      ["ha_get_camera_snapshot", "ha_show_camera"],
-      (args) => String(args?.entity_id ?? "") === cameraId,
+      ["ha_get_camera_snapshot", "ha_present_card"],
+      (args) => targetsCamera(args, cameraId),
     );
   },
 });
 
 Deno.test({
-  name: "ha_show_camera — show live feed",
+  name: "ha_present_card — show live feed",
   fn: async () => {
     const cameraId = await S.findDemoCamera(HA_BASE);
     if (!cameraId) throw new Error("No camera entity found in HA demo");
 
     const result = await testRun(
-      `Show me the live camera feed from ${cameraId} using ha_show_camera.`,
+      `Show me the live camera feed from ${cameraId} using ha_present_card.`,
     );
 
     S.assertOneOfToolsCalled(
       result,
-      ["ha_show_camera", "ha_get_camera_snapshot"],
-      (args) => String(args?.entity_id ?? "") === cameraId,
+      ["ha_present_card", "ha_get_camera_snapshot"],
+      (args) => targetsCamera(args, cameraId),
     );
   },
 });

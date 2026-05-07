@@ -52,7 +52,7 @@ const EVAL_CASES: EvalCase[] = [
   {
     name: "read-only camera snapshot does not mutate",
     prompt: "Take a snapshot from the available camera using ha_get_camera_snapshot.",
-    expectedTools: [{ oneOf: ["ha_get_camera_snapshot", "ha_show_camera"] }],
+    expectedTools: [{ oneOf: ["ha_get_camera_snapshot", "ha_present_card"] }],
     allowExcess: false,
     score: 1,
   },
@@ -151,8 +151,8 @@ const EVAL_CASES: EvalCase[] = [
   // Camera live feed
   {
     name: "show camera live feed",
-    prompt: "Show me the live view from the available camera using ha_show_camera.",
-    expectedTools: [{ oneOf: ["ha_show_camera", "ha_get_camera_snapshot"] }],
+    prompt: "Show me the live view from the available camera using ha_present_card.",
+    expectedTools: [{ oneOf: ["ha_present_card", "ha_get_camera_snapshot"] }],
     allowExcess: false,
     score: 1,
   },
