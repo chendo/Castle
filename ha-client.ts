@@ -215,15 +215,39 @@ export class HAClient {
 
   private async subscribeStateChanges(): Promise<void> {
     await this.call({ type: "subscribe_events", event_type: "state_changed" });
-    // Bus event subscriptions used by the activity timeline. Fail-soft: a token
-    // that lacks event-bus access shouldn't break the connection — log and move
-    // on so state_changed still flows.
-    for (const eventType of ["automation_triggered", "script_started"]) {
+    // Bus event subscriptions: built-in (timeline) plus anything callers
+    // requested at runtime via subscribeEventType. Fail-soft: a token that
+    // lacks event-bus access shouldn't break the connection.
+    this.busSubscriptions.add("automation_triggered");
+    this.busSubscriptions.add("script_started");
+    for (const eventType of this.busSubscriptions) {
       try {
         await this.call({ type: "subscribe_events", event_type: eventType });
       } catch (err) {
         console.warn(`[ha] failed to subscribe to ${eventType}:`, (err as Error).message);
       }
+    }
+  }
+
+  // Tracks every event type we've been asked to subscribe to. Re-applied on
+  // every reconnect so dynamic subscriptions (e.g. zha_event for task triggers
+  // added at runtime) survive HA disconnects.
+  private busSubscriptions = new Set<string>();
+
+  /**
+   * Subscribe to an HA bus event type at runtime. Idempotent — repeated calls
+   * for the same type are no-ops. Sends the upstream subscribe call only if
+   * we're currently connected; on reconnect, every tracked type is re-subscribed.
+   */
+  async subscribeEventType(eventType: string): Promise<void> {
+    if (eventType === "state_changed") return; // covered by subscribeStateChanges
+    if (this.busSubscriptions.has(eventType)) return;
+    this.busSubscriptions.add(eventType);
+    if (!this._connected) return;
+    try {
+      await this.call({ type: "subscribe_events", event_type: eventType });
+    } catch (err) {
+      console.warn(`[ha] failed to subscribe to ${eventType}:`, (err as Error).message);
     }
   }
 
