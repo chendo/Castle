@@ -464,6 +464,7 @@ function serializeTask(t: Task) {
     createdAt: t.createdAt,
     firedAt: t.firedAt,
     expiresAt: t.expiresAt,
+    minIntervalMs: t.minIntervalMs,
   };
 }
 

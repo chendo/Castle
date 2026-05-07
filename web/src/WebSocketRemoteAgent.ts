@@ -110,6 +110,7 @@ export interface TaskWire {
   createdAt: number;
   firedAt?: number;
   expiresAt?: number;
+  minIntervalMs: number;
 }
 
 type Frame =

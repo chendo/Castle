@@ -418,7 +418,11 @@ export function getAgentSession(ha: HAClient): Promise<AgentSession> {
           hour12: false,
         });
 
-        const append = `\n\nCurrent time: ${now} (${tz})`;
+        // Epoch ms is included alongside the human-readable form because LLMs
+        // are reliably bad at computing it manually — the 35B-class model in
+        // local testing burned a full minute counting days from 1970 trying to
+        // resolve "5 minutes from now" for schedule_task.
+        const append = `\n\nCurrent time: ${now} (${tz}) [epoch ms: ${Date.now()}]`;
         const lastUser = messages[lastUserIdx] as { role: "user"; content: any; timestamp: number };
         const newContent = typeof lastUser.content === "string"
           ? lastUser.content + append

@@ -80,11 +80,16 @@ export interface Task {
   ttlAfterFireMs: number;
   /** Cap on observations kept in memory + on disk. */
   maxObservations: number;
+  /** Minimum gap between fires regardless of trigger cadence. Coalesces a
+   *  flapping sensor / chatty event into one fire per window; the latest
+   *  hint wins. Default 5s. */
+  minIntervalMs: number;
 }
 
 const DEFAULT_TTL_AFTER_FIRE_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_MAX_OBSERVATIONS = 50;
 const MIN_INTERVAL_MS = 5_000;
+const DEFAULT_MIN_FIRE_INTERVAL_MS = 5_000;
 
 // ---------------------------------------------------------------------------
 // Validation
@@ -97,8 +102,15 @@ function validateTrigger(t: unknown): Trigger {
   if (!isPlainObject(t)) throw new Error("trigger must be an object");
   const kind = t.kind;
   if (kind === "at") {
+    // Accept either an absolute epoch ms (`ts`) or a relative offset from
+    // now (`delayMs`). LLMs are reliably bad at computing epoch ms by hand,
+    // so delayMs lets the agent pass "5 minutes from now" as 300_000 and
+    // we resolve it server-side.
+    if (typeof t.delayMs === "number" && Number.isFinite(t.delayMs) && t.delayMs >= 0) {
+      return { kind, ts: Date.now() + Math.floor(t.delayMs) };
+    }
     const ts = Number(t.ts);
-    if (!Number.isFinite(ts)) throw new Error("trigger.at: ts (epoch ms) required");
+    if (!Number.isFinite(ts)) throw new Error("trigger.at: ts (epoch ms) or delayMs (ms from now) required");
     return { kind, ts };
   }
   if (kind === "every") {
@@ -175,6 +187,7 @@ export interface TaskSpec {
   parentSessionId?: string;
   ttlAfterFireMs?: number;
   maxObservations?: number;
+  minIntervalMs?: number;
 }
 
 export function validateTaskSpec(spec: TaskSpec): {
@@ -185,6 +198,7 @@ export function validateTaskSpec(spec: TaskSpec): {
   parentSessionId?: string;
   ttlAfterFireMs: number;
   maxObservations: number;
+  minIntervalMs: number;
 } {
   if (typeof spec.brief !== "string" || spec.brief.trim().length === 0) {
     throw new Error("brief required");
@@ -197,6 +211,8 @@ export function validateTaskSpec(spec: TaskSpec): {
     ? Math.floor(spec.ttlAfterFireMs) : DEFAULT_TTL_AFTER_FIRE_MS;
   const maxObservations = typeof spec.maxObservations === "number" && spec.maxObservations > 1
     ? Math.floor(spec.maxObservations) : DEFAULT_MAX_OBSERVATIONS;
+  const minIntervalMs = typeof spec.minIntervalMs === "number" && spec.minIntervalMs >= 0
+    ? Math.floor(spec.minIntervalMs) : DEFAULT_MIN_FIRE_INTERVAL_MS;
   return {
     brief: spec.brief.trim(),
     trigger,
@@ -205,6 +221,7 @@ export function validateTaskSpec(spec: TaskSpec): {
     parentSessionId: typeof spec.parentSessionId === "string" ? spec.parentSessionId : undefined,
     ttlAfterFireMs,
     maxObservations,
+    minIntervalMs,
   };
 }
 
@@ -283,7 +300,16 @@ export class TasksManager {
   private tasks = new Map<string, Task>();
   private triggers = new Map<string, () => void>();
   private listeners = new Set<(e: TaskEvent) => void>();
+  // Tasks with an in-flight fire — second-place triggers go to `pending` instead.
   private firing = new Set<string>();
+  // task id → most-recent trigger hint dropped while firing or throttled. The
+  // in-flight (or throttle-window) fire reads + clears this when it finishes,
+  // so a flapping sensor coalesces to one extra fire instead of N.
+  private pending = new Map<string, string>();
+  // task id → wall-clock ts of last fire start. Used to enforce minIntervalMs.
+  private lastFireAt = new Map<string, number>();
+  // Pending throttle re-arm timers so cancel() can clear them.
+  private throttleTimers = new Map<string, number>();
   private booted = false;
 
   constructor(private ha: HAClient) {}
@@ -360,6 +386,7 @@ export class TasksManager {
       createdAt: Date.now(),
       ttlAfterFireMs: v.ttlAfterFireMs,
       maxObservations: v.maxObservations,
+      minIntervalMs: v.minIntervalMs,
       expiresAt: v.termination.kind === "expires" ? Date.now() + v.termination.ttlMs : undefined,
     };
     await writeTaskFile(task);
@@ -460,17 +487,48 @@ export class TasksManager {
       t();
       this.triggers.delete(id);
     }
+    const throttle = this.throttleTimers.get(id);
+    if (throttle !== undefined) {
+      clearTimeout(throttle);
+      this.throttleTimers.delete(id);
+    }
+    this.pending.delete(id);
   }
 
   private async handleTrigger(id: string, hint: string): Promise<void> {
     const task = this.tasks.get(id);
     if (!task || task.status !== "watching") return;
+
+    // 1. Already firing — coalesce. The post-fire hook will re-enter with the
+    //    latest hint; intermediate triggers are dropped on purpose because
+    //    fireTask() captures fresh frames anyway.
     if (this.firing.has(id)) {
-      // Drop overlapping fires — the next trigger tick will catch up. Avoids
-      // pile-ups when LLM latency exceeds tick interval.
+      this.pending.set(id, hint);
       return;
     }
+
+    // 2. Throttle: enforce a min gap between fires. A flapping gate sensor
+    //    might hit this 50× in a second; we coalesce all of them into one
+    //    fire scheduled at (lastFire + minInterval). Latest hint wins.
+    const sinceLast = Date.now() - (this.lastFireAt.get(id) ?? 0);
+    if (sinceLast < task.minIntervalMs) {
+      this.pending.set(id, hint);
+      if (!this.throttleTimers.has(id)) {
+        const wait = task.minIntervalMs - sinceLast;
+        const handle = setTimeout(() => {
+          this.throttleTimers.delete(id);
+          const queued = this.pending.get(id);
+          if (queued === undefined) return;
+          this.pending.delete(id);
+          void this.handleTrigger(id, queued);
+        }, wait);
+        this.throttleTimers.set(id, handle);
+      }
+      return;
+    }
+
     this.firing.add(id);
+    this.lastFireAt.set(id, Date.now());
     try {
       const outcome = await fireTask(task, hint, this.ha);
       await this.applyOutcome(task, outcome);
@@ -491,6 +549,13 @@ export class TasksManager {
       this.emit({ type: "task_updated", task });
     } finally {
       this.firing.delete(id);
+      // A trigger landed during the fire — re-enter once with the latest
+      // hint. The throttle check inside will defer it if we're still hot.
+      const queued = this.pending.get(id);
+      if (queued !== undefined && this.tasks.get(id)?.status === "watching") {
+        this.pending.delete(id);
+        queueMicrotask(() => void this.handleTrigger(id, queued));
+      }
     }
   }
 

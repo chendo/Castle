@@ -143,6 +143,10 @@ async function askDecision(task: Task, freshFrames: CapturedFrame[], triggerKind
   const systemPrompt = buildSystemPrompt(task);
   const userContent = buildUserContent(task, narrativeLog, triggerKind, olderImages, freshFrames);
 
+  // json_schema is the modern OpenAI-compat shape and what LM Studio expects.
+  // Older `json_object` returns 400 from LM Studio. Schema is permissive so a
+  // strict implementation still accepts it; parseDecision is the source of
+  // truth for output validation.
   const body = {
     model: modelId,
     messages: [
@@ -151,7 +155,25 @@ async function askDecision(task: Task, freshFrames: CapturedFrame[], triggerKind
     ],
     temperature: 0.2,
     max_tokens: 800,
-    response_format: { type: "json_object" } as Record<string, unknown>,
+    response_format: {
+      type: "json_schema",
+      json_schema: {
+        name: "watcher_decision",
+        schema: {
+          type: "object",
+          properties: {
+            decision: { type: "string", enum: ["wait", "notify"] },
+            narrative: { type: "string" },
+            confidence: { type: "number" },
+            notify: {
+              type: "object",
+              properties: { summary: { type: "string" } },
+            },
+          },
+          required: ["decision", "narrative"],
+        },
+      },
+    } as Record<string, unknown>,
   };
 
   const headers: Record<string, string> = { "Content-Type": "application/json" };

@@ -12,6 +12,44 @@ Deno.test("validateTaskSpec — accepts a minimal at-trigger reminder", () => {
   assertEquals(out.context, {});
 });
 
+Deno.test("validateTaskSpec — at trigger accepts delayMs and resolves to ts", () => {
+  const before = Date.now();
+  const out = validateTaskSpec({
+    brief: "remind me",
+    trigger: { kind: "at", delayMs: 300_000 },
+  });
+  const after = Date.now();
+  if (out.trigger.kind !== "at") throw new Error("kind");
+  // ts should be ~now + 300_000, within the validation window.
+  if (out.trigger.ts < before + 300_000) throw new Error(`ts too small: ${out.trigger.ts}`);
+  if (out.trigger.ts > after + 300_000) throw new Error(`ts too large: ${out.trigger.ts}`);
+});
+
+Deno.test("validateTaskSpec — at trigger requires ts or delayMs", () => {
+  assertThrows(
+    () => validateTaskSpec({ brief: "x", trigger: { kind: "at" } }),
+    Error,
+    "ts (epoch ms) or delayMs",
+  );
+});
+
+Deno.test("validateTaskSpec — minIntervalMs defaults to 5s", () => {
+  const out = validateTaskSpec({
+    brief: "x",
+    trigger: { kind: "every", intervalMs: 60_000 },
+  });
+  assertEquals(out.minIntervalMs, 5_000);
+});
+
+Deno.test("validateTaskSpec — minIntervalMs honours override", () => {
+  const out = validateTaskSpec({
+    brief: "x",
+    trigger: { kind: "every", intervalMs: 60_000 },
+    minIntervalMs: 30_000,
+  });
+  assertEquals(out.minIntervalMs, 30_000);
+});
+
 Deno.test("validateTaskSpec — every with floor", () => {
   assertThrows(
     () => validateTaskSpec({ brief: "x", trigger: { kind: "every", intervalMs: 100 } }),

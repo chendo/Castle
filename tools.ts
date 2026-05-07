@@ -2198,7 +2198,7 @@ export function buildTools(
       description: `Set up a task that fires on a trigger and may notify the user back via the conversation. Use for reminders ("at 5pm…"), recurring checks ("every morning…"), and event-driven watches ("when the gate opens…", "when a delivery arrives at the front door").
 
 Trigger shapes (pass under \`trigger\`):
-- One-shot at a wall-clock moment: { kind: "at", ts: <epoch_ms> }
+- One-shot at a wall-clock moment: { kind: "at", ts: <epoch_ms> } OR, much easier, { kind: "at", delayMs: <ms_from_now> } — for "5 minutes from now" pass delayMs: 300000 and the server resolves the timestamp; epoch arithmetic is error-prone, prefer delayMs.
 - Recurring tick: { kind: "every", intervalMs: <ms, ≥ 5000> }
 - React to an entity state change: { kind: "on_state", entity: "binary_sensor.gate", to?: "on", from?: "off" }
 - React to a non-state HA bus event: { kind: "on_event", eventType: "zha_event", dataMatch?: { command: "double" } }
