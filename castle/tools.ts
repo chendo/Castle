@@ -1354,7 +1354,7 @@ export function buildTools(
     return targets.filter((id) => !ha.isExposed(id));
   }
 
-  const REFUSAL_HINT = `Refused: not allowed to control non-exposed entities. The user can flip "Allow agent to control non-exposed entities" in Settings if this is intentional.`;
+  const REFUSAL_HINT = `Refused: not allowed to control non-exposed entities. To proceed, the user can either (a) expose the entity to assistants in Home Assistant (Settings → Voice assistants → Expose), or (b) flip "Allow agent to control non-exposed entities" in Castle's Settings dialog. Stop and ask which they'd like to do — don't retry until one of the two is in place.`;
   return [
     {
       name: "ha_call_service",
