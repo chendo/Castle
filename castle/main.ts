@@ -27,20 +27,66 @@ import { parseChartHistory } from "./tools.ts";
 import { ALL_TOOL_NAMES, loadSettings, saveSettings, TOOL_DESCRIPTIONS, type ToolName } from "./settings.ts";
 import { DATA_DIR } from "./paths.ts";
 
-// Home Assistant add-on hand-off: when running under Supervisor, the
-// SUPERVISOR_TOKEN env var is auto-injected and `http://supervisor/core` is
-// the canonical route to HA. Honour that automatically so add-on users don't
-// need to mint a long-lived access token by hand. Explicit HA_URL / HA_TOKEN
-// still win for users who want to point at a different HA instance.
+// Home Assistant connection mode resolution.
+//
+// Two ways Castle reaches HA:
+//
+//  1. **Supervisor proxy** (the default when running as an add-on). HA
+//     Supervisor injects `SUPERVISOR_TOKEN` and exposes the HA APIs at
+//     `http://supervisor/core/...` (REST) and `ws://supervisor/core/websocket`
+//     (WebSocket — note: NO `/api/` segment, the proxy mounts the WS at a
+//     different path than HA Core's own `/api/websocket`).
+//
+//  2. **Explicit endpoint** when the user wants to point Castle at a
+//     specific HA instance (a different host, or a dev compose run with no
+//     Supervisor). Requires both `HA_URL` and `HA_TOKEN`.
+//
+// User-set values always win. We treat HA_URL *or* HA_TOKEN being set as
+// "user has opinions" — partial overrides under Supervisor mix the proxy URL
+// with a user token (or vice versa) and never work, so warn loudly.
 const SUPERVISOR_TOKEN = Deno.env.get("SUPERVISOR_TOKEN") ?? "";
-const HA_URL = Deno.env.get("HA_URL") ?? (SUPERVISOR_TOKEN ? "http://supervisor/core" : "http://homeassistant.local:8123");
-const HA_TOKEN = Deno.env.get("HA_TOKEN") || SUPERVISOR_TOKEN;
+const ENV_HA_URL = (Deno.env.get("HA_URL") ?? "").trim();
+const ENV_HA_TOKEN = (Deno.env.get("HA_TOKEN") ?? "").trim();
+const USER_SET_HA = Boolean(ENV_HA_URL || ENV_HA_TOKEN);
+
+let HA_URL: string;
+let HA_TOKEN: string;
+let HA_WS_URL: string | undefined;
+
+if (USER_SET_HA) {
+  HA_URL = ENV_HA_URL || "http://homeassistant.local:8123";
+  HA_TOKEN = ENV_HA_TOKEN;
+  HA_WS_URL = undefined;
+  if (SUPERVISOR_TOKEN) {
+    console.log("[castle] HA_URL/HA_TOKEN set — bypassing Supervisor proxy");
+  }
+  if (!ENV_HA_TOKEN) {
+    console.warn("[castle] HA_URL set but HA_TOKEN empty — auth will fail");
+  } else if (!ENV_HA_URL) {
+    console.warn("[castle] HA_TOKEN set but HA_URL empty — defaulting to homeassistant.local:8123");
+  }
+} else if (SUPERVISOR_TOKEN) {
+  // Supervisor proxy. The proxy mounts the WebSocket at /core/websocket
+  // (no /api/), not at /core/api/websocket — different from HA Core's native
+  // endpoint, even though /core/api/* otherwise passes through to HA Core.
+  HA_URL = "http://supervisor/core";
+  HA_TOKEN = SUPERVISOR_TOKEN;
+  HA_WS_URL = "ws://supervisor/core/websocket";
+  console.log("[castle] using Supervisor proxy for HA");
+} else {
+  // No Supervisor, no overrides. Most likely a dev-compose boot before .env
+  // is filled in — let the HA client fail loudly so the user notices.
+  HA_URL = "http://homeassistant.local:8123";
+  HA_TOKEN = "";
+  HA_WS_URL = undefined;
+}
+
 const PORT = Number(Deno.env.get("PORT") ?? "7090");
 // CASTLE_AUTH_TOKEN gates the WS/HTTP endpoints for standalone deploys. Under
 // HA ingress, Supervisor already auth-walls the iframe — skip the token check.
 const AUTH_TOKEN = SUPERVISOR_TOKEN ? "" : (Deno.env.get("CASTLE_AUTH_TOKEN") ?? "");
 
-const ha = new HAClient(HA_URL, HA_TOKEN);
+const ha = new HAClient(HA_URL, HA_TOKEN, HA_WS_URL);
 const tasks = new TasksManager(ha);
 setTasksSingleton(tasks);
 const recentEntities = new RecentEntitiesManager();

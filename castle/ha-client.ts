@@ -67,7 +67,17 @@ export class HAClient {
   private readonly maxReconnectDelay = 5 * 60 * 1_000;
   private shutdownRequested = false;
 
-  constructor(private url: string, private token: string) {}
+  /**
+   * @param url Base URL of HA (or the Supervisor proxy root, e.g.
+   *   `http://supervisor/core`). Used for REST calls — `<url>/api/...`.
+   * @param token Bearer token. Long-lived access token for direct HA, or the
+   *   Supervisor-issued SUPERVISOR_TOKEN when going through `/core/`.
+   * @param wsUrl Explicit WebSocket URL. Optional — defaults to
+   *   `<url>/api/websocket`. The Supervisor proxy exposes the WS at a
+   *   different path (`ws://supervisor/core/websocket`, no `/api/`), so the
+   *   caller passes that in when running as an add-on.
+   */
+  constructor(private url: string, private token: string, private wsUrl?: string) {}
 
   /**
    * Kick off the connection loop. Returns once the FIRST attempt has settled
@@ -144,7 +154,7 @@ export class HAClient {
   }
 
   private connectOnce(): Promise<void> {
-    const wsUrl = this.url.replace(/^http/, "ws").replace(/\/?$/, "") + "/api/websocket";
+    const wsUrl = this.wsUrl ?? (this.url.replace(/^http/, "ws").replace(/\/?$/, "") + "/api/websocket");
     console.log(`[ha] connecting to ${wsUrl}`);
 
     return new Promise<void>((resolve, reject) => {
