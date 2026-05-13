@@ -581,6 +581,26 @@ export async function updateAutomationConfig(
   }
 }
 
+/** Delete an automation via HA REST API. Used to clean up automations a test
+ *  created (e.g. via ha_create_automation). Tolerant of a 404 — the test may
+ *  have failed before the create landed. */
+export async function deleteAutomationConfig(
+  haBaseUrl: string,
+  automationId: number | string,
+): Promise<boolean> {
+  try {
+    const res = await haFetch(
+      `${haBaseUrl}/api/config/automation/config/${encodeURIComponent(String(automationId))}`,
+      { method: "DELETE" },
+    );
+    const ok = res.ok || res.status === 404;
+    await drain(res);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
 // ── Port Resolution ─────────────────────────────────────────────────────────
 
 /** Resolve the HA base URL for tests.

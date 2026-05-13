@@ -224,3 +224,114 @@ Deno.test({
     }
   },
 });
+
+Deno.test({
+  name: "automation — create new via ha_create_automation lands in HA",
+  fn: async () => {
+    const lightId = await S.findDemoLight(HA_BASE);
+    if (!lightId) throw new Error("No demo light found");
+
+    // Pin the id so we know what to clean up even if the test fails mid-flight.
+    const automationId = `castle_e2e_create_${Date.now()}`;
+
+    try {
+      const result = await testRun(
+        `Use ha_create_automation to create a new automation. Pass automation_id="${automationId}" and a config object with alias="Castle e2e create test", trigger=[{platform:"time", at:"06:00:00"}], action=[{action:"light.turn_on", target:{entity_id:"${lightId}"}}].`,
+        { timeoutMs: S.COMPLEX_TIMEOUT },
+      );
+
+      S.assertToolCalled(result, "ha_create_automation", (args) =>
+        String(args?.automation_id ?? "") === automationId,
+      );
+
+      // HA should now hold the new automation.
+      const stored = await S.getAutomationConfig(HA_BASE, automationId) as
+        | { alias?: string; trigger?: unknown[]; action?: unknown[] }
+        | null;
+      assert(stored !== null, "Newly-created automation should be readable from HA");
+      assert(stored.alias === "Castle e2e create test", `Expected alias to match, got "${stored.alias}"`);
+      assert(Array.isArray(stored.trigger) && stored.trigger.length === 1, "Expected one trigger");
+      assert(Array.isArray(stored.action) && stored.action.length === 1, "Expected one action");
+    } finally {
+      await S.deleteAutomationConfig(HA_BASE, automationId);
+    }
+  },
+});
+
+Deno.test({
+  name: "automation — rollback restores prior version's config in HA",
+  fn: async () => {
+    const auto = await findWritableAutomation();
+    if (!auto) throw new Error("No writable automation found in HA demo");
+
+    const origConfig = (await S.getAutomationConfig(HA_BASE, auto.id)) as Record<string, unknown> | null;
+    if (!origConfig) throw new Error("Could not read original automation config");
+
+    const markerAlias = `Rollback-marker-${Date.now()}`;
+    try {
+      // Step 1: have the agent make an edit so a new version is recorded.
+      const edit = await testRun(
+        `Use ha_update_automation to update ${auto.entity_id} (id ${auto.id}). Read its current config with ha_get_automation first, then submit the SAME config but with alias set to "${markerAlias}". Do NOT change triggers or actions.`,
+        { timeoutMs: S.COMPLEX_TIMEOUT },
+      );
+      S.assertToolCalled(edit, "ha_update_automation", (args) =>
+        String(args?.automation_id ?? "") === String(auto.id),
+      );
+      const afterEdit = await S.getAutomationConfig(HA_BASE, auto.id) as { alias?: string } | null;
+      assert(afterEdit?.alias === markerAlias, `Edit should have applied marker alias, got "${afterEdit?.alias}"`);
+
+      // Step 2: ask the agent to roll back to version 1 (the captured baseline).
+      const rollback = await testRun(
+        `Call ha_rollback_automation with automation_id=${auto.id} and version=1 to revert ${auto.entity_id} to its baseline. Don't use dry_run — actually apply the rollback.`,
+        { timeoutMs: S.COMPLEX_TIMEOUT },
+      );
+      S.assertToolCalled(rollback, "ha_rollback_automation", (args) =>
+        String(args?.automation_id ?? "") === String(auto.id) && Number(args?.version) === 1,
+      );
+
+      // HA should no longer hold the marker alias.
+      const afterRollback = await S.getAutomationConfig(HA_BASE, auto.id) as { alias?: string } | null;
+      assert(
+        afterRollback?.alias !== markerAlias,
+        `Rollback should have replaced the marker alias, but HA still holds "${afterRollback?.alias}"`,
+      );
+    } finally {
+      await S.updateAutomationConfig(HA_BASE, auto.id, origConfig);
+    }
+  },
+});
+
+Deno.test({
+  name: "automation — diff between versions surfaces the changed field",
+  fn: async () => {
+    const auto = await findWritableAutomation();
+    if (!auto) throw new Error("No writable automation found in HA demo");
+
+    const origConfig = (await S.getAutomationConfig(HA_BASE, auto.id)) as Record<string, unknown> | null;
+    if (!origConfig) throw new Error("Could not read original automation config");
+
+    const markerAlias = `Diff-marker-${Date.now()}`;
+    try {
+      // Make an edit so two versions exist in resource-history.
+      const edit = await testRun(
+        `Use ha_update_automation to update ${auto.entity_id} (id ${auto.id}). Read its current config with ha_get_automation first, then submit the SAME config but with alias set to "${markerAlias}". Do NOT change triggers or actions.`,
+        { timeoutMs: S.COMPLEX_TIMEOUT },
+      );
+      S.assertToolCalled(edit, "ha_update_automation");
+
+      // Now ask the agent to compare the latest two versions and report.
+      const diff = await testRun(
+        `Use ha_diff_automation_versions on automation_id=${auto.id} comparing from=1 to=2 and tell me which field changed. Include the new alias verbatim in your answer.`,
+        { timeoutMs: S.COMPLEX_TIMEOUT },
+      );
+      S.assertToolCalled(diff, "ha_diff_automation_versions", (args) =>
+        String(args?.automation_id ?? "") === String(auto.id),
+      );
+      // The diff body includes the new alias on a `+ "alias": "<marker>"` line,
+      // so a competent model summarizing the result should echo the marker.
+      S.assertAssistantContains(diff, markerAlias);
+    } finally {
+      await S.updateAutomationConfig(HA_BASE, auto.id, origConfig);
+    }
+  },
+});
