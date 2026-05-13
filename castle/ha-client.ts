@@ -421,39 +421,54 @@ export class HAClient {
   }
 
   /**
-   * Drop the cached exposed-entities set so the next getExposedEntities() call
-   * re-fetches from HA. Called when an `entity_registry_updated` event lands —
-   * HA stores exposure as entity-registry options, so any exposure flip from
-   * HA's UI fires that event. The actual refetch is deferred until something
-   * (e.g. a write-tool gate via `ensureExposureFresh`) asks for the data.
-   */
-  invalidateExposedEntities(): void {
-    this.exposedEntities = undefined;
-  }
-
-  /**
-   * Ensure the exposed-entities cache is populated. No-op when the cache is
-   * fresh. When stale, performs the one WS roundtrip to refill it. Multiple
-   * concurrent calls share the in-flight promise so a burst of tool calls
-   * (parallel write-gates) only triggers one fetch.
+   * Per-entity exposure check used by write-tool gates. Always hits HA — no
+   * caching. Batches a list of entity IDs into a single
+   * `config/entity_registry/get_entries` call (HA's batch endpoint) and
+   * returns a map of entity_id → "is exposed to at least one assistant".
    *
-   * Tool gates that need the latest exposure status call this immediately
-   * before checking `isExposed()` so HA-UI flips take effect on the very next
-   * tool call, without rebuilding the agent's system prompt.
+   * Why bypass the `exposedEntities` cache here: the cache is refreshed only
+   * by the periodic catalog rebuild, so flips made in HA's UI take effect
+   * for the agent's catalog after at most ~5 min — but the write gate has
+   * to be exact. Fetching per call costs one small WS roundtrip and removes
+   * any need for event subscriptions / cache invalidation plumbing.
+   *
+   * Entities not in the registry (template-only, integration-internal, …)
+   * come back as null from HA. We surface those as "exposed" (permissive)
+   * because the agent can clearly see and reason about them and a write
+   * refusal here would be confusing.
    */
-  async ensureExposureFresh(): Promise<void> {
-    if (this.exposedEntities !== undefined) return;
-    if (this.exposureFetchInFlight) return this.exposureFetchInFlight;
-    this.exposureFetchInFlight = (async () => {
-      try {
-        await this.getExposedEntities();
-      } finally {
-        this.exposureFetchInFlight = undefined;
+  async fetchExposureForEntities(entityIds: string[]): Promise<Map<string, boolean>> {
+    const result = new Map<string, boolean>();
+    if (entityIds.length === 0) return result;
+    type Entry = { entity_id: string; options?: Record<string, { should_expose?: boolean } | undefined> };
+    try {
+      const entries = await this.call<Record<string, Entry | null>>({
+        type: "config/entity_registry/get_entries",
+        entity_ids: entityIds,
+      });
+      for (const id of entityIds) {
+        const entry = entries[id];
+        if (!entry) {
+          result.set(id, true); // permissive fallback for unregistered IDs
+          continue;
+        }
+        const options = entry.options ?? {};
+        let exposed = false;
+        for (const key of Object.keys(options)) {
+          if (options[key]?.should_expose === true) { exposed = true; break; }
+        }
+        result.set(id, exposed);
       }
-    })();
-    return this.exposureFetchInFlight;
+      return result;
+    } catch (err) {
+      // Token likely lacks config-registry access. Match isExposed()'s
+      // permissive behaviour when the snapshot is undefined — don't surprise
+      // the user with refusals just because the gate lookup itself failed.
+      console.warn("[ha] fetchExposureForEntities failed:", (err as Error).message);
+      for (const id of entityIds) result.set(id, true);
+      return result;
+    }
   }
-  private exposureFetchInFlight: Promise<void> | undefined;
 
   async getAreas(): Promise<Map<string, { name: string; entities: Set<string> }>> {
     try {

@@ -216,26 +216,6 @@ function setupHaSupervisor(): void {
     }
   });
 
-  // Cheap cache-busting for exposure. HA stores per-entity exposure as entity
-  // registry options, so flips fire `entity_registry_updated` on the bus.
-  // The event's `changes` field carries the OLD values of every field that
-  // changed (verified from core/helpers/entity_registry.py — `old_values[
-  // attr_name] = getattr(old, attr_name)`), so we can't reconstruct the new
-  // exposure state from the event alone. But the presence of `options` in
-  // `changes` is a strong "exposure may have flipped" signal — that's the
-  // only place per-assistant should_expose lives. Everything else (rename,
-  // icon, area, device_class, …) doesn't touch exposure and is ignored, so
-  // we don't even invalidate.
-  //
-  // Create / remove always invalidate because exposure can't be inferred for
-  // an entity we've never seen, or that the cache may now be naming wrongly.
-  void ha.subscribeEventType("entity_registry_updated");
-  ha.onBusEvent("entity_registry_updated", (data) => {
-    const { action, changes } = data as { action?: string; changes?: Record<string, unknown> };
-    if (action === "create" || action === "remove" || (changes && "options" in changes)) {
-      ha.invalidateExposedEntities();
-    }
-  });
 
   // Single state_changed → WS broadcast wiring; the listener registry survives
   // HA reconnects so this only needs to run once.

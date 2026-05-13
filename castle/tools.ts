@@ -1349,9 +1349,14 @@ export function buildTools(
     return out;
   }
 
-  function blockedNonExposed(targets: string[]): string[] {
+  async function blockedNonExposed(targets: string[]): Promise<string[]> {
     if (allowUnexposedWrites) return [];
-    return targets.filter((id) => !ha.isExposed(id));
+    if (targets.length === 0) return [];
+    // Always go to HA — no local cache for the write gate. One batched WS
+    // roundtrip even when the tool targets multiple entities. See
+    // `HAClient.fetchExposureForEntities` for the why.
+    const exposure = await ha.fetchExposureForEntities(targets);
+    return targets.filter((id) => exposure.get(id) !== true);
   }
 
   const REFUSAL_HINT = `Refused: not allowed to control non-exposed entities. To proceed, the user can either (a) expose the entity to assistants in Home Assistant (Settings → Voice assistants → Expose), or (b) flip "Allow agent to control non-exposed entities" in Castle's Settings dialog. Stop and ask which they'd like to do — don't retry until one of the two is in place.`;
@@ -1377,12 +1382,9 @@ export function buildTools(
         _ctx: unknown,
       ): Promise<ToolResult> {
         // Refuse to call services on non-exposed entities unless the override
-        // is on. Refresh the exposed set first so a flip in HA's UI takes
-        // effect on the very next tool call — the cache is invalidated push-
-        // style on `entity_registry_updated`, this just realises the refetch
-        // lazily when we actually need to gate.
-        await ha.ensureExposureFresh();
-        const blocked = blockedNonExposed(collectTargets(params.entity_id, params.service_data));
+        // is on. Lookup is per-call against HA so HA-UI flips take effect
+        // immediately — see `HAClient.fetchExposureForEntities`.
+        const blocked = await blockedNonExposed(collectTargets(params.entity_id, params.service_data));
         if (blocked.length > 0) {
           return ok(`${REFUSAL_HINT}\nBlocked targets: ${blocked.join(", ")}`);
         }
@@ -1537,8 +1539,7 @@ export function buildTools(
         _onUpdate: unknown,
         _ctx: unknown,
       ): Promise<ToolResult> {
-        await ha.ensureExposureFresh();
-        const blocked = blockedNonExposed([params.entity_id]);
+        const blocked = await blockedNonExposed([params.entity_id]);
         if (blocked.length > 0) {
           return ok(`${REFUSAL_HINT}\nBlocked target: ${params.entity_id}`);
         }
