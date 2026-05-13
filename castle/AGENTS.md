@@ -30,11 +30,13 @@ docker compose exec castle sh                                     # shell into c
 
 ## Development
 
-After cloning, wire the pre-commit hook (it lives at `scripts/git-hooks/`):
+After cloning, wire the pre-commit hook (it lives at `castle/scripts/git-hooks/`). Run from the **repo root**:
 
 ```bash
-git config core.hooksPath scripts/git-hooks
+git config core.hooksPath castle/scripts/git-hooks
 ```
+
+Then `cd castle/` for everything that follows — the source, compose file, tests, and scripts all live inside the add-on directory.
 
 Frontend iteration: `docker compose --profile dev up -d web-watch` keeps `web/dist/` continuously rebuilt; refresh the browser after each save. Edit `*.ts` (Deno) → `docker compose restart castle`.
 

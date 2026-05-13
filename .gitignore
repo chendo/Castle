@@ -26,17 +26,19 @@ workspace/
 
 # Playwright-MCP session artifacts (browser snapshots, screenshots from local testing)
 .playwright-mcp/
-# Screenshots at the repo root — UI captures can leak the live HA_URL / LLM_URL
-# shown in the drawer footer. Whitelist any image we deliberately want tracked.
-*.png
+# Loose screenshots at repo root or under the add-on dir — UI captures can
+# leak the live HA_URL / LLM_URL shown in the drawer footer. Anchored so it
+# does NOT swallow icon.png / logo.png under castle/ or tracked images deeper.
+/*.png
+/castle/*.png
 
 # ha-demo runtime artifacts — Home Assistant writes these on boot, plus the
 # integration tests mutate automations.yaml via the REST API. Track only the
 # curated fixtures (configuration.yaml + the demo-camera.jpg etc.) and the
 # `.fixture` files the runner copies into place before each test run; the
 # live mutable copies are gitignored. Whitelist any new fixture explicitly.
-tests/integration/ha-demo-config/*
-!tests/integration/ha-demo-config/configuration.yaml
-!tests/integration/ha-demo-config/demo-camera.jpg
-!tests/integration/ha-demo-config/automations.yaml.fixture
-!tests/integration/ha-demo-config/.gitkeep
+castle/tests/integration/ha-demo-config/*
+!castle/tests/integration/ha-demo-config/configuration.yaml
+!castle/tests/integration/ha-demo-config/demo-camera.jpg
+!castle/tests/integration/ha-demo-config/automations.yaml.fixture
+!castle/tests/integration/ha-demo-config/.gitkeep

@@ -4,6 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `AGENTS.md` is the canonical contributor guide — read it for environment variables, secret-handling rules, the docker-compose layout, and the entity-exposure model. This file captures the things you'll get wrong if you only read AGENTS.md once.
 
+## Repository layout
+
+This repository is structured as a **Home Assistant add-on repository**:
+the root holds `repository.yaml` and a short README; everything else (this
+file included) lives under `castle/`. **All commands below assume you're in
+`castle/`** — `cd castle/` after cloning.
+
 ## Running commands
 
 Deno is **not installed on the host**. Every `deno`/`npm` invocation must go through Docker:
@@ -16,7 +23,7 @@ docker compose exec castle deno task check           # deno check + lint
 ./scripts/check.sh                                   # full gate: deno check/lint/unit + web tsc
 ```
 
-`./scripts/check.sh` auto-detects whether `castle` is running and uses `docker compose exec` (warm) or `docker compose run --rm` (cold). The pre-commit hook at `scripts/git-hooks/` runs it; wire it with `git config core.hooksPath scripts/git-hooks` after cloning.
+`./scripts/check.sh` auto-detects whether `castle` is running and uses `docker compose exec` (warm) or `docker compose run --rm` (cold). The pre-commit hook at `castle/scripts/git-hooks/` runs it; wire it with `git config core.hooksPath castle/scripts/git-hooks` from the repo root after cloning.
 
 Run a single Deno test file:
 
