@@ -1,7 +1,9 @@
-// Lightweight settings store backed by .pi-agent/settings.json.
+// Lightweight settings store backed by <DATA_DIR>/settings.json.
 // Single user, single file — no concurrency concerns.
 
-const SETTINGS_PATH = new URL(".pi-agent/settings.json", import.meta.url).pathname;
+import { DATA_DIR } from "./paths.ts";
+
+const SETTINGS_PATH = `${DATA_DIR}/settings.json`;
 
 export const ALL_TOOL_NAMES = [
   "ha_call_service",
@@ -21,6 +23,12 @@ export const ALL_TOOL_NAMES = [
   "ha_get_automation",
   "ha_update_automation",
   "ha_get_automation_trace",
+  "ha_list_automation_versions",
+  "ha_diff_automation_versions",
+  "ha_rollback_automation",
+  "ha_list_dashboard_versions",
+  "ha_diff_dashboard_versions",
+  "ha_rollback_dashboard",
   "schedule_task",
   "list_tasks",
   "cancel_task",
@@ -48,6 +56,12 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
   ha_get_automation: "fetch an automation's YAML config",
   ha_update_automation: "create or modify automations",
   ha_get_automation_trace: "inspect a recent automation run to see why it did or didn't fire",
+  ha_list_automation_versions: "list saved versions of an automation (for diff or rollback)",
+  ha_diff_automation_versions: "show a unified diff between two saved versions of an automation",
+  ha_rollback_automation: "restore an automation to a previously saved version",
+  ha_list_dashboard_versions: "list saved versions of a dashboard (for diff or rollback)",
+  ha_diff_dashboard_versions: "show a unified diff between two saved versions of a dashboard",
+  ha_rollback_dashboard: "restore a dashboard to a previously saved version",
   schedule_task: "set up a scheduled / triggered task (reminders, recurring checks, watch a camera or sensor and notify on a condition)",
   list_tasks: "list all scheduled tasks the home agent is currently watching",
   cancel_task: "stop a watching task by id",
@@ -71,6 +85,17 @@ export interface Settings {
    * deleted. Floored at 10 MiB; no upper bound.
    */
   conversationCapMb: number;
+  /**
+   * Max versions retained per automation in <DATA_DIR>/resource-history/.
+   * Older versions are trimmed FIFO. 0 disables retention enforcement
+   * (unlimited growth). Floored at 1 when nonzero.
+   */
+  automationHistoryMaxVersions: number;
+  /**
+   * Max versions retained per dashboard. Dashboards are bigger than
+   * automations so the default is lower; raise if you want a longer trail.
+   */
+  dashboardHistoryMaxVersions: number;
 }
 
 // 64k chosen per the roadmap; modern open-weights models comfortably support it.
@@ -84,12 +109,25 @@ const DEFAULT_CONTEXT_WINDOW = (() => {
 const MIN_CONTEXT_WINDOW = 8192;
 export const MIN_CONVERSATION_CAP_MB = 10;
 const DEFAULT_CONVERSATION_CAP_MB = 100;
+// Env-seeded defaults: the add-on maps its options.json keys onto these env
+// vars (see options.ts), so a fresh install honours operator-set caps before
+// settings.json exists. The in-app Settings dialog overrides these per-user.
+const DEFAULT_AUTOMATION_HISTORY_MAX = (() => {
+  const fromEnv = Number(Deno.env.get("CASTLE_AUTOMATION_HISTORY_MAX"));
+  return Number.isFinite(fromEnv) && fromEnv >= 0 ? Math.floor(fromEnv) : 50;
+})();
+const DEFAULT_DASHBOARD_HISTORY_MAX = (() => {
+  const fromEnv = Number(Deno.env.get("CASTLE_DASHBOARD_HISTORY_MAX"));
+  return Number.isFinite(fromEnv) && fromEnv >= 0 ? Math.floor(fromEnv) : 20;
+})();
 
 const DEFAULTS: Settings = {
   enabledTools: [...ALL_TOOL_NAMES],
   contextWindow: DEFAULT_CONTEXT_WINDOW,
   allowUnexposedWrites: false,
   conversationCapMb: DEFAULT_CONVERSATION_CAP_MB,
+  automationHistoryMaxVersions: DEFAULT_AUTOMATION_HISTORY_MAX,
+  dashboardHistoryMaxVersions: DEFAULT_DASHBOARD_HISTORY_MAX,
 };
 
 let cached: Settings | null = null;
@@ -110,11 +148,22 @@ function sanitize(s: Partial<Settings> | null | undefined): Settings {
   const conversationCapMb = Number.isFinite(capRaw) && capRaw >= MIN_CONVERSATION_CAP_MB
     ? Math.floor(capRaw)
     : DEFAULTS.conversationCapMb;
+  const sanitizeHistoryCap = (raw: unknown, def: number): number => {
+    if (typeof raw !== "number" || !Number.isFinite(raw)) return def;
+    const n = Math.floor(raw);
+    if (n < 0) return def;
+    if (n === 0) return 0; // 0 = unlimited
+    return Math.max(1, n);
+  };
+  const automationHistoryMaxVersions = sanitizeHistoryCap(s?.automationHistoryMaxVersions, DEFAULTS.automationHistoryMaxVersions);
+  const dashboardHistoryMaxVersions = sanitizeHistoryCap(s?.dashboardHistoryMaxVersions, DEFAULTS.dashboardHistoryMaxVersions);
   return {
     enabledTools: filtered.length ? filtered : [...ALL_TOOL_NAMES],
     contextWindow,
     allowUnexposedWrites,
     conversationCapMb,
+    automationHistoryMaxVersions,
+    dashboardHistoryMaxVersions,
   };
 }
 

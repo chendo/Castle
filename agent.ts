@@ -286,6 +286,8 @@ export function getAgentSession(ha: HAClient): Promise<AgentSession> {
         multimodal: isMultimodal,
         dashboardCache,
         allowUnexposedWrites: settings.allowUnexposedWrites,
+        automationHistoryMaxVersions: settings.automationHistoryMaxVersions,
+        dashboardHistoryMaxVersions: settings.dashboardHistoryMaxVersions,
       }).filter((t) => settings.enabledTools.includes(t.name as ToolName));
       const enabledTools = customTools.map((t) => t.name as string);
       console.log(`[agent] enabled tools: ${enabledTools.join(", ")}`);

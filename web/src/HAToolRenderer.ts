@@ -147,6 +147,46 @@ const CONFIGS: Record<string, RendererConfig> = {
       return `ha_get_automation_trace ${p.automation_id} (recent runs)`;
     },
   },
+  ha_list_automation_versions: {
+    icon: History,
+    summarize: (p) => p?.automation_id ? `ha_list_automation_versions ${p.automation_id}` : "ha_list_automation_versions",
+  },
+  ha_diff_automation_versions: {
+    icon: History,
+    summarize: (p) => {
+      if (!p?.automation_id) return "ha_diff_automation_versions";
+      const to = p.to !== undefined ? `v${p.to}` : "latest";
+      return `ha_diff_automation_versions ${p.automation_id} v${p.from}→${to}`;
+    },
+  },
+  ha_rollback_automation: {
+    icon: History,
+    summarize: (p) => {
+      if (!p?.automation_id || p.version === undefined) return "ha_rollback_automation";
+      const dry = p.dry_run ? " (dry-run)" : "";
+      return `ha_rollback_automation ${p.automation_id} → v${p.version}${dry}`;
+    },
+  },
+  ha_list_dashboard_versions: {
+    icon: History,
+    summarize: (p) => p?.name ? `ha_list_dashboard_versions ${p.name}` : "ha_list_dashboard_versions",
+  },
+  ha_diff_dashboard_versions: {
+    icon: History,
+    summarize: (p) => {
+      if (!p?.name) return "ha_diff_dashboard_versions";
+      const to = p.to !== undefined ? `v${p.to}` : "latest";
+      return `ha_diff_dashboard_versions ${p.name} v${p.from}→${to}`;
+    },
+  },
+  ha_rollback_dashboard: {
+    icon: History,
+    summarize: (p) => {
+      if (!p?.name || p.version === undefined) return "ha_rollback_dashboard";
+      const dry = p.dry_run ? " (dry-run)" : "";
+      return `ha_rollback_dashboard ${p.name} → v${p.version}${dry}`;
+    },
+  },
 };
 
 // Render an arbitrary param object as `k=v, k2=v2` truncated to a safe length.
@@ -287,10 +327,186 @@ function tryDetectLanguage(s: string): string {
   return "text";
 }
 
+/**
+ * A single row from a `ha_list_*_versions` output line. The tool emits one
+ * line per version in the format produced by tools.ts:
+ *   `v3  2026-05-12T11:00:00Z  castle "Morning lights"`
+ *   `v4  2026-05-12T11:05:00Z  rollback←v2`
+ */
+interface VersionRow {
+  version: number;
+  ts: string;
+  source: string;
+  alias?: string;
+}
+
+const VERSION_LINE = /^v(\d+)\s+(\S+)\s+(\S+)(?:\s+"(.*)")?$/;
+
+function parseVersionLines(text: string): VersionRow[] {
+  const rows: VersionRow[] = [];
+  for (const line of text.split("\n")) {
+    const m = VERSION_LINE.exec(line);
+    if (!m) continue;
+    rows.push({
+      version: Number(m[1]),
+      ts: m[2],
+      source: m[3],
+      alias: m[4],
+    });
+  }
+  return rows;
+}
+
+/** Compact "5m ago" style label for the version-list timestamps. */
+function timeAgo(iso: string): string {
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return iso;
+  const sec = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 48) return `${hr}h ago`;
+  const day = Math.floor(hr / 24);
+  return `${day}d ago`;
+}
+
+/**
+ * Renderer for `ha_list_*_versions`. Parses the text output (which is also
+ * shown raw, collapsed) and renders a tidy table with a Rollback button per
+ * row. Clicking Rollback drops a templated prompt into the agent — it goes
+ * through the LLM (same code path as a typed user request), so the agent can
+ * acknowledge and call `ha_rollback_*` with the right parameters.
+ *
+ * Going through the LLM rather than a direct `service_call`-style bypass
+ * keeps the audit trail consistent: the rollback appears in chat with its
+ * own assistant turn, and the agent can chain follow-ups (e.g. show the diff
+ * before applying).
+ */
+class HistoryListRenderer implements ToolRenderer {
+  constructor(
+    private readonly kind: "automation" | "dashboard",
+    private readonly agent: { sendPromptText?: (text: string) => void },
+    private readonly cfg: RendererConfig,
+  ) {}
+
+  render(rawParams: any, result: ToolResultMessage | undefined, isStreaming?: boolean): ToolRenderResult {
+    const params = parseParams(rawParams);
+    const state: "inprogress" | "complete" | "error" = result
+      ? (result.isError ? "error" : "complete")
+      : isStreaming ? "inprogress" : "complete";
+
+    const contentRef = createRef<HTMLElement>();
+    const chevronRef = createRef<HTMLElement>();
+    const baseSummary = this.cfg.summarize(params);
+    const durationMs = result?.toolCallId ? getDuration(result.toolCallId) : undefined;
+    const summary = summaryWithDuration(baseSummary, durationMs);
+
+    const outputText = result?.content?.filter((c) => c.type === "text")
+      .map((c: any) => c.text).join("\n") || "";
+    const rows = parseVersionLines(outputText);
+
+    const id = this.kind === "automation" ? params?.automation_id : params?.name;
+    const idLabel = this.kind === "automation" ? id : `"${id}"`;
+
+    // The rollback prompt is deliberately explicit — naming the tool removes
+    // any guesswork on the model's side. The agent will still respond
+    // conversationally; we don't bypass the LLM here.
+    const rollbackToolName = this.kind === "automation" ? "ha_rollback_automation" : "ha_rollback_dashboard";
+    const onRollback = (version: number) => {
+      this.agent.sendPromptText?.(
+        `Rollback ${this.kind} ${idLabel} to version ${version} using ${rollbackToolName}. Show me the diff first via dry_run, then ask me to confirm before writing.`,
+      );
+    };
+
+    return {
+      content: html`
+        <div>
+          <div class="flex items-center gap-2">
+            <div class="flex-1 min-w-0">
+              ${renderCollapsibleHeader(state, this.cfg.icon, summary, contentRef, chevronRef, false)}
+            </div>
+          </div>
+          <div ${ref(contentRef)} class="overflow-hidden transition-all max-h-0 space-y-2">
+            ${rows.length === 0 ? html`
+              <div class="text-sm text-muted-foreground p-2">${outputText || "(no versions)"}</div>
+            ` : html`
+              <div class="overflow-x-auto">
+                <table class="w-full text-sm" style="border-collapse: collapse;">
+                  <thead>
+                    <tr style="border-bottom: 1px solid var(--border);">
+                      <th class="text-left py-1 px-2 font-medium text-muted-foreground">Version</th>
+                      <th class="text-left py-1 px-2 font-medium text-muted-foreground">When</th>
+                      <th class="text-left py-1 px-2 font-medium text-muted-foreground">Source</th>
+                      <th class="text-left py-1 px-2 font-medium text-muted-foreground">Title</th>
+                      <th class="text-right py-1 px-2 font-medium text-muted-foreground"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${rows.map((r, i) => html`
+                      <tr style="border-bottom: 1px solid var(--border);">
+                        <td class="py-1 px-2 font-mono">v${r.version}</td>
+                        <td class="py-1 px-2" title=${r.ts}>${timeAgo(r.ts)}</td>
+                        <td class="py-1 px-2">
+                          <span class="inline-block px-2 py-0.5 text-xs rounded" style=${sourcePillStyle(r.source)}>
+                            ${r.source}
+                          </span>
+                        </td>
+                        <td class="py-1 px-2 text-muted-foreground">${r.alias ?? ""}</td>
+                        <td class="py-1 px-2 text-right">
+                          ${i === 0 ? html`
+                            <span class="text-xs text-muted-foreground">latest</span>
+                          ` : html`
+                            <button
+                              class="px-2 py-0.5 text-xs rounded border border-border hover:bg-muted-background"
+                              @click=${() => onRollback(r.version)}
+                              title="Send a rollback request to the agent"
+                            >Rollback</button>
+                          `}
+                        </td>
+                      </tr>
+                    `)}
+                  </tbody>
+                </table>
+              </div>
+            `}
+          </div>
+        </div>
+      `,
+      isCustom: false,
+    };
+  }
+}
+
+function sourcePillStyle(source: string): string {
+  if (source.startsWith("rollback")) {
+    return "background: rgba(168, 85, 247, 0.15); color: rgb(126, 34, 206);";
+  }
+  return "background: rgba(59, 130, 246, 0.15); color: rgb(29, 78, 216);";
+}
+
 export function registerHAToolRenderers(): void {
   for (const [name, cfg] of Object.entries(CONFIGS)) {
     registerToolRenderer(name, new HACompactRenderer(cfg));
   }
+}
+
+/**
+ * Replace the compact renderer for the two `ha_list_*_versions` tools with a
+ * version-table renderer that includes a per-row Rollback button. Called from
+ * main.ts after the agent is built (the button dispatches through it). Safe
+ * to call independently of `registerHAToolRenderers` — re-registering
+ * overrides the earlier compact entry.
+ */
+export function registerHistoryRenderers(agent: { sendPromptText?: (text: string) => void }): void {
+  registerToolRenderer(
+    "ha_list_automation_versions",
+    new HistoryListRenderer("automation", agent, CONFIGS.ha_list_automation_versions),
+  );
+  registerToolRenderer(
+    "ha_list_dashboard_versions",
+    new HistoryListRenderer("dashboard", agent, CONFIGS.ha_list_dashboard_versions),
+  );
 }
 
 /**

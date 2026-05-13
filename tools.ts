@@ -2,6 +2,7 @@ import { Type } from "npm:@sinclair/typebox";
 import { encodeBase64 } from "jsr:@std/encoding@1/base64";
 import type { HAClient } from "./ha-client.ts";
 import { getTasksSingleton, type Task } from "./tasks.ts";
+import { diffConfigs, ResourceHistoryStore } from "./resource-history.ts";
 
 type ToolContent = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
 export type TruncationInfo = {
@@ -291,6 +292,28 @@ export function parseHistoryPoints(raw: unknown): HistoryPoint[] | null {
     points.push({ value: parseFloat(c.state), timestamp: c.timestamp, rawIso: c.rawIso });
   }
   return points.length > 0 ? points : null;
+}
+
+/**
+ * History parse for chart rendering. Binary sensors ("on"/"off") are mapped to
+ * 1/0 so the chart can step-plot them; everything else takes the numeric path.
+ * Returns [] (not null) so callers can pass through to the JSON response shape
+ * without a coalesce.
+ */
+export function parseChartHistory(raw: unknown, entityId: string): HistoryPoint[] {
+  const changes = parseStateChanges(raw);
+  const isBinary = entityId.startsWith("binary_sensor.");
+  const points: HistoryPoint[] = [];
+  for (const c of changes) {
+    if (isBinary) {
+      if (c.state === "on") points.push({ value: 1, timestamp: c.timestamp, rawIso: c.rawIso });
+      else if (c.state === "off") points.push({ value: 0, timestamp: c.timestamp, rawIso: c.rawIso });
+      // sentinels (unknown/unavailable) are dropped — they'd render as a phantom 0
+    } else if (isNumericState(c.state)) {
+      points.push({ value: parseFloat(c.state), timestamp: c.timestamp, rawIso: c.rawIso });
+    }
+  }
+  return points;
 }
 
 export function computeStats(points: HistoryPoint[]): {
@@ -1263,11 +1286,55 @@ export function formatAutomationTrace(trace: Record<string, unknown>, tz: string
 
 export function buildTools(
   ha: HAClient,
-  opts: { multimodal?: boolean; dashboardCache?: Map<string, unknown>; allowUnexposedWrites?: boolean } = {},
+  opts: {
+    multimodal?: boolean;
+    dashboardCache?: Map<string, unknown>;
+    allowUnexposedWrites?: boolean;
+    automationHistoryMaxVersions?: number;
+    dashboardHistoryMaxVersions?: number;
+    /** Override the on-disk history root. Only intended for tests — production
+     *  uses the default (under DATA_DIR) baked into ResourceHistoryStore. */
+    historyRoot?: string;
+  } = {},
 ) {
   const isMultimodal = opts.multimodal === true;
   const dashboardCache = opts.dashboardCache ?? new Map<string, unknown>();
   const allowUnexposedWrites = opts.allowUnexposedWrites === true;
+  const automationHistory = new ResourceHistoryStore("automation", opts.automationHistoryMaxVersions ?? 50, opts.historyRoot);
+  const dashboardHistory = new ResourceHistoryStore("dashboard", opts.dashboardHistoryMaxVersions ?? 20, opts.historyRoot);
+
+  /**
+   * Capture-before-write helper. If no history exists for `id` yet, fetch the
+   * current config and record it as the baseline (v1). After the caller writes
+   * the new config, it should record that too. Returns the baseline alias
+   * (when recorded) so the caller can include it in the post-write record.
+   * Failing to record is non-fatal — the edit proceeds either way; we log so
+   * the user can see history is degraded but isn't blocked from making the
+   * change they asked for.
+   */
+  async function captureBaseline(
+    store: ResourceHistoryStore,
+    id: string,
+    fetchCurrent: () => Promise<unknown>,
+    aliasOf: (cfg: unknown) => string | undefined,
+  ): Promise<void> {
+    try {
+      const existing = await store.list(id);
+      if (existing.length > 0) return;
+      const current = await fetchCurrent();
+      if (current === null || current === undefined) return; // creating fresh
+      await store.record(id, { config: current, source: "castle", alias_at_save: aliasOf(current) });
+    } catch (err) {
+      console.warn(`[history] baseline capture failed for ${id}:`, (err as Error).message);
+    }
+  }
+
+  function aliasOfAutomation(cfg: unknown): string | undefined {
+    if (cfg && typeof cfg === "object" && "alias" in cfg && typeof (cfg as Record<string, unknown>).alias === "string") {
+      return (cfg as Record<string, string>).alias;
+    }
+    return undefined;
+  }
 
   // Collect every entity_id a service call would target — top-level entity_id
   // plus any in service_data (HA accepts string or array).
@@ -1830,6 +1897,25 @@ export function buildTools(
             type: "lovelace/config",
             url_path: params.name === "(default)" ? null : params.name,
           });
+          // Capture pre-edit state on first touch — same baseline pattern as
+          // automations. The fetched `config` is what we already have; just
+          // record it if history for this dashboard is still empty.
+          {
+            const existing = await dashboardHistory.list(params.name);
+            if (existing.length === 0) {
+              try {
+                await dashboardHistory.record(params.name, {
+                  config,
+                  source: "castle",
+                  alias_at_save: typeof (config as { title?: unknown } | null)?.title === "string"
+                    ? (config as { title: string }).title
+                    : undefined,
+                });
+              } catch (err) {
+                console.warn(`[history] baseline capture failed for dashboard "${params.name}":`, (err as Error).message);
+              }
+            }
+          }
           const { config: edited, errors, diffs } = applyDashboardOps(config, params.ops);
           if (errors.length > 0) {
             return ok(`Refused: ${errors.length} op error(s) — nothing written:\n- ${errors.join("\n- ")}`);
@@ -1858,7 +1944,22 @@ export function buildTools(
           });
           dashboardCache.delete(params.name);
 
+          // Record post-write state. Non-fatal — the save landed already.
+          let recorded: Awaited<ReturnType<typeof dashboardHistory.record>> | null = null;
+          try {
+            recorded = await dashboardHistory.record(params.name, {
+              config: edited,
+              source: "castle",
+              alias_at_save: typeof (edited as { title?: unknown } | null)?.title === "string"
+                ? (edited as { title: string }).title
+                : undefined,
+            });
+          } catch (err) {
+            console.warn(`[history] post-write record failed for dashboard "${params.name}":`, (err as Error).message);
+          }
+
           const lines = [`Dashboard "${params.name}" updated (${params.ops.length} op${params.ops.length === 1 ? "" : "s"} applied).`];
+          if (recorded) lines.push(`Saved as version ${recorded.version}.`);
           if (warnings.length > 0) {
             lines.push("");
             lines.push(`${warnings.length} validation warning(s):`);
@@ -1872,6 +1973,104 @@ export function buildTools(
           return okText(lines.join("\n"), { maxBytes: 16 * 1024 });
         } catch (err) {
           return ok(`Failed to edit "${params.name}": ${(err as Error).message}`);
+        }
+      },
+    },
+
+    {
+      name: "ha_list_dashboard_versions",
+      label: "Dashboard Versions",
+      description: "List saved versions of one dashboard, newest first. Versions are captured by ha_edit_dashboard (pre-edit baseline plus the new state after each edit) and by ha_rollback_dashboard. Returns up to 25 entries with version, timestamp, source, and the dashboard title at save time. Pass dashboard url_path; use '(default)' for the main dashboard.",
+      parameters: Type.Object({
+        name: Type.String({ description: "Dashboard url_path. Use '(default)' for the main dashboard." }),
+      }),
+      async execute(_id: string, params: { name: string }): Promise<ToolResult> {
+        const list = await dashboardHistory.list(params.name);
+        if (list.length === 0) {
+          return ok(`No saved versions for dashboard "${params.name}". Versions are captured on the first ha_edit_dashboard call.`);
+        }
+        const newestFirst = [...list].reverse().slice(0, 25);
+        const lines: string[] = [
+          `Dashboard "${params.name}" — ${list.length} version${list.length === 1 ? "" : "s"}${list.length > 25 ? ` (showing 25 newest)` : ""}.`,
+          "",
+        ];
+        for (const m of newestFirst) {
+          const tag = m.source === "rollback" ? `rollback${m.parent_version ? `←v${m.parent_version}` : ""}` : m.source;
+          const title = m.alias_at_save ? ` "${m.alias_at_save}"` : "";
+          lines.push(`v${m.version}  ${m.ts}  ${tag}${title}`);
+        }
+        return okText(lines.join("\n"), { maxBytes: 8 * 1024 });
+      },
+    },
+
+    {
+      name: "ha_diff_dashboard_versions",
+      label: "Diff Dashboard Versions",
+      description: "Show a unified diff between two saved versions of one dashboard. Pass the two version numbers from ha_list_dashboard_versions. If `to` is omitted, diffs against the latest version. Dashboard configs can be large — the diff may be truncated.",
+      parameters: Type.Object({
+        name: Type.String({ description: "Dashboard url_path. Use '(default)' for the main dashboard." }),
+        from: Type.Number({ description: "Version number to diff from (older)" }),
+        to: Type.Optional(Type.Number({ description: "Version number to diff to (newer). Omit for latest." })),
+      }),
+      async execute(_id: string, params: { name: string; from: number; to?: number }): Promise<ToolResult> {
+        const list = await dashboardHistory.list(params.name);
+        if (list.length === 0) return ok(`No saved versions for dashboard "${params.name}".`);
+        const toVersion = params.to ?? list[list.length - 1].version;
+        if (toVersion === params.from) return ok(`from and to are the same version (${params.from}).`);
+        const [fromRec, toRec] = await Promise.all([
+          dashboardHistory.get(params.name, params.from),
+          dashboardHistory.get(params.name, toVersion),
+        ]);
+        if (!fromRec) return ok(`Version ${params.from} not found for dashboard "${params.name}".`);
+        if (!toRec) return ok(`Version ${toVersion} not found for dashboard "${params.name}".`);
+        const diff = diffConfigs(fromRec.config, toRec.config);
+        return okText(`Diff dashboard "${params.name}" v${params.from} → v${toVersion}:\n\n${diff}`, { maxBytes: 32 * 1024 });
+      },
+    },
+
+    {
+      name: "ha_rollback_dashboard",
+      label: "Rollback Dashboard",
+      description: "Restore a dashboard to a previously saved version via lovelace/config/save. Recorded as a new version (source=rollback). WARNING: overwrites anything edited in HA's UI since the target version was captured. Pass `dry_run: true` to preview the diff without writing. Dashboard rollbacks can be large — review the diff before committing.",
+      parameters: Type.Object({
+        name: Type.String({ description: "Dashboard url_path. Use '(default)' for the main dashboard." }),
+        version: Type.Number({ description: "Version number to restore (from ha_list_dashboard_versions)" }),
+        dry_run: Type.Optional(Type.Boolean({ description: "Preview the diff without writing. Default false." })),
+      }),
+      async execute(_id: string, params: { name: string; version: number; dry_run?: boolean }): Promise<ToolResult> {
+        const target = await dashboardHistory.get(params.name, params.version);
+        if (!target) return ok(`Version ${params.version} not found for dashboard "${params.name}".`);
+        const list = await dashboardHistory.list(params.name);
+        const latestMeta = list[list.length - 1];
+        if (latestMeta && latestMeta.version === params.version) {
+          return ok(`Dashboard "${params.name}" is already at v${params.version} (latest). Nothing to do.`);
+        }
+        const latest = latestMeta ? await dashboardHistory.get(params.name, latestMeta.version) : null;
+        const diff = latest ? diffConfigs(latest.config, target.config) : "(no prior version on record)";
+        if (params.dry_run) {
+          return okText(`Dry run — would rollback dashboard "${params.name}" to v${params.version} (${target.ts}).\n\n${diff}`, { maxBytes: 32 * 1024 });
+        }
+        try {
+          await ha.call({
+            type: "lovelace/config/save",
+            url_path: params.name === "(default)" ? null : params.name,
+            config: target.config,
+          });
+          dashboardCache.delete(params.name);
+          const rec = await dashboardHistory.record(params.name, {
+            config: target.config,
+            source: "rollback",
+            parent_version: params.version,
+            alias_at_save: typeof (target.config as { title?: unknown } | null)?.title === "string"
+              ? (target.config as { title: string }).title
+              : undefined,
+          });
+          return okText(
+            `Rolled back dashboard "${params.name}" to v${params.version}. Recorded as v${rec.version} (source=rollback).\n\n${diff}`,
+            { maxBytes: 32 * 1024 },
+          );
+        } catch (err) {
+          return ok(`Failed to rollback dashboard "${params.name}": ${(err as Error).message}`);
         }
       },
     },
@@ -1919,6 +2118,20 @@ export function buildTools(
         if (params.strict && warnings.length > 0) {
           return ok(`Refused (strict mode): ${warnings.length} validation warning(s):\n- ${warnings.join("\n- ")}\nDrop strict=true to save anyway, or fix the config.`);
         }
+        // Capture the pre-edit state ONCE (first time we ever touch this id),
+        // so a rollback can restore what HA had before Castle was involved.
+        // Subsequent edits don't need a baseline — the previous post-write
+        // record is already the "before" state for the next edit.
+        await captureBaseline(
+          automationHistory,
+          params.automation_id,
+          async () => {
+            const r = await ha.restCall(`/api/config/automation/config/${encodeURIComponent(params.automation_id)}`);
+            if (!r.ok) return null;
+            return await r.json();
+          },
+          aliasOfAutomation,
+        );
         try {
           const res = await ha.restCall(`/api/config/automation/config/${encodeURIComponent(params.automation_id)}`, {
             method: "POST",
@@ -1928,7 +2141,19 @@ export function buildTools(
             const body = await res.text();
             return ok(`Failed to update automation ${params.automation_id}: ${res.status} ${body.slice(0, 500)}`);
           }
+          // Record the post-write state. Non-fatal if it fails — the edit landed.
+          let recorded: Awaited<ReturnType<typeof automationHistory.record>> | null = null;
+          try {
+            recorded = await automationHistory.record(params.automation_id, {
+              config: params.config,
+              source: "castle",
+              alias_at_save: aliasOfAutomation(params.config),
+            });
+          } catch (err) {
+            console.warn(`[history] post-write record failed for ${params.automation_id}:`, (err as Error).message);
+          }
           const lines: string[] = [`Automation ${params.automation_id} updated. Referenced ${entityIds.length} entity_id(s), ${refServices.length} service(s).`];
+          if (recorded) lines.push(`Saved as version ${recorded.version}.`);
           if (warnings.length > 0) {
             lines.push("");
             lines.push(`${warnings.length} warning(s) (saved anyway, strict=false):`);
@@ -2064,6 +2289,109 @@ export function buildTools(
           return okText(lines.join("\n"), { maxBytes: 32 * 1024 });
         } catch (err) {
           return ok(`Failed to fetch trace for automation ${params.automation_id}: ${(err as Error).message}`);
+        }
+      },
+    },
+
+    {
+      name: "ha_list_automation_versions",
+      label: "Automation Versions",
+      description: "List saved versions of one automation, newest first. Versions are captured by ha_update_automation (the previous state on first edit, and the new state after every edit) and by ha_rollback_automation. Returns up to 25 entries with version, timestamp, source (castle | rollback), and alias_at_save. Use ha_diff_automation_versions to see what changed between two versions, and ha_rollback_automation to restore one.",
+      parameters: Type.Object({
+        automation_id: Type.String({ description: "Numeric automation id (from attributes.id)" }),
+      }),
+      async execute(_id: string, params: { automation_id: string }): Promise<ToolResult> {
+        const list = await automationHistory.list(params.automation_id);
+        if (list.length === 0) {
+          return ok(`No saved versions for automation ${params.automation_id}. Versions are captured on the first ha_update_automation call.`);
+        }
+        // Newest first, capped at 25 for the prompt budget. The user can pull
+        // older versions explicitly via ha_diff/rollback when they have the
+        // version number from a previous list.
+        const newestFirst = [...list].reverse().slice(0, 25);
+        const lines: string[] = [
+          `Automation ${params.automation_id} — ${list.length} version${list.length === 1 ? "" : "s"}${list.length > 25 ? ` (showing 25 newest)` : ""}.`,
+          "",
+        ];
+        for (const m of newestFirst) {
+          const tag = m.source === "rollback" ? `rollback${m.parent_version ? `←v${m.parent_version}` : ""}` : m.source;
+          const alias = m.alias_at_save ? ` "${m.alias_at_save}"` : "";
+          lines.push(`v${m.version}  ${m.ts}  ${tag}${alias}`);
+        }
+        return okText(lines.join("\n"), { maxBytes: 8 * 1024 });
+      },
+    },
+
+    {
+      name: "ha_diff_automation_versions",
+      label: "Diff Automation Versions",
+      description: "Show a unified diff between two saved versions of one automation. Pass the two version numbers from ha_list_automation_versions. If `to` is omitted, diffs against the latest version. Useful for \"what did the last edit change?\" — pass from=<previous>, to=<latest>.",
+      parameters: Type.Object({
+        automation_id: Type.String({ description: "Numeric automation id" }),
+        from: Type.Number({ description: "Version number to diff from (older)" }),
+        to: Type.Optional(Type.Number({ description: "Version number to diff to (newer). Omit for latest." })),
+      }),
+      async execute(_id: string, params: { automation_id: string; from: number; to?: number }): Promise<ToolResult> {
+        const list = await automationHistory.list(params.automation_id);
+        if (list.length === 0) return ok(`No saved versions for automation ${params.automation_id}.`);
+        const toVersion = params.to ?? list[list.length - 1].version;
+        if (toVersion === params.from) return ok(`from and to are the same version (${params.from}).`);
+        const [fromRec, toRec] = await Promise.all([
+          automationHistory.get(params.automation_id, params.from),
+          automationHistory.get(params.automation_id, toVersion),
+        ]);
+        if (!fromRec) return ok(`Version ${params.from} not found for automation ${params.automation_id}.`);
+        if (!toRec) return ok(`Version ${toVersion} not found for automation ${params.automation_id}.`);
+        const diff = diffConfigs(fromRec.config, toRec.config);
+        return okText(`Diff automation ${params.automation_id} v${params.from} → v${toVersion}:\n\n${diff}`, { maxBytes: 32 * 1024 });
+      },
+    },
+
+    {
+      name: "ha_rollback_automation",
+      label: "Rollback Automation",
+      description: "Restore an automation to a previously saved version. The rollback itself is recorded as a new version (source=rollback, parent_version=<target>), so you can un-rollback. WARNING: this writes the target version verbatim — anything edited in HA's UI since the target version was captured will be overwritten without confirmation. Pass `dry_run: true` to preview the diff without writing.",
+      parameters: Type.Object({
+        automation_id: Type.String({ description: "Numeric automation id" }),
+        version: Type.Number({ description: "Version number to restore (from ha_list_automation_versions)" }),
+        dry_run: Type.Optional(Type.Boolean({ description: "Preview the diff without writing. Default false." })),
+      }),
+      async execute(_id: string, params: { automation_id: string; version: number; dry_run?: boolean }): Promise<ToolResult> {
+        const target = await automationHistory.get(params.automation_id, params.version);
+        if (!target) return ok(`Version ${params.version} not found for automation ${params.automation_id}.`);
+        // Compare against the latest recorded version so the response can show
+        // "this is the diff that will be applied" before the user commits.
+        const list = await automationHistory.list(params.automation_id);
+        const latestMeta = list[list.length - 1];
+        if (latestMeta && latestMeta.version === params.version) {
+          return ok(`Automation ${params.automation_id} is already at v${params.version} (latest). Nothing to do.`);
+        }
+        const latest = latestMeta ? await automationHistory.get(params.automation_id, latestMeta.version) : null;
+        const diff = latest ? diffConfigs(latest.config, target.config) : "(no prior version on record)";
+        if (params.dry_run) {
+          return okText(`Dry run — would rollback automation ${params.automation_id} to v${params.version} (${target.ts}).\n\n${diff}`, { maxBytes: 32 * 1024 });
+        }
+        try {
+          const res = await ha.restCall(`/api/config/automation/config/${encodeURIComponent(params.automation_id)}`, {
+            method: "POST",
+            body: JSON.stringify(target.config),
+          });
+          if (!res.ok) {
+            const body = await res.text();
+            return ok(`Failed to rollback ${params.automation_id} to v${params.version}: ${res.status} ${body.slice(0, 500)}`);
+          }
+          const rec = await automationHistory.record(params.automation_id, {
+            config: target.config,
+            source: "rollback",
+            parent_version: params.version,
+            alias_at_save: aliasOfAutomation(target.config),
+          });
+          return okText(
+            `Rolled back automation ${params.automation_id} to v${params.version}. Recorded as v${rec.version} (source=rollback).\n\n${diff}`,
+            { maxBytes: 32 * 1024 },
+          );
+        } catch (err) {
+          return ok(`Failed to rollback ${params.automation_id}: ${(err as Error).message}`);
         }
       },
     },
