@@ -4,34 +4,14 @@ Local-first Home Assistant agent backed by your own OpenAI-compatible LLM
 (LM Studio, llama.cpp, vLLM, etc.). Exposes a chat panel inside the HA sidebar
 that can call services, query states, view history, modify automations and dashboards.
 
-This project is in early alpha.
+This project is in early alpha and is probably not ready for general use, expect breaking changes.
 
-> ✅ **Default install is conservative.** A fresh install reads anything
-> exposed to assistants in HA, can call services and toggle state on those
-> entities, and otherwise looks but doesn't touch. **Editing automations
-> and dashboards, updating add-ons, and restarting Home Assistant are all
-> disabled by default** — you have to explicitly enable each of those tools
-> in Castle's Settings dialog before the agent can reach for them. See the
-> *Security model* section below for the full breakdown.
->
-> ⚠️ **Use at your own risk.** Even with the default lockdown, Castle gives
-> an LLM the ability to call HA services on the entities you've exposed —
-> a wrongly-issued `lock.unlock` is just unlocked. Tool calls execute
-> without per-action confirmation. Models hallucinate, mis-target entities,
-> and occasionally do exactly what you asked in a way you didn't mean.
-> Castle keeps rollback history for automations and dashboards once those
-> tools are enabled, but there's no rollback for one-shot service calls.
->
-> Start with the defaults, test against entities that don't matter (a spare
-> smart plug, a notify channel, a dev dashboard), and only widen the
-> agent's reach once you trust the model + prompt combination. The author
-> takes no responsibility for any damage, data loss, unintended actions,
-> or resulting hijinks. No warranty, express or implied.
+> ⚠️ **Use at your own risk.** Castle ships with the ability to call services on entities exposed to Assistants, and read access to all entities. You can enable tools to edit automations and dashboards.
 
 ## Features
 
-**Local-first, low-latency**
-- Designed to run a model on your LAN — LM Studio, vLLM, llama.cpp, Ollama, etc. — so prompts and tool calls don't round-trip to a cloud API. Typical "turn on the kitchen lights" flows complete in well under a second once the model is warm.
+**Local-first**
+- Designed to run on locally-hostable models with low latency, tested with `unsloth/qwen3.6-35b-a3b`
 - Pointing Castle at OpenAI / Anthropic / Google / Mistral is supported via `llm_type`, but the design target is a model you own.
 - No telemetry. Castle talks only to your HA Supervisor and the LLM endpoint you configure.
 
@@ -48,7 +28,7 @@ This project is in early alpha.
 - Bucketed history for numeric sensors (min/max/avg per interval), per-bucket deltas for cumulative meters (kWh, m³ — meter resets handled), and state-change timelines for binary/enum entities.
 
 **Automations**
-- Read and edit automation YAML; create new ones.
+- Manage your automations (edits disabled by default)
 - Inspect a recent run trace to see why an automation did or didn't fire.
 - Castle keeps a versioned history of every automation it edits: list versions, diff any two versions, and roll back to a previous one.
 
@@ -66,7 +46,7 @@ This project is in early alpha.
 - Watch a camera or sensor and notify in chat when a condition trips (e.g. "tell me if someone arrives at the front door in the next hour").
 - List or cancel any watching task.
 
-**Security model**
+## Security model
 
 A fresh install is conservative on purpose: read anything exposed to
 assistants, change small things on those same entities, and *cannot*
@@ -101,8 +81,7 @@ The agent's system prompt still *advertises* these tools (so it can tell you wha
   installs can't run it.
 - An OpenAI-compatible LLM endpoint reachable from the HA host. LM Studio is
   the default target — on a Mac/PC, enable its server and let it bind to the
-  LAN so HA can reach it (e.g. `http://192.168.1.50:1234/v1`). vLLM,
-  llama.cpp, and Ollama (via its OpenAI-compat shim) all work too.
+  LAN so HA can reach it (e.g. `http://192.168.1.50:1234/v1`).
 - Entities exposed to assistants in HA (Settings → Voice assistants → Expose).
   Castle only sees what you've exposed; an empty exposure list means an empty
   agent.
@@ -127,10 +106,7 @@ Where to get it: search `unsloth/qwen3.6-35b-a3b` in LM Studio, or pull a
 GGUF from Hugging Face for llama.cpp / Ollama. Pick the largest quant your
 hardware fits.
 
-Other models work — anything that does strict OpenAI-style function calling
-will plug in via `llm_type: openai-completions`. If you find a model that
-behaves particularly well (or particularly badly) with Castle, an issue or
-PR updating this section is welcome.
+Other models may work but are untested. 
 
 ## Install
 
