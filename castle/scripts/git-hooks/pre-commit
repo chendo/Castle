@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
 # Pre-commit hook — runs full checks. Bypass with `git commit --no-verify` if needed.
+# Git runs hooks with CWD = repo root, but the gate script lives inside
+# castle/, so we resolve it from the hook's own location instead of relying on
+# a working-dir-relative path.
 set -e
-exec ./scripts/check.sh
+exec "$(dirname "$0")/../check.sh"

@@ -12,9 +12,17 @@ COPY web/ ./
 RUN npm run build
 
 # ---------------------------------------------------------------------------
-# Stage 2 — runtime. HA's official Alpine base + Deno's official static
+# Stage 2 — runtime. HA's official Debian base + Deno's official static
 # binary. We don't use bashio — /data/options.json is parsed by Castle itself
 # (see options.ts) so the entrypoint stays a single deno invocation.
+#
+# Why Debian and not Alpine: Deno only ships glibc-linked Linux builds
+# (`*-unknown-linux-gnu`). On the Alpine HA base, those run through
+# `gcompat`, which is incomplete — symbols like `__res_init` aren't
+# polyfilled, and the binary errors with:
+#   Error relocating /usr/local/bin/deno: __res_init: symbol not found
+# at first invocation inside Supervisor. Debian is glibc-native, no shim
+# needed, slightly larger image, but actually works.
 # ---------------------------------------------------------------------------
 FROM ${BUILD_FROM}
 
@@ -22,7 +30,9 @@ ARG BUILD_ARCH
 ARG DENO_VERSION=2.7.12
 
 RUN set -eux; \
-    apk add --no-cache curl unzip gcompat libstdc++ libgcc; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends curl ca-certificates unzip; \
+    rm -rf /var/lib/apt/lists/*; \
     case "${BUILD_ARCH}" in \
         amd64) DENO_ARCH=x86_64-unknown-linux-gnu ;; \
         aarch64) DENO_ARCH=aarch64-unknown-linux-gnu ;; \
