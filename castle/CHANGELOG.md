@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.0
+
+- **Remove scheduled / triggered tasks subsystem.** `schedule_task`, `list_tasks`, `cancel_task`, the camera-frame watcher loop, the tasks dialog and tasks chip in the topbar, and the `<DATA_DIR>/tasks/` persistence layer are all gone. The implementation never worked reliably in practice, and the surface area was costing more than it was paying for.
+
 ## 0.2.1
 
 - Add `ha_manage` tool with three actions: `check_config` (validate YAML via the Supervisor `/core/check` endpoint), `reload` (`homeassistant.reload_all` — picks up YAML edits without restarting), `restart` (`homeassistant.restart`, ~30s downtime). Default-disabled; user opts in via Castle Settings.

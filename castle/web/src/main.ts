@@ -23,7 +23,6 @@ import { buildDashboard } from "./Dashboard";
 import { openModelPickerDialog } from "./ModelPickerDialog";
 import { buildShell } from "./Shell";
 import { entityCache } from "./EntityStateCache";
-import { tasksStore } from "./TasksStore";
 import { recentEntitiesStore } from "./RecentEntitiesStore";
 
 registerHAToolRenderers();
@@ -63,7 +62,6 @@ const agent = new WebSocketRemoteAgent(wsUrl);
 // Wire the shared stores to the agent before any consumer subscribes — each
 // reads from a single stream of WS frames.
 entityCache.attachToAgent(agent);
-tasksStore.attachToAgent(agent);
 recentEntitiesStore.attachToAgent(agent);
 
 // Now safe to register the camera/present-card renderer — it needs the

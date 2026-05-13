@@ -33,9 +33,6 @@ export const ALL_TOOL_NAMES = [
   "ha_list_addons",
   "ha_update_addon",
   "ha_manage",
-  "schedule_task",
-  "list_tasks",
-  "cancel_task",
 ] as const;
 export type ToolName = typeof ALL_TOOL_NAMES[number];
 
@@ -70,9 +67,6 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
   ha_list_addons: "list installed HA add-ons with their current and latest versions (Supervisor API)",
   ha_update_addon: "update one HA add-on to its latest version (Supervisor API)",
   ha_manage: "manage Home Assistant Core itself — check_config / reload / restart",
-  schedule_task: "set up a scheduled / triggered task (reminders, recurring checks, watch a camera or sensor and notify on a condition)",
-  list_tasks: "list all scheduled tasks the home agent is currently watching",
-  cancel_task: "stop a watching task by id",
 };
 
 export interface Settings {

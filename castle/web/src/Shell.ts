@@ -11,8 +11,6 @@ import type { ChatPanel } from "@mariozechner/pi-web-ui";
 import type { DashboardHandle } from "./Dashboard";
 import type { WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
 import { buildVoiceButton } from "./VoiceButton";
-import { tasksStore } from "./TasksStore";
-import { openTasksDialog } from "./TasksDialog";
 import { openSettingsDialog } from "./SettingsDialog";
 import { recentEntitiesStore } from "./RecentEntitiesStore";
 import { entityCache } from "./EntityStateCache";
@@ -64,29 +62,6 @@ export function buildShell({ agent, chatPanel, dashboard }: ShellInputs): HTMLEl
   logo.textContent = "Castle";
   logo.style.cssText = "font-weight: 700; color: var(--primary, #58a6ff); font-size: 16px; flex: 1;";
   topbar.appendChild(logo);
-
-  const tasksChip = document.createElement("button");
-  tasksChip.style.cssText = `
-    display: none; align-items: center; gap: 6px;
-    padding: 4px 10px; font-size: 12px; cursor: pointer;
-    background: transparent; color: var(--foreground);
-    border: 1px solid var(--border); border-radius: 999px;
-    line-height: 1;
-  `;
-  tasksChip.title = "Scheduled tasks";
-  tasksChip.onclick = () => openTasksDialog(agent);
-  const renderTasksChip = () => {
-    const list = tasksStore.list();
-    if (list.length === 0) { tasksChip.style.display = "none"; return; }
-    const active = tasksStore.activeCount();
-    const fired = list.filter((t) => t.status === "fired").length;
-    const dot = active > 0 ? `<span style="width:6px;height:6px;border-radius:50%;background:#10b981;display:inline-block;"></span>` : "";
-    const firedSuffix = fired > 0 ? ` · ${fired} fired` : "";
-    tasksChip.innerHTML = `${dot}<span>👁 ${active}${firedSuffix}</span>`;
-    tasksChip.style.display = "inline-flex";
-  };
-  tasksStore.subscribe(renderTasksChip);
-  topbar.appendChild(tasksChip);
 
   const settingsBtn = iconButton("⚙", "Settings");
   settingsBtn.onclick = () => openSettingsDialog(agent);

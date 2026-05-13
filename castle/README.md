@@ -41,11 +41,6 @@ This project is in early alpha and is probably not ready for general use, expect
 - Read recent HA system / integration logs.
 - Read active persistent notifications.
 
-**Scheduled & triggered tasks**
-- Schedule reminders or recurring checks (one-shot at a time, every-N-minutes, etc.).
-- Watch a camera or sensor and notify in chat when a condition trips (e.g. "tell me if someone arrives at the front door in the next hour").
-- List or cancel any watching task.
-
 ## Security model
 
 A fresh install is conservative on purpose: read anything exposed to

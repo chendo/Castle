@@ -1,7 +1,6 @@
 import { Type } from "npm:@sinclair/typebox";
 import { encodeBase64 } from "jsr:@std/encoding@1/base64";
 import type { HAClient } from "./ha-client.ts";
-import { getTasksSingleton, type Task } from "./tasks.ts";
 import { diffConfigs, ResourceHistoryStore } from "./resource-history.ts";
 
 type ToolContent = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
@@ -2733,100 +2732,6 @@ export function buildTools(
         return okText(formatStateChangeSummary(params.entity_id, changes, start, end, tz), { maxBytes: 16 * 1024 });
       },
     },
-
-    {
-      name: "schedule_task",
-      label: "Schedule Task",
-      description: `Set up a task that fires on a trigger and may notify the user back via the conversation. Use for reminders ("at 5pm…"), recurring checks ("every morning…"), and event-driven watches ("when the gate opens…", "when a delivery arrives at the front door").
-
-Trigger shapes (pass under \`trigger\`):
-- One-shot at a wall-clock moment: { kind: "at", ts: <epoch_ms> } OR, much easier, { kind: "at", delayMs: <ms_from_now> } — for "5 minutes from now" pass delayMs: 300000 and the server resolves the timestamp; epoch arithmetic is error-prone, prefer delayMs.
-- Recurring tick: { kind: "every", intervalMs: <ms, ≥ 5000> }
-- React to an entity state change: { kind: "on_state", entity: "binary_sensor.gate", to?: "on", from?: "off" }
-- React to a non-state HA bus event: { kind: "on_event", eventType: "zha_event", dataMatch?: { command: "double" } }
-- Either-or composite: { kind: "any_of", triggers: [<a>, <b>] }
-
-Two modes, distinguished by whether \`context.cameraFrames\` is set:
-- REMINDER (no cameraFrames): the trigger fires and the user is notified with the \`brief\` verbatim. No LLM decision loop. Use for "remind me at 5pm", recurring brief reports, etc. The brief should read as the message you want the user to see.
-- WATCHER (cameraFrames set): the trigger fires, fresh frames are captured, and a watcher LLM decides whether to notify. The brief tells the watcher what to look for. Use for "wake me when delivery arrives", "tell me when the dog leaves the yard", etc.
-
-Vision context shape: { cameraFrames: { entity: "camera.front_door", lastN: 5 } }
-
-Optional \`termination\`:
-- { kind: "one_shot_on_fire" } (default — task ends on first notification)
-- { kind: "expires", ttlMs: <ms> } (auto-stop if condition never met)
-- { kind: "manual" } (only stops when the user calls cancel_task)
-
-Examples:
-- Reminder: brief="Time to take your medication." trigger={kind:"at", delayMs: 1800000}
-- Delivery watch: brief="Notify when a delivery van or courier arrives at the front door." trigger={kind:"any_of", triggers:[{kind:"on_state", entity:"binary_sensor.gate"}, {kind:"every", intervalMs: 60000}]} context={cameraFrames:{entity:"camera.front_door", lastN:5}} termination={kind:"expires", ttlMs:14400000}`,
-      parameters: Type.Object({
-        brief: Type.String({ description: "Plain-English description of what the task is watching for. Read by the watcher LLM each fire." }),
-        trigger: Type.Record(Type.String(), Type.Unknown(), { description: "See description for the shape (kind + kind-specific fields)." }),
-        context: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: "Optional. {cameraFrames?:{entity,lastN}, parentThread?:bool}" })),
-        termination: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: "Optional. {kind:'one_shot_on_fire'|'expires'|'manual', ttlMs?}. Default one_shot_on_fire." })),
-      }),
-      async execute(
-        _id: string,
-        params: { brief: string; trigger: unknown; context?: unknown; termination?: unknown },
-      ): Promise<ToolResult> {
-        const tasks = getTasksSingleton();
-        if (!tasks) return ok("Tasks subsystem unavailable.");
-        try {
-          const t = await tasks.schedule({
-            brief: params.brief,
-            trigger: params.trigger,
-            context: params.context,
-            termination: params.termination,
-          });
-          return ok(`Scheduled task ${t.id}: ${summarizeTask(t)}`);
-        } catch (err) {
-          return ok(`Refused: ${(err as Error).message}`);
-        }
-      },
-    },
-
-    {
-      name: "list_tasks",
-      label: "List Tasks",
-      description: "List all scheduled tasks (currently-watching, fired, expired, stopped). Use to answer 'what are you watching?' or before cancelling a task to find its id.",
-      parameters: Type.Object({}),
-      async execute(): Promise<ToolResult> {
-        const tasks = getTasksSingleton();
-        if (!tasks) return ok("Tasks subsystem unavailable.");
-        const list = tasks.list();
-        if (list.length === 0) return ok("No scheduled tasks.");
-        const lines = list.map((t) => `${t.id} [${t.status}] — ${summarizeTask(t)}`);
-        return okList("Scheduled tasks:", lines);
-      },
-    },
-
-    {
-      name: "cancel_task",
-      label: "Cancel Task",
-      description: "Stop a watching task by id. Already-terminated tasks (fired/expired/stopped) cannot be cancelled.",
-      parameters: Type.Object({
-        task_id: Type.String({ description: "The id returned by schedule_task or list_tasks." }),
-      }),
-      async execute(_id: string, params: { task_id: string }): Promise<ToolResult> {
-        const tasks = getTasksSingleton();
-        if (!tasks) return ok("Tasks subsystem unavailable.");
-        const existing = tasks.get(params.task_id);
-        if (!existing) return ok(`No such task: ${params.task_id}`);
-        if (existing.status !== "watching") return ok(`Task ${params.task_id} is already ${existing.status}; nothing to cancel.`);
-        const ok2 = await tasks.cancel(params.task_id);
-        return ok(ok2 ? `Cancelled ${params.task_id}.` : `Could not cancel ${params.task_id}.`);
-      },
-    },
   ];
 }
 
-function summarizeTask(t: Task): string {
-  const parts: string[] = [];
-  parts.push(t.brief.length > 80 ? t.brief.slice(0, 77) + "…" : t.brief);
-  parts.push(`trigger=${t.trigger.kind}`);
-  if (t.context.cameraFrames) parts.push(`camera=${t.context.cameraFrames.entity}`);
-  parts.push(`fires=${t.cost.fires}`);
-  if (t.notification) parts.push(`notified="${t.notification.summary.slice(0, 60)}"`);
-  return parts.join(" | ");
-}
