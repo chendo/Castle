@@ -1376,7 +1376,12 @@ export function buildTools(
         _onUpdate: unknown,
         _ctx: unknown,
       ): Promise<ToolResult> {
-        // Refuse to call services on non-exposed entities unless the override is on.
+        // Refuse to call services on non-exposed entities unless the override
+        // is on. Refresh the exposed set first so a flip in HA's UI takes
+        // effect on the very next tool call — the cache is invalidated push-
+        // style on `entity_registry_updated`, this just realises the refetch
+        // lazily when we actually need to gate.
+        await ha.ensureExposureFresh();
         const blocked = blockedNonExposed(collectTargets(params.entity_id, params.service_data));
         if (blocked.length > 0) {
           return ok(`${REFUSAL_HINT}\nBlocked targets: ${blocked.join(", ")}`);
@@ -1532,6 +1537,7 @@ export function buildTools(
         _onUpdate: unknown,
         _ctx: unknown,
       ): Promise<ToolResult> {
+        await ha.ensureExposureFresh();
         const blocked = blockedNonExposed([params.entity_id]);
         if (blocked.length > 0) {
           return ok(`${REFUSAL_HINT}\nBlocked target: ${params.entity_id}`);

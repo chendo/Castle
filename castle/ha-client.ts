@@ -422,14 +422,38 @@ export class HAClient {
 
   /**
    * Drop the cached exposed-entities set so the next getExposedEntities() call
-   * re-fetches from HA. Called when an `entity_registry_updated` event lands
-   * (HA stores exposure as entity-registry options in recent versions, so any
-   * exposure flip from HA's UI fires that event), and as a safety net before
-   * the periodic catalog rebuild.
+   * re-fetches from HA. Called when an `entity_registry_updated` event lands —
+   * HA stores exposure as entity-registry options, so any exposure flip from
+   * HA's UI fires that event. The actual refetch is deferred until something
+   * (e.g. a write-tool gate via `ensureExposureFresh`) asks for the data.
    */
   invalidateExposedEntities(): void {
     this.exposedEntities = undefined;
   }
+
+  /**
+   * Ensure the exposed-entities cache is populated. No-op when the cache is
+   * fresh. When stale, performs the one WS roundtrip to refill it. Multiple
+   * concurrent calls share the in-flight promise so a burst of tool calls
+   * (parallel write-gates) only triggers one fetch.
+   *
+   * Tool gates that need the latest exposure status call this immediately
+   * before checking `isExposed()` so HA-UI flips take effect on the very next
+   * tool call, without rebuilding the agent's system prompt.
+   */
+  async ensureExposureFresh(): Promise<void> {
+    if (this.exposedEntities !== undefined) return;
+    if (this.exposureFetchInFlight) return this.exposureFetchInFlight;
+    this.exposureFetchInFlight = (async () => {
+      try {
+        await this.getExposedEntities();
+      } finally {
+        this.exposureFetchInFlight = undefined;
+      }
+    })();
+    return this.exposureFetchInFlight;
+  }
+  private exposureFetchInFlight: Promise<void> | undefined;
 
   async getAreas(): Promise<Map<string, { name: string; entities: Set<string> }>> {
     try {

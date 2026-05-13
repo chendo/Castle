@@ -203,40 +203,28 @@ function setupHaSupervisor(): void {
         console.error("[castle] post-connect setup failed:", (err as Error).message);
       }
     })();
-    // Wire the long-running periodic refresh once, on the first successful
-    // connect. Acts as a safety net for any entity_registry_updated event we
-    // might miss (e.g. during a reconnect window). Invalidates the exposed
-    // cache first so the periodic rebuild also picks up HA-UI flips even when
-    // the event subscription didn't fire.
+    // Wire the long-running periodic catalog rebuild once, on the first
+    // successful connect. Rebuilds AGENTS.md so renames / area moves / new
+    // entities get reflected in the agent's system prompt. Exposure freshness
+    // is NOT this loop's job (see the entity_registry_updated subscription
+    // below + the lazy refresh in tools.ts).
     if (catalogTimer === undefined) {
-      catalogTimer = setInterval(() => {
-        ha.invalidateExposedEntities();
-        regenerateCatalog().catch((err) => console.warn("[catalog] periodic refresh failed:", err));
-      }, 5 * 60 * 1000);
+      catalogTimer = setInterval(
+        () => regenerateCatalog().catch((err) => console.warn("[catalog] periodic refresh failed:", err)),
+        5 * 60 * 1000,
+      );
     }
   });
 
-  // Push-based exposure refresh. HA stores per-entity exposure as entity
-  // registry options, so any flip in HA's Settings → Voice assistants → Expose
-  // UI fires `entity_registry_updated` on the bus. (HA's exposed_entities
-  // module itself doesn't fire a dedicated WS event — confirmed by reading
-  // core/homeassistant/components/homeassistant/exposed_entities.py.) Subscribe
-  // once; HAClient re-subscribes on every reconnect via its busSubscriptions
-  // registry, so we don't need to re-wire after disconnect.
-  //
-  // Debounced because batch flips in the UI fire several events back-to-back;
-  // we'd rather refetch the exposed list + rebuild AGENTS.md once at the end
-  // than thrash on each one.
+  // Cheap cache-busting for exposure. HA stores per-entity exposure as entity
+  // registry options, so flips fire `entity_registry_updated` on the bus.
+  // We just mark the cache stale on each event — no catalog rebuild, no
+  // refetch — and the next write-tool call refreshes lazily via
+  // `ha.ensureExposureFresh()` (see tools.ts). Rebuilding the agent's system
+  // prompt on every registry tick was wasteful; this is a one-line side
+  // effect instead.
   void ha.subscribeEventType("entity_registry_updated");
-  let exposureRefreshTimer: number | undefined;
-  ha.onBusEvent("entity_registry_updated", () => {
-    if (exposureRefreshTimer !== undefined) clearTimeout(exposureRefreshTimer);
-    exposureRefreshTimer = setTimeout(() => {
-      exposureRefreshTimer = undefined;
-      ha.invalidateExposedEntities();
-      regenerateCatalog().catch((err) => console.warn("[exposure] event-driven refresh failed:", err));
-    }, 500);
-  });
+  ha.onBusEvent("entity_registry_updated", () => ha.invalidateExposedEntities());
 
   // Single state_changed → WS broadcast wiring; the listener registry survives
   // HA reconnects so this only needs to run once.
