@@ -6,20 +6,27 @@ that can call services, query states, view history, modify automations and dashb
 
 This project is in early alpha.
 
-> ⚠️ **Use at your own risk.** Castle gives an LLM the ability to call HA
-> services, edit automations and dashboards, and otherwise mutate your
-> Home Assistant install. Tool calls execute without per-action confirmation
-> by default. Models hallucinate, mis-target entities, and occasionally do
-> exactly what you asked in a way you didn't mean. Castle keeps rollback
-> history for automations and dashboards (see the Features section), but
-> there is no rollback for one-shot service calls — a wrongly-issued
-> `lock.unlock` is just unlocked.
+> ✅ **Default install is conservative.** A fresh install reads anything
+> exposed to assistants in HA, can call services and toggle state on those
+> entities, and otherwise looks but doesn't touch. **Editing automations
+> and dashboards, updating add-ons, and restarting Home Assistant are all
+> disabled by default** — you have to explicitly enable each of those tools
+> in Castle's Settings dialog before the agent can reach for them. See the
+> *Security model* section below for the full breakdown.
 >
-> Start with read-only tools enabled, test against entities that don't matter
-> (a spare smart plug, a notify channel, a dev dashboard), and only widen the
+> ⚠️ **Use at your own risk.** Even with the default lockdown, Castle gives
+> an LLM the ability to call HA services on the entities you've exposed —
+> a wrongly-issued `lock.unlock` is just unlocked. Tool calls execute
+> without per-action confirmation. Models hallucinate, mis-target entities,
+> and occasionally do exactly what you asked in a way you didn't mean.
+> Castle keeps rollback history for automations and dashboards once those
+> tools are enabled, but there's no rollback for one-shot service calls.
+>
+> Start with the defaults, test against entities that don't matter (a spare
+> smart plug, a notify channel, a dev dashboard), and only widen the
 > agent's reach once you trust the model + prompt combination. The author
-> takes no responsibility for any damage, data loss, unintended actions, or
-> resulting hijinks. No warranty, express or implied.
+> takes no responsibility for any damage, data loss, unintended actions,
+> or resulting hijinks. No warranty, express or implied.
 
 ## Features
 
@@ -60,9 +67,32 @@ This project is in early alpha.
 - List or cancel any watching task.
 
 **Security model**
-- The agent's catalog (the system prompt listing entities it knows about) is built from entities you've **exposed to assistants** in HA (Settings → Voice assistants → Expose). Unexposed entities are not advertised.
-- **Reads are not gated.** Any tool that fetches state, attributes, history, logs, or notifications will return data for unexposed entities too — if the agent goes looking, it can find them. Treat exposure as "what the agent is told about by default," not a confidentiality boundary.
-- **Writes are gated.** `ha_call_service`, `ha_set_state`, and the automation/dashboard editors refuse to target unexposed entities. The in-app Settings dialog has a single flag — *Allow agent to control non-exposed entities* — that lifts this gate when you explicitly want it lifted.
+
+A fresh install is conservative on purpose: read anything exposed to
+assistants, change small things on those same entities, and *cannot*
+touch automation YAML, dashboards, add-ons, or HA Core itself unless
+you explicitly turn those tools on in Castle's Settings dialog.
+
+Three layers, narrowest to widest:
+
+1. **Catalog is exposure-filtered.** The agent's system prompt lists only entities you've **exposed to assistants** in HA (Settings → Voice assistants → Expose). Unexposed entities aren't advertised, so the agent has to actively search to find them.
+
+2. **Reads are not gated.** Any tool that fetches state, attributes, history, logs, or notifications will return data for unexposed entities too — if the agent searches for an unexposed entity by name, it'll find it. Treat exposure as "what the agent knows about by default," not a confidentiality boundary.
+
+3. **Writes are gated.** `ha_call_service`, `ha_set_state`, and any other write that takes an entity_id refuse to target unexposed entities. The Settings dialog has *Allow agent to control non-exposed entities* if you want to lift that gate; checked on every tool call, so HA-UI exposure flips take effect immediately.
+
+**Tools that are disabled by default**, separate from the exposure gate:
+
+| Tool | What it does | Why it's off by default |
+| --- | --- | --- |
+| `ha_update_automation` | Replace an existing automation's full config | Bad write fires real triggers; rollback exists but the bad state is live until you notice |
+| `ha_edit_dashboard` | Modify a Lovelace dashboard's config | Same reasoning |
+| `ha_update_addon` | Update one HA add-on to its latest version | Wide Supervisor permission; restarts the targeted add-on |
+| `ha_manage` | `check_config`, `reload`, or `restart` of HA Core itself | `restart` takes HA down for ~30s; `reload` silently rewrites every YAML-reloadable integration |
+
+The agent's system prompt still *advertises* these tools (so it can tell you what it would need to fulfil a request — "I'd need ha_manage to restart HA"), it just can't invoke them. Flip individual checkboxes on in **Settings → Tools** when you trust a specific operation.
+
+`ha_create_automation`, the various `*_rollback_*` tools, and `ha_list_addons` are **on** by default — creating a new automation can't break anything that wasn't already broken, rollbacks are recovery operations, and listing add-ons is read-only.
 
 ## Prerequisites
 
