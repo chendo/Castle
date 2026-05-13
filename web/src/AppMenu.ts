@@ -6,6 +6,7 @@ import type { HealthSnapshot, WebSocketRemoteAgent } from "./WebSocketRemoteAgen
 import { openSettingsDialog } from "./SettingsDialog";
 import { openSessionBrowser } from "./SessionBrowser";
 import { openEntityBrowserDialog } from "./EntityBrowserDialog";
+import { withBase } from "./base";
 
 export function buildAppMenu(agent: WebSocketRemoteAgent): HTMLElement {
   const root = document.createElement("aside");
@@ -28,7 +29,6 @@ export function buildAppMenu(agent: WebSocketRemoteAgent): HTMLElement {
   nav.style.cssText = "padding: 6px 0;";
   nav.appendChild(navRow("💬", "Now", () => navigate("/")));
   nav.appendChild(navRow("▦", "Dashboard", () => navigate("/dashboard")));
-  nav.appendChild(navRow("🗨", "Chat", () => navigate("/chat")));
   root.appendChild(nav);
 
   divider(root);
@@ -39,7 +39,7 @@ export function buildAppMenu(agent: WebSocketRemoteAgent): HTMLElement {
   tools.appendChild(navRow("⚙", "Settings", () => openSettingsDialog(agent)));
   tools.appendChild(navRow("🔍", "Browse entities", () => openEntityBrowserDialog(agent)));
   tools.appendChild(navRow("🕑", "Sessions", () => openSessionBrowser(agent)));
-  tools.appendChild(navRow("📄", "View system prompt", () => window.open("/agents.md", "_blank", "noopener")));
+  tools.appendChild(navRow("📄", "View system prompt", () => window.open(withBase("/agents.md"), "_blank", "noopener")));
   root.appendChild(tools);
 
   divider(root);
@@ -147,8 +147,9 @@ function statusRow(label: string): {
  * popstate on the global object.
  */
 function navigate(path: string): void {
-  if (location.pathname !== path) {
-    history.pushState(null, "", path + location.search);
+  const target = withBase(path);
+  if (location.pathname !== target) {
+    history.pushState(null, "", target + location.search);
     globalThis.dispatchEvent(new PopStateEvent("popstate"));
   }
 }

@@ -3,6 +3,7 @@ import { type ToolRenderer, type ToolRenderResult, registerToolRenderer, renderH
 import { html } from "lit";
 import { createRef, ref } from "lit/directives/ref.js";
 import { LineChart } from "lucide";
+import { withBase } from "./base";
 import {
   Chart,
   type ChartConfiguration,
@@ -63,7 +64,7 @@ async function fetchSeries(args: ChartArgs): Promise<Record<string, HistoryPoint
   for (const id of args.entity_ids) params.append("entity_id", id);
   params.set("start", start.toISOString());
   params.set("end", end.toISOString());
-  const res = await fetch(`/history?${params}`);
+  const res = await fetch(withBase(`/history?${params}`));
   if (!res.ok) throw new Error(`history fetch failed: ${res.status}`);
   return await res.json();
 }
@@ -81,31 +82,45 @@ function isDarkMode(): boolean {
   return document.documentElement.classList.contains("dark");
 }
 
+function isBinaryEntity(id: string): boolean {
+  return id.startsWith("binary_sensor.");
+}
+
 function buildConfig(series: Record<string, HistoryPoint[]>, args: ChartArgs): ChartConfiguration<"line"> {
   const dark = isDarkMode();
   const grid = dark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.06)";
   const tick = dark ? "rgba(230,237,243,0.7)" : "rgba(60,60,60,0.85)";
   const legend = dark ? "rgba(230,237,243,0.85)" : "rgba(40,40,40,0.85)";
 
+  const { start, end } = resolveRange(args);
+  const durationMs = end.getTime() - start.getTime();
+  const timeUnit = durationMs > 7 * 86_400_000 ? "day" : durationMs > 24 * 3_600_000 ? "hour" : "minute";
+
   const datasets = Object.entries(series).map(([id, pts], i) => {
     const color = PALETTE[i % PALETTE.length];
+    const binary = isBinaryEntity(id);
+    // Extend the last sample to the window end so a flat run is visible (HA
+    // only emits state changes, so otherwise the line stops at the last flip).
+    const data = pts.map((p) => ({ x: new Date(p.t).getTime(), y: p.v }));
+    if (binary && data.length > 0 && data[data.length - 1].x < end.getTime()) {
+      data.push({ x: end.getTime(), y: data[data.length - 1].y });
+    }
     return {
       label: id,
-      data: pts.map((p) => ({ x: new Date(p.t).getTime(), y: p.v })),
+      data,
       borderColor: color,
       backgroundColor: color + "22",
       fill: Object.keys(series).length === 1, // only fill when single series, otherwise it gets messy
       pointRadius: 0,
       pointHoverRadius: 4,
       borderWidth: 1.8,
-      tension: 0.2,
+      tension: binary ? 0 : 0.2,
+      stepped: binary ? "after" as const : false,
       spanGaps: true,
     };
   });
 
-  const { start, end } = resolveRange(args);
-  const durationMs = end.getTime() - start.getTime();
-  const timeUnit = durationMs > 7 * 86_400_000 ? "day" : durationMs > 24 * 3_600_000 ? "hour" : "minute";
+  const allBinary = Object.keys(series).length > 0 && Object.keys(series).every(isBinaryEntity);
 
   return {
     type: "line",
@@ -131,6 +146,16 @@ function buildConfig(series: Record<string, HistoryPoint[]>, args: ChartArgs): C
           padding: 8,
           titleFont: { size: 12 },
           bodyFont: { size: 12 },
+          callbacks: {
+            label: (ctx) => {
+              const label = ctx.dataset.label ?? "";
+              const y = ctx.parsed.y;
+              if (typeof label === "string" && isBinaryEntity(label)) {
+                return `${label}: ${y === 1 ? "on" : y === 0 ? "off" : y}`;
+              }
+              return `${label}: ${y}`;
+            },
+          },
         },
       },
       scales: {
@@ -144,7 +169,14 @@ function buildConfig(series: Record<string, HistoryPoint[]>, args: ChartArgs): C
         },
         y: {
           grid: { color: grid },
-          ticks: { color: tick, font: { size: 11 } },
+          ticks: {
+            color: tick,
+            font: { size: 11 },
+            ...(allBinary
+              ? { stepSize: 1, callback: (val: number | string) => (val === 1 ? "on" : val === 0 ? "off" : "") }
+              : {}),
+          },
+          ...(allBinary ? { min: -0.1, max: 1.1 } : {}),
         },
       },
     },

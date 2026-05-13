@@ -4,6 +4,7 @@ import { entityCache } from "./EntityStateCache";
 import { entityLabel } from "./EntityLabel";
 import { openSettingsDialog } from "./SettingsDialog";
 import { openSessionBrowser } from "./SessionBrowser";
+import { withBase } from "./base";
 
 /**
  * Tree-style left sidebar.
@@ -156,7 +157,7 @@ export function buildSidebar(agent: WebSocketRemoteAgent): SidebarHandle {
   footer.append(
     actionRow("⚙", "Settings", () => openSettingsDialog(agent)),
     actionRow("🕑", "History", () => openSessionBrowser(agent)),
-    actionRow("📄", "Prompt", () => window.open("/agents.md", "_blank", "noopener")),
+    actionRow("📄", "Prompt", () => window.open(withBase("/agents.md"), "_blank", "noopener")),
   );
 
   root.append(header, tree, footer);

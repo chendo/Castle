@@ -1,10 +1,11 @@
 // Mobile-first app shell: top app bar, hamburger drawer, routed main content,
-// bottom nav. Three routes — `/` (Now), `/dashboard` (area cards), `/chat`
-// (chat panel; bare with ?embed=1 for HA-card iframe embedding).
+// bottom nav. Routes — `/` (Now), `/dashboard` (area cards), `/chat` (bare
+// chat-only view for HA-card iframe embedding; no topbar, drawer, or nav).
 //
 // Responsive: <768px = bottom nav visible, drawer slides over. ≥768px = chat
-// pinned right pane on / and /dashboard, no bottom nav, drawer still
-// available.
+// lives as a resizable right sidebar that's always visible alongside the
+// routed pane (Now/Dashboard); width persists in localStorage. The `/chat`
+// embed view bypasses both layouts and renders chat fullscreen.
 
 import type { ChatPanel } from "@mariozechner/pi-web-ui";
 import type { DashboardHandle } from "./Dashboard";
@@ -17,18 +18,19 @@ import { recentEntitiesStore } from "./RecentEntitiesStore";
 import { entityCache } from "./EntityStateCache";
 import { buildEntityCard, type CardHandle } from "./EntityCard";
 import { buildAppMenu } from "./AppMenu";
+import { BASE, withBase, stripBase } from "./base";
 
 type Route = "now" | "dashboard" | "chat";
 
 function resolveRoute(): Route {
-  const p = location.pathname;
+  const p = stripBase(location.pathname);
   if (p.startsWith("/dashboard")) return "dashboard";
   if (p.startsWith("/chat")) return "chat";
+  // When loaded inside HA's Supervisor ingress iframe, the panel root opens
+  // straight into the bare chat view — that's the primary use case for the
+  // add-on. Elsewhere (standalone / dev), the root still lands on Now.
+  if (BASE && (p === "/" || p === "")) return "chat";
   return "now";
-}
-
-function isEmbed(): boolean {
-  return new URL(location.href).searchParams.get("embed") === "1";
 }
 
 interface ShellInputs {
@@ -136,25 +138,78 @@ export function buildShell({ agent, chatPanel, dashboard }: ShellInputs): HTMLEl
   // ── Main content area ──────────────────────────────────────────────────
   const main = document.createElement("main");
   main.style.cssText = `
-    flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden;
+    flex: 1; min-height: 0; display: flex; overflow: hidden;
   `;
+  // flex-direction is set per-render: row on desktop (split with right
+  // sidebar), column on mobile / embed.
 
   // Route panes — only the active one is mounted into contentArea.
   const nowPane = buildNowPane(agent);
   const dashPane = dashboard.root;
 
-  // Stacked layout: contentArea (Now or Dashboard) on top, chatDock below.
-  // Desktop sees both at once on `/` and `/dashboard`; mobile sees only the
-  // routed pane unless the user explicitly navigates to `/chat`. The chat
-  // panel lives permanently inside chatDock so we never reparent it.
+  // contentArea holds the routed pane (Now / Dashboard). chatDock sits
+  // alongside it on desktop as a resizable right sidebar, or replaces it
+  // entirely on mobile when the user navigates to /chat. The chat panel lives
+  // permanently inside chatDock so we never reparent it.
   const contentArea = document.createElement("div");
   contentArea.style.cssText = "flex: 1; min-width: 0; min-height: 0; display: flex;";
 
   const chatDock = buildChatDock(chatPanel);
-  // Subtle separator between dashboard and chat in desktop split mode.
-  chatDock.style.borderTop = "1px solid var(--border)";
 
-  main.append(contentArea, chatDock);
+  // Resizer handle between contentArea and chatDock on desktop. Hidden on
+  // mobile/embed. Drag to resize the sidebar; the width persists.
+  const CHAT_WIDTH_KEY = "castle.chatSidebarWidth";
+  const MIN_CHAT_WIDTH = 320;
+  const MAX_CHAT_WIDTH = 800;
+  const MIN_CONTENT_WIDTH = 320;
+  const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+  let chatWidth = clamp(
+    Number(localStorage.getItem(CHAT_WIDTH_KEY)) || 420,
+    MIN_CHAT_WIDTH,
+    MAX_CHAT_WIDTH,
+  );
+
+  const resizer = document.createElement("div");
+  resizer.setAttribute("role", "separator");
+  resizer.setAttribute("aria-orientation", "vertical");
+  resizer.title = "Drag to resize";
+  resizer.style.cssText = `
+    flex: 0 0 6px; cursor: col-resize; background: transparent;
+    border-left: 1px solid var(--border);
+    transition: background-color 120ms ease;
+    touch-action: none;
+  `;
+  resizer.addEventListener("mouseenter", () => { resizer.style.background = "var(--border)"; });
+  resizer.addEventListener("mouseleave", () => { if (!dragging) resizer.style.background = "transparent"; });
+
+  let dragging = false;
+  resizer.addEventListener("pointerdown", (e) => {
+    dragging = true;
+    resizer.setPointerCapture(e.pointerId);
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "col-resize";
+    e.preventDefault();
+  });
+  resizer.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    const rect = main.getBoundingClientRect();
+    const maxByContent = Math.max(MIN_CHAT_WIDTH, rect.width - MIN_CONTENT_WIDTH);
+    chatWidth = clamp(rect.right - e.clientX, MIN_CHAT_WIDTH, Math.min(MAX_CHAT_WIDTH, maxByContent));
+    chatDock.style.flex = `0 0 ${chatWidth}px`;
+  });
+  const endDrag = (e: PointerEvent) => {
+    if (!dragging) return;
+    dragging = false;
+    try { resizer.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+    document.body.style.userSelect = "";
+    document.body.style.cursor = "";
+    resizer.style.background = "transparent";
+    localStorage.setItem(CHAT_WIDTH_KEY, String(chatWidth));
+  };
+  resizer.addEventListener("pointerup", endDrag);
+  resizer.addEventListener("pointercancel", endDrag);
+
+  main.append(contentArea, resizer, chatDock);
 
   // ── Bottom nav (mobile) ────────────────────────────────────────────────
   const bottomNav = document.createElement("nav");
@@ -165,8 +220,7 @@ export function buildShell({ agent, chatPanel, dashboard }: ShellInputs): HTMLEl
   `;
   const navNow = navButton("now", "💬", "Now");
   const navDash = navButton("dashboard", "▦", "Dashboard");
-  const navChat = navButton("chat", "🗨", "Chat");
-  bottomNav.append(navNow, navDash, navChat);
+  bottomNav.append(navNow, navDash);
 
   function navButton(route: Route, icon: string, label: string): HTMLButtonElement {
     const b = document.createElement("button");
@@ -186,7 +240,7 @@ export function buildShell({ agent, chatPanel, dashboard }: ShellInputs): HTMLEl
 
   // ── Routing ────────────────────────────────────────────────────────────
   function navigate(route: Route): void {
-    const path = route === "now" ? "/" : `/${route}`;
+    const path = withBase(route === "now" ? "/" : `/${route}`);
     if (location.pathname !== path) {
       history.pushState(null, "", path + location.search);
     }
@@ -213,26 +267,34 @@ export function buildShell({ agent, chatPanel, dashboard }: ShellInputs): HTMLEl
       dashPane.style.display = "";
       contentArea.appendChild(dashPane);
     }
-    // /chat: contentArea stays empty so the dock can take the full main column.
 
-    // 2. Layout: split-with-dock (desktop, non-chat) vs full-pane vs full-chat.
-    const embed = isEmbed() && route === "chat";
+    // 2. Layout: /chat is the bare embed view (no chrome, chat fullscreen),
+    //    desktop is split-with-sidebar, mobile is route-based.
     if (route === "chat") {
+      main.style.flexDirection = "column";
       contentArea.style.display = "none";
+      resizer.style.display = "none";
       chatDock.style.display = "flex";
       chatDock.style.flex = "1";
-      chatDock.style.height = "auto";
       chatDock.style.minHeight = "0";
+      chatDock.style.borderLeft = "none";
       chatDock.style.borderTop = "none";
     } else if (isDesktop) {
+      // Desktop: chat is always visible as a resizable right sidebar.
+      main.style.flexDirection = "row";
       contentArea.style.display = "flex";
-      contentArea.style.flex = "1 1 60%";
+      contentArea.style.flex = "1 1 auto";
+      resizer.style.display = "block";
       chatDock.style.display = "flex";
-      chatDock.style.flex = "0 0 40%";
-      chatDock.style.minHeight = "240px";
-      chatDock.style.height = "";
-      chatDock.style.borderTop = "1px solid var(--border)";
+      chatDock.style.flex = `0 0 ${chatWidth}px`;
+      chatDock.style.minHeight = "0";
+      chatDock.style.borderLeft = "1px solid var(--border)";
+      chatDock.style.borderTop = "none";
     } else {
+      // Mobile: column layout, routed pane only (chat lives at /chat as a
+      // bare embed, intentionally not reachable from the bottom nav).
+      main.style.flexDirection = "column";
+      resizer.style.display = "none";
       contentArea.style.display = "flex";
       contentArea.style.flex = "1";
       chatDock.style.display = "none";
@@ -243,9 +305,10 @@ export function buildShell({ agent, chatPanel, dashboard }: ShellInputs): HTMLEl
       btn.style.color = active ? "var(--primary, #58a6ff)" : "var(--muted-foreground)";
     }
 
-    topbar.style.display = embed ? "none" : "flex";
+    const bare = route === "chat";
+    topbar.style.display = bare ? "none" : "flex";
     // Bottom nav is mobile-only navigation — desktop uses the AppMenu drawer.
-    bottomNav.style.display = embed || isDesktop ? "none" : "flex";
+    bottomNav.style.display = bare || isDesktop ? "none" : "flex";
   }
 
   globalThis.addEventListener("popstate", () => render(resolveRoute()));
@@ -345,19 +408,41 @@ function buildChatDock(chatPanel: ChatPanel): HTMLElement {
   const wrap = document.createElement("section");
   wrap.style.cssText = `
     min-width: 0; min-height: 0;
-    display: flex; flex-direction: column; position: relative;
+    display: flex; flex-direction: column;
     background: var(--background);
   `;
   wrap.appendChild(chatPanel as unknown as HTMLElement);
 
-  // Voice button — pinned bottom-right, above the chat input. UI stub.
-  const voice = buildVoiceButton();
-  voice.style.position = "absolute";
-  voice.style.right = "18px";
-  voice.style.bottom = "84px";
-  voice.style.zIndex = "5";
-  wrap.appendChild(voice);
+  // Voice button — mounted inside pi-web-ui's message-editor button row,
+  // alongside the paperclip. The composer is `max-w-3xl mx-auto` so anchoring
+  // by viewport coordinates (the previous `position: absolute; right: 18px`)
+  // drifted into empty space on wide screens. Living inside the button row
+  // keeps it visually attached to the input regardless of viewport width.
+  mountVoiceInComposer(chatPanel as unknown as HTMLElement, buildVoiceButton());
 
   return wrap;
+}
+
+/**
+ * Inject the voice button into the chat composer's left button group as the
+ * first child (before the attachment paperclip). Pi-web-ui re-renders the
+ * editor on every keystroke and structural property change, which clears any
+ * children we add — so a MutationObserver re-mounts the button whenever Lit
+ * replaces the group's contents. Mount is idempotent and O(1).
+ */
+function mountVoiceInComposer(chatPanel: HTMLElement, voice: HTMLButtonElement): void {
+  const tryMount = (): void => {
+    const editor = chatPanel.querySelector("message-editor");
+    if (!editor) return;
+    const row = editor.querySelector(".justify-between");
+    if (!row) return;
+    const leftGroup = row.firstElementChild;
+    if (!leftGroup) return;
+    if (leftGroup.firstChild === voice) return;
+    leftGroup.insertBefore(voice, leftGroup.firstChild);
+  };
+  const obs = new MutationObserver(tryMount);
+  obs.observe(chatPanel, { childList: true, subtree: true });
+  tryMount();
 }
 

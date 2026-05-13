@@ -15,11 +15,15 @@ export function buildVoiceButton(): HTMLButtonElement {
       <line x1="8" y1="23" x2="16" y2="23"/>
     </svg>
   `;
+  // Match the visual weight of the other composer buttons (h-8 w-8 ghost).
+  // Sizing/border-radius come from pi-web-ui's Button(variant: "ghost",
+  // size: "icon"), so the mic sits flush in the left button group without
+  // looking like a stuck-on overlay.
   btn.style.cssText = `
     display: inline-flex; align-items: center; justify-content: center;
-    width: 40px; height: 40px; border-radius: 999px;
-    background: var(--card); color: var(--muted-foreground);
-    border: 1px solid var(--border); cursor: pointer;
+    width: 32px; height: 32px; border-radius: 8px;
+    background: transparent; color: var(--muted-foreground);
+    border: none; cursor: pointer;
     flex-shrink: 0; touch-action: none; user-select: none;
   `;
   let pressing = false;
@@ -32,7 +36,7 @@ export function buildVoiceButton(): HTMLButtonElement {
   const release = () => {
     if (!pressing) return;
     pressing = false;
-    btn.style.background = "var(--card)";
+    btn.style.background = "transparent";
     btn.style.color = "var(--muted-foreground)";
     console.log("[voice] release (stub)");
   };

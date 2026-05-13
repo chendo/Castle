@@ -10,6 +10,7 @@ import {
   Tooltip,
 } from "chart.js";
 import "chartjs-adapter-date-fns";
+import { withBase } from "./base";
 
 Chart.register(LineController, LineElement, PointElement, LinearScale, TimeScale, Filler, Legend, Tooltip);
 
@@ -228,7 +229,7 @@ function renderSensorChart(entityId: string): HTMLElement {
       const end = new Date();
       const start = new Date(end.getTime() - 24 * 3_600_000);
       const params = new URLSearchParams({ entity_id: entityId, start: start.toISOString(), end: end.toISOString() });
-      const res = await fetch(`/history?${params}`);
+      const res = await fetch(withBase(`/history?${params}`));
       if (!res.ok) throw new Error(`status ${res.status}`);
       const data = await res.json() as Record<string, Array<{ t: string; v: number }>>;
       const points = data[entityId] ?? [];

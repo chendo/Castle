@@ -1,4 +1,5 @@
 import type { WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
+import { withBase } from "./base";
 
 interface ModelsResponse {
   active: string;
@@ -92,7 +93,7 @@ export function openModelPickerDialog(agent: WebSocketRemoteAgent): void {
   search.oninput = renderList;
 
   // Fetch + populate.
-  fetch("/models")
+  fetch(withBase("/models"))
     .then(async (res) => {
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));

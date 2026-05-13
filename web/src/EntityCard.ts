@@ -13,6 +13,7 @@
 // dispose() that tears down subscriptions when the card is replaced.
 
 import type { EntityState, WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
+import { withBase } from "./base";
 import type { EntityStateCache } from "./EntityStateCache";
 import { showEntityDetail } from "./EntityDetail";
 import { entityLabel } from "./EntityLabel";
@@ -308,7 +309,7 @@ function buildSensorBody(state: EntityState | null, entityId: string): HTMLEleme
 async function fetchAndRenderSparkline(entityId: string, slot: HTMLElement): Promise<void> {
   const end = new Date();
   const start = new Date(end.getTime() - 24 * 3_600_000);
-  const url = `/history?entity_id=${encodeURIComponent(entityId)}&start=${encodeURIComponent(start.toISOString())}&end=${encodeURIComponent(end.toISOString())}`;
+  const url = withBase(`/history?entity_id=${encodeURIComponent(entityId)}&start=${encodeURIComponent(start.toISOString())}&end=${encodeURIComponent(end.toISOString())}`);
   let data: Record<string, Array<{ t: string; v: number }>>;
   try {
     const res = await fetch(url);

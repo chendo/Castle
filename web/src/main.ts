@@ -15,7 +15,8 @@ import {
   setAppStorage,
 } from "@mariozechner/pi-web-ui";
 import { WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
-import { ensureCollapsibleRenderer, registerHAToolRenderers } from "./HAToolRenderer";
+import { withBase } from "./base";
+import { ensureCollapsibleRenderer, registerHAToolRenderers, registerHistoryRenderers } from "./HAToolRenderer";
 import { registerChartRenderer } from "./ChartRenderer";
 import { registerCameraRenderer } from "./CameraRenderer";
 import { buildDashboard } from "./Dashboard";
@@ -56,7 +57,7 @@ setAppStorage(new AppStorage(settings, providerKeys, sessions, customProviders, 
 // Real LLM calls happen on the server, not in the browser.
 await providerKeys.set("local", "remote");
 
-const wsUrl = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
+const wsUrl = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${withBase("/ws")}`;
 const agent = new WebSocketRemoteAgent(wsUrl);
 
 // Wire the shared stores to the agent before any consumer subscribes — each
@@ -68,6 +69,11 @@ recentEntitiesStore.attachToAgent(agent);
 // Now safe to register the camera/present-card renderer — it needs the
 // cache + the agent (for ha_call_service via /ws service_call).
 registerCameraRenderer({ agent, cache: entityCache });
+
+// Replace the compact renderer for ha_list_*_versions with the version-table
+// renderer that ships a Rollback button per row. Registered after the agent
+// so the button can dispatch prompts through it.
+registerHistoryRenderers(agent);
 
 // Tools we don't have a bespoke widget for get a generic collapsed renderer.
 agent.subscribe((event) => {
