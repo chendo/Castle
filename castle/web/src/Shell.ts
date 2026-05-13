@@ -154,7 +154,7 @@ export function buildShell({ agent, chatPanel, dashboard }: ShellInputs): HTMLEl
   const contentArea = document.createElement("div");
   contentArea.style.cssText = "flex: 1; min-width: 0; min-height: 0; display: flex;";
 
-  const chatDock = buildChatDock(chatPanel);
+  const chatDock = buildChatDock(chatPanel, agent);
 
   // Resizer handle between contentArea and chatDock on desktop. Hidden on
   // mobile/embed. Drag to resize the sidebar; the width persists.
@@ -404,7 +404,7 @@ function buildNowPane(agent: WebSocketRemoteAgent): HTMLElement {
   return pane;
 }
 
-function buildChatDock(chatPanel: ChatPanel): HTMLElement {
+function buildChatDock(chatPanel: ChatPanel, agent: WebSocketRemoteAgent): HTMLElement {
   const wrap = document.createElement("section");
   wrap.style.cssText = `
     min-width: 0; min-height: 0;
@@ -413,24 +413,34 @@ function buildChatDock(chatPanel: ChatPanel): HTMLElement {
   `;
   wrap.appendChild(chatPanel as unknown as HTMLElement);
 
-  // Voice button — mounted inside pi-web-ui's message-editor button row,
+  // Composer buttons — mounted inside pi-web-ui's message-editor button row,
   // alongside the paperclip. The composer is `max-w-3xl mx-auto` so anchoring
   // by viewport coordinates (the previous `position: absolute; right: 18px`)
   // drifted into empty space on wide screens. Living inside the button row
-  // keeps it visually attached to the input regardless of viewport width.
-  mountVoiceInComposer(chatPanel as unknown as HTMLElement, buildVoiceButton());
+  // keeps these visually attached to the input regardless of viewport width.
+  //
+  // Settings is here (in addition to the AppMenu drawer) specifically so the
+  // bare `/chat` view used by the HA ingress iframe — which has no topbar
+  // and no drawer — still has an entry point to Castle's settings dialog.
+  const settings = buildComposerIconButton({
+    title: "Castle settings",
+    svg: SETTINGS_GEAR_SVG,
+    onClick: () => openSettingsDialog(agent),
+  });
+  mountComposerButtons(chatPanel as unknown as HTMLElement, [buildVoiceButton(), settings]);
 
   return wrap;
 }
 
 /**
- * Inject the voice button into the chat composer's left button group as the
- * first child (before the attachment paperclip). Pi-web-ui re-renders the
- * editor on every keystroke and structural property change, which clears any
- * children we add — so a MutationObserver re-mounts the button whenever Lit
- * replaces the group's contents. Mount is idempotent and O(1).
+ * Inject Castle's own buttons into the chat composer's left button group, in
+ * the given order at the front (before pi-web-ui's paperclip). Pi-web-ui
+ * re-renders the editor on every keystroke and structural property change,
+ * which clears any children we add — so a MutationObserver re-mounts them
+ * whenever Lit replaces the group's contents. Mount is idempotent and O(n)
+ * in the number of buttons.
  */
-function mountVoiceInComposer(chatPanel: HTMLElement, voice: HTMLButtonElement): void {
+function mountComposerButtons(chatPanel: HTMLElement, buttons: HTMLButtonElement[]): void {
   const tryMount = (): void => {
     const editor = chatPanel.querySelector("message-editor");
     if (!editor) return;
@@ -438,11 +448,42 @@ function mountVoiceInComposer(chatPanel: HTMLElement, voice: HTMLButtonElement):
     if (!row) return;
     const leftGroup = row.firstElementChild;
     if (!leftGroup) return;
-    if (leftGroup.firstChild === voice) return;
-    leftGroup.insertBefore(voice, leftGroup.firstChild);
+    // Insert in reverse so the final DOM order matches `buttons[]`.
+    for (let i = buttons.length - 1; i >= 0; i--) {
+      const btn = buttons[i];
+      if (leftGroup.children[i] === btn) continue;
+      leftGroup.insertBefore(btn, leftGroup.firstChild);
+    }
   };
   const obs = new MutationObserver(tryMount);
   obs.observe(chatPanel, { childList: true, subtree: true });
   tryMount();
+}
+
+const SETTINGS_GEAR_SVG = `
+  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+    <circle cx="12" cy="12" r="3"/>
+  </svg>
+`;
+
+/** Composer icon button — visually matches VoiceButton's ghost-icon style. */
+function buildComposerIconButton(opts: { title: string; svg: string; onClick: () => void }): HTMLButtonElement {
+  const btn = document.createElement("button");
+  btn.setAttribute("aria-label", opts.title);
+  btn.title = opts.title;
+  btn.innerHTML = opts.svg;
+  btn.style.cssText = `
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 32px; height: 32px; border-radius: 8px;
+    background: transparent; color: var(--muted-foreground);
+    border: none; cursor: pointer;
+    flex-shrink: 0;
+  `;
+  btn.addEventListener("click", (e) => { e.preventDefault(); opts.onClick(); });
+  // Subtle hover affordance — matches pi-web-ui's ghost button.
+  btn.addEventListener("pointerenter", () => { btn.style.background = "var(--accent, rgba(0,0,0,0.05))"; });
+  btn.addEventListener("pointerleave", () => { btn.style.background = "transparent"; });
+  return btn;
 }
 
