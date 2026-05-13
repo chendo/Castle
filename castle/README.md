@@ -6,6 +6,21 @@ that can call services, query states, view history, modify automations and dashb
 
 This project is in early alpha.
 
+> ⚠️ **Use at your own risk.** Castle gives an LLM the ability to call HA
+> services, edit automations and dashboards, and otherwise mutate your
+> Home Assistant install. Tool calls execute without per-action confirmation
+> by default. Models hallucinate, mis-target entities, and occasionally do
+> exactly what you asked in a way you didn't mean. Castle keeps rollback
+> history for automations and dashboards (see the Features section), but
+> there is no rollback for one-shot service calls — a wrongly-issued
+> `lock.unlock` is just unlocked.
+>
+> Start with read-only tools enabled, test against entities that don't matter
+> (a spare smart plug, a notify channel, a dev dashboard), and only widen the
+> agent's reach once you trust the model + prompt combination. The author
+> takes no responsibility for any damage, data loss, unintended actions, or
+> resulting hijinks. No warranty, express or implied.
+
 ## Features
 
 **Local-first, low-latency**
@@ -61,6 +76,31 @@ This project is in early alpha.
 - Entities exposed to assistants in HA (Settings → Voice assistants → Expose).
   Castle only sees what you've exposed; an empty exposure list means an empty
   agent.
+
+## Recommended models
+
+Castle is built around a tool-calling LLM and the system prompt grows with
+your entity catalog, so the model needs **strong tool-use, a long enough
+context window, and an instruction-following temperament**. Reasoning models
+also help — the agent often needs to plan a multi-step tool sequence (look up
+an entity, then call a service on it, then verify).
+
+**Daily-driver pick: `unsloth/qwen3.6-35b-a3b`**
+
+Qwen 3.6 35B with 3B active parameters — a mixture-of-experts model, so only
+~3B params are hot per token. That gives near-3B inference speed at ~35B
+quality and lands well within typical local-LLM memory budgets at common
+GGUF quants. It's solid at structured tool calls, has a 32k–128k context
+window depending on quant, and is the model the author runs day-to-day.
+
+Where to get it: search `unsloth/qwen3.6-35b-a3b` in LM Studio, or pull a
+GGUF from Hugging Face for llama.cpp / Ollama. Pick the largest quant your
+hardware fits.
+
+Other models work — anything that does strict OpenAI-style function calling
+will plug in via `llm_type: openai-completions`. If you find a model that
+behaves particularly well (or particularly badly) with Castle, an issue or
+PR updating this section is welcome.
 
 ## Install
 
