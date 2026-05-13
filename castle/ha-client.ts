@@ -420,6 +420,17 @@ export class HAClient {
     }
   }
 
+  /**
+   * Drop the cached exposed-entities set so the next getExposedEntities() call
+   * re-fetches from HA. Called when an `entity_registry_updated` event lands
+   * (HA stores exposure as entity-registry options in recent versions, so any
+   * exposure flip from HA's UI fires that event), and as a safety net before
+   * the periodic catalog rebuild.
+   */
+  invalidateExposedEntities(): void {
+    this.exposedEntities = undefined;
+  }
+
   async getAreas(): Promise<Map<string, { name: string; entities: Set<string> }>> {
     try {
       // Areas live in the area registry. Entity-area assignment lives in the
