@@ -12,7 +12,7 @@ docker-compose.override.yaml
 
 # Frontend
 node_modules/
-web/dist/
+**/web/dist/
 
 # Logs / scratch
 *.log
