@@ -2185,6 +2185,56 @@ export function buildTools(
     },
 
     {
+      name: "ha_manage",
+      label: "Manage Home Assistant",
+      description: "Manage Home Assistant Core itself: `check_config` validates the YAML configuration without applying anything, `reload` applies YAML-config changes for every integration that supports hot-reload (homeassistant.reload_all — automations, scripts, scenes, groups, customize, …), `restart` cycles HA Core (it goes down for ~30s; Castle reconnects automatically when it's back). Disabled by default — the user must enable it in Castle's Settings. ALWAYS confirm with the user before reload or restart, and run check_config first when an edit batch may have left invalid YAML. `check_config` requires Castle to be running as an HA Supervisor add-on (uses the `/core/check` Supervisor endpoint); `reload` and `restart` work in any deployment.",
+      parameters: Type.Object({
+        action: Type.Union([
+          Type.Literal("check_config"),
+          Type.Literal("reload"),
+          Type.Literal("restart"),
+        ], { description: "Which management action to take. 'check_config' is read-only and safe; 'reload' and 'restart' visibly affect every HA user." }),
+      }),
+      async execute(_id: string, params: { action: "check_config" | "reload" | "restart" }): Promise<ToolResult> {
+        if (params.action === "check_config") {
+          try {
+            const res = await supervisorCall("/core/check", { method: "POST" });
+            const json = await res.json().catch(() => ({})) as {
+              result?: string; message?: string; data?: Record<string, unknown>;
+            };
+            // Supervisor returns { result: "ok" } for valid config, or
+            // { result: "error", message: "<errors>" } for invalid. Surface
+            // either as readable text rather than dumping raw JSON.
+            if (res.ok && json.result === "ok") {
+              return ok("Config check passed. No errors or warnings — reload or restart will apply cleanly.");
+            }
+            const msg = json.message ?? `(no message; HTTP ${res.status})`;
+            return ok(`Config check FAILED. Do not reload or restart yet.\n\n${msg}`);
+          } catch (err) {
+            return ok(`Config check unavailable: ${(err as Error).message}. (Castle isn't running as an HA Supervisor add-on, so the /core/check endpoint isn't reachable. You can still inspect YAML files directly.)`);
+          }
+        }
+        if (params.action === "reload") {
+          try {
+            await ha.callService("homeassistant", "reload_all");
+            return ok("Reload issued (homeassistant.reload_all). Every YAML-reloadable integration picked up its current config. Integration-specific errors land in HA's log — call ha_get_logs if anything looks off.");
+          } catch (err) {
+            return ok(`Reload failed: ${(err as Error).message}`);
+          }
+        }
+        // restart
+        try {
+          await ha.callService("homeassistant", "restart");
+          return ok("Restart issued (homeassistant.restart). HA is shutting down now; the WebSocket will drop and Castle will reconnect when HA finishes booting (~30s typical). Don't fire more tool calls until ha_get_states returns successfully.");
+        } catch (err) {
+          // The shutdown can race the response — a connection error here
+          // usually means the restart already started.
+          return ok(`Restart call returned an error: ${(err as Error).message}. If HA actually started shutting down this is expected — the WS closed before the service-call ack landed. Wait ~30s and call ha_get_states to confirm HA is back.`);
+        }
+      },
+    },
+
+    {
       name: "ha_get_automation",
       label: "Get Automation",
       description: "Fetch the full config for one automation. `automation_id` is the numeric id from the entity's `attributes.id` (NOT the entity_id slug — e.g. for automation.morning_lights with attributes.id=1776352404227, pass 1776352404227). Returns the JSON config you'd see in HA's automation editor.",

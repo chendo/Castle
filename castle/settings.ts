@@ -32,6 +32,7 @@ export const ALL_TOOL_NAMES = [
   "ha_rollback_dashboard",
   "ha_list_addons",
   "ha_update_addon",
+  "ha_manage",
   "schedule_task",
   "list_tasks",
   "cancel_task",
@@ -68,6 +69,7 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
   ha_rollback_dashboard: "restore a dashboard to a previously saved version",
   ha_list_addons: "list installed HA add-ons with their current and latest versions (Supervisor API)",
   ha_update_addon: "update one HA add-on to its latest version (Supervisor API)",
+  ha_manage: "manage Home Assistant Core itself — check_config / reload / restart",
   schedule_task: "set up a scheduled / triggered task (reminders, recurring checks, watch a camera or sensor and notify on a condition)",
   list_tasks: "list all scheduled tasks the home agent is currently watching",
   cancel_task: "stop a watching task by id",
@@ -138,6 +140,9 @@ const DEFAULT_DASHBOARD_HISTORY_MAX = (() => {
 //                           history + rollback, but a bad write fires real
 //                           triggers immediately.
 //   ha_edit_dashboard     — rewrites live Lovelace config. Same reasoning.
+//   ha_manage             — restart / reload of HA Core. Restart visibly
+//                           affects every HA user; reload silently rewrites
+//                           running automations / scripts / scenes.
 //
 // Note: `ha_create_automation` and rollback tools are NOT in this list. A
 // brand-new automation can't break anything that wasn't already broken, and
@@ -147,6 +152,7 @@ const DEFAULT_DISABLED_TOOLS = new Set<ToolName>([
   "ha_update_addon",
   "ha_update_automation",
   "ha_edit_dashboard",
+  "ha_manage",
 ]);
 
 const DEFAULT_ENABLED_TOOLS: ToolName[] = ALL_TOOL_NAMES.filter((t) => !DEFAULT_DISABLED_TOOLS.has(t));

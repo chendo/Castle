@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1
+
+- Add `ha_manage` tool with three actions: `check_config` (validate YAML via the Supervisor `/core/check` endpoint), `reload` (`homeassistant.reload_all` — picks up YAML edits without restarting), `restart` (`homeassistant.restart`, ~30s downtime). Default-disabled; user opts in via Castle Settings.
+
 ## 0.2.0
 
 - Add `ha_create_automation` tool for creating new automations from scratch (alias + triggers + actions); records as v1 in resource-history.
