@@ -27,6 +27,18 @@ docker compose exec castle deno test --allow-all tests/catalog_test.ts --filter 
 
 After editing `*.ts` (Deno backend): `docker compose restart castle`. After editing `web/src/*`: rebuild bundle with `docker compose --profile dev up -d web-watch` (continuous) or `docker compose run --rm web-build` (one-shot). The browser must be refreshed manually — there's no HMR.
 
+## Validating in a browser
+
+The dev instance is reachable at `http://host.docker.internal:7091/` (also where Playwright should point). **Check `docker compose ps` before `docker compose up castle`** — a castle may already be running outside compose on the same port, and starting a second one either fails to bind or shadows the live instance.
+
+Useful checkpoints once it's up: `GET /health` returns `{ha_ok, llm_ok, ...}`; the drawer (`☰`) lists Now / Dashboard / Chat plus Settings / Browse entities / Sessions / View system prompt; the bottom of the drawer shows two status dots for HA and LLM — both green is the smoke test that the WS catalog populated.
+
+## Boot troubleshooting
+
+- **`docker-compose.override.yml` is local-only and gitignored.** It carries the host-specific bits (`HA_URL`, `extra_hosts`, proxy env, port mapping) that `docker-compose.yml` deliberately leaves blank. Out of the box on a fresh checkout it doesn't exist; on an established machine it's usually the thing that's stale after the network around it changes.
+- **`docker compose logs castle` shows `JSR package manifest for '@std/encoding' failed to load`** (or any other early-fetch hang) — the container can't reach the outbound HTTP(S) proxy referenced in its env. Confirm the proxy host resolves from inside the container (`docker compose exec castle getent hosts <host>`) and that the proxy is actually listening; if the override pins it to a stale IP, update or unpin.
+- **`curl http://localhost:7091/...` returns 403 with a body mentioning an allowlist** — that's the upstream proxy intercepting because `HTTP_PROXY` is set in the shell environment. Either `unset` it for the call, pass `--noproxy '*'`, or hit the URL through Playwright, which has its own network context.
+
 ## Architecture
 
 Castle is a Deno HTTP/WebSocket server that bridges a Home Assistant install to an OpenAI-compatible LLM (LM Studio by default), exposing natural-language control through a Lit-based browser UI.

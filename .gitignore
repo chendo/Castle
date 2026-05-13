@@ -21,9 +21,14 @@ web/dist/
 # Local dev scratch — notes, throwaway scripts that shouldn't be tracked
 workspace/
 
+# Claude Code local session state (permissions, transcripts, scratch).
+.claude/
+
 # Playwright-MCP session artifacts (browser snapshots, screenshots from local testing)
 .playwright-mcp/
-topbar.png
+# Screenshots at the repo root — UI captures can leak the live HA_URL / LLM_URL
+# shown in the drawer footer. Whitelist any image we deliberately want tracked.
+*.png
 
 # ha-demo runtime artifacts — Home Assistant writes these on boot, plus the
 # integration tests mutate automations.yaml via the REST API. Track only the
