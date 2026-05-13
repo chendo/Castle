@@ -30,6 +30,8 @@ export const ALL_TOOL_NAMES = [
   "ha_list_dashboard_versions",
   "ha_diff_dashboard_versions",
   "ha_rollback_dashboard",
+  "ha_list_addons",
+  "ha_update_addon",
   "schedule_task",
   "list_tasks",
   "cancel_task",
@@ -64,6 +66,8 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
   ha_list_dashboard_versions: "list saved versions of a dashboard (for diff or rollback)",
   ha_diff_dashboard_versions: "show a unified diff between two saved versions of a dashboard",
   ha_rollback_dashboard: "restore a dashboard to a previously saved version",
+  ha_list_addons: "list installed HA add-ons with their current and latest versions (Supervisor API)",
+  ha_update_addon: "update one HA add-on to its latest version (Supervisor API)",
   schedule_task: "set up a scheduled / triggered task (reminders, recurring checks, watch a camera or sensor and notify on a condition)",
   list_tasks: "list all scheduled tasks the home agent is currently watching",
   cancel_task: "stop a watching task by id",
@@ -123,8 +127,32 @@ const DEFAULT_DASHBOARD_HISTORY_MAX = (() => {
   return Number.isFinite(fromEnv) && fromEnv >= 0 ? Math.floor(fromEnv) : 20;
 })();
 
+// Tools the user has to explicitly opt into. They're still registered (so
+// the system prompt's disabled-tools section advertises them) and the user
+// can flip them on in Castle's Settings dialog. Reasoning per tool:
+//
+//   ha_update_addon       — mutates Supervisor state, requires hassio_role:
+//                           manager and could update / restart anything on
+//                           the system if misused.
+//   ha_update_automation  — rewrites live automations. Castle keeps version
+//                           history + rollback, but a bad write fires real
+//                           triggers immediately.
+//   ha_edit_dashboard     — rewrites live Lovelace config. Same reasoning.
+//
+// Note: `ha_create_automation` and rollback tools are NOT in this list. A
+// brand-new automation can't break anything that wasn't already broken, and
+// rollbacks are recovery operations the user wants available even on a
+// default-locked-down install.
+const DEFAULT_DISABLED_TOOLS = new Set<ToolName>([
+  "ha_update_addon",
+  "ha_update_automation",
+  "ha_edit_dashboard",
+]);
+
+const DEFAULT_ENABLED_TOOLS: ToolName[] = ALL_TOOL_NAMES.filter((t) => !DEFAULT_DISABLED_TOOLS.has(t));
+
 const DEFAULTS: Settings = {
-  enabledTools: [...ALL_TOOL_NAMES],
+  enabledTools: DEFAULT_ENABLED_TOOLS,
   contextWindow: DEFAULT_CONTEXT_WINDOW,
   allowUnexposedWrites: false,
   conversationCapMb: DEFAULT_CONVERSATION_CAP_MB,

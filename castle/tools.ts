@@ -16,6 +16,23 @@ type ToolResult = { content: ToolContent[]; details: Record<string, unknown> };
 
 const BYTES_PER_KB = 1024;
 
+// Supervisor proxy access. SUPERVISOR_TOKEN / HASSIO_TOKEN are injected by HA
+// Supervisor (via /usr/bin/with-contenv in our CMD) only when Castle runs as
+// an add-on. Empty in dev / explicit-HA mode — addon-related tools refuse in
+// that case with a clear error.
+const SUPERVISOR_TOKEN = Deno.env.get("SUPERVISOR_TOKEN") ?? Deno.env.get("HASSIO_TOKEN") ?? "";
+
+async function supervisorCall(path: string, init: RequestInit = {}): Promise<Response> {
+  if (!SUPERVISOR_TOKEN) {
+    throw new Error("Supervisor API unavailable (Castle isn't running under HA Supervisor)");
+  }
+  const headers = new Headers(init.headers);
+  headers.set("Authorization", `Bearer ${SUPERVISOR_TOKEN}`);
+  if (!headers.has("Content-Type") && init.body) headers.set("Content-Type", "application/json");
+  const url = `http://supervisor${path.startsWith("/") ? path : `/${path}`}`;
+  return await fetch(url, { ...init, headers });
+}
+
 function utf8Bytes(s: string): number {
   return new TextEncoder().encode(s).length;
 }
@@ -2078,6 +2095,91 @@ export function buildTools(
           );
         } catch (err) {
           return ok(`Failed to rollback dashboard "${params.name}": ${(err as Error).message}`);
+        }
+      },
+    },
+
+    {
+      name: "ha_list_addons",
+      label: "List Add-ons",
+      description: "List installed Home Assistant add-ons via the Supervisor API. Returns slug, name, current version, latest available version, whether an update is available, and run state for each. Only works when Castle itself runs as an HA Supervisor add-on; refuses otherwise. Use the returned slug as input to ha_update_addon.",
+      parameters: Type.Object({}),
+      async execute(): Promise<ToolResult> {
+        try {
+          const res = await supervisorCall("/addons");
+          if (!res.ok) {
+            return ok(`Failed to list add-ons: ${res.status} ${(await res.text()).slice(0, 500)}`);
+          }
+          const json = await res.json() as {
+            data?: { addons?: Array<{
+              slug: string; name: string; version?: string; version_latest?: string;
+              update_available?: boolean; state?: string;
+            }> };
+          };
+          const addons = json.data?.addons ?? [];
+          if (addons.length === 0) return ok("No add-ons installed.");
+          const lines: string[] = [`${addons.length} add-on(s):`, ""];
+          const updates = addons.filter((a) => a.update_available);
+          if (updates.length > 0) {
+            lines.push(`Updates available (${updates.length}):`);
+            for (const a of updates) {
+              lines.push(`  ${a.slug}  ${a.version ?? "?"} → ${a.version_latest ?? "?"}  (${a.name})`);
+            }
+            lines.push("");
+          }
+          lines.push("All add-ons:");
+          for (const a of addons.slice().sort((x, y) => x.slug.localeCompare(y.slug))) {
+            const arrow = a.update_available ? ` → ${a.version_latest ?? "?"}` : "";
+            lines.push(`  ${a.slug}  ${a.version ?? "?"}${arrow}  ${a.state ?? "?"}  (${a.name})`);
+          }
+          return okText(lines.join("\n"), { maxBytes: 8 * 1024 });
+        } catch (err) {
+          return ok(`Failed to list add-ons: ${(err as Error).message}`);
+        }
+      },
+    },
+
+    {
+      name: "ha_update_addon",
+      label: "Update Add-on",
+      description: "Update one Home Assistant add-on to its latest available version via the Supervisor API. SLOW (Supervisor pulls a new image and recreates the container — minutes for big images). The add-on is restarted as part of the update, so a running add-on briefly loses connectivity. If you're updating Castle itself the request may not complete cleanly — Supervisor restarts our own container, which can drop the response mid-flight; treat a connection error here as a likely success. Disabled by default; the user has to enable this tool in Castle's Settings. ALWAYS call ha_list_addons first, confirm the slug + that an update is actually available, and explicitly check with the user before invoking. Pass backup=false only if the user knows what they're doing — defaults to true so a failed update can be rolled back from the Supervisor UI.",
+      parameters: Type.Object({
+        slug: Type.String({ description: "Add-on slug, exactly as it appears in ha_list_addons (e.g. 'core_mosquitto', 'a0d7b954_appdaemon')." }),
+        backup: Type.Optional(Type.Boolean({ description: "Whether Supervisor should take a partial backup of the add-on before updating. Default true (recommended)." })),
+      }),
+      async execute(_id: string, params: { slug: string; backup?: boolean }): Promise<ToolResult> {
+        const slug = params.slug.trim();
+        if (!slug) return ok("slug is required.");
+        try {
+          // Pre-flight: confirm the add-on exists + an update is actually
+          // available. Skipping this would let the agent fire updates that
+          // do nothing or, worse, target nonsense slugs that Supervisor would
+          // 404 on after a long retry timeout.
+          const info = await supervisorCall(`/addons/${encodeURIComponent(slug)}/info`);
+          if (info.status === 404) return ok(`Add-on "${slug}" not found. Call ha_list_addons to see installed slugs.`);
+          if (!info.ok) {
+            return ok(`Failed to read add-on info for "${slug}": ${info.status} ${(await info.text()).slice(0, 500)}`);
+          }
+          const infoJson = await info.json() as {
+            data?: { version?: string; version_latest?: string; update_available?: boolean; name?: string };
+          };
+          const cur = infoJson.data?.version ?? "?";
+          const latest = infoJson.data?.version_latest ?? "?";
+          if (!infoJson.data?.update_available) {
+            return ok(`Add-on "${slug}" is already at ${cur}; no update available (latest: ${latest}).`);
+          }
+
+          const body = JSON.stringify({ backup: params.backup !== false });
+          const res = await supervisorCall(`/addons/${encodeURIComponent(slug)}/update`, { method: "POST", body });
+          if (!res.ok) {
+            return ok(`Failed to update "${slug}": ${res.status} ${(await res.text()).slice(0, 500)}`);
+          }
+          return ok(`Add-on "${slug}" updated from ${cur} to ${latest}. Supervisor recreated the container; ${params.backup === false ? "no backup taken" : "a partial backup was taken before the update"}.`);
+        } catch (err) {
+          // Fetch may have thrown because Supervisor restarted our own
+          // container (self-update). Surface that distinctly so the agent
+          // doesn't read it as a hard failure.
+          return ok(`Update call for "${slug}" returned an error: ${(err as Error).message}. If you're updating Castle itself this is normal — Supervisor restarts our container mid-flight. Check ha_list_addons after a minute to see the new version.`);
         }
       },
     },

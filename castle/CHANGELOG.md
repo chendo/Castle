@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0
+
+- Add `ha_create_automation` tool for creating new automations from scratch (alias + triggers + actions); records as v1 in resource-history.
+- Add `ha_list_addons` and `ha_update_addon` tools that hit Supervisor's `/addons` and `/addons/<slug>/update` endpoints. Requires the new `hassio_api: true` + `hassio_role: manager` capabilities in `config.yaml`.
+- Lock down high-impact write tools by default: `ha_update_addon`, `ha_update_automation`, and `ha_edit_dashboard` are now disabled in a fresh install — the user has to explicitly enable them in Castle's Settings. Existing installs keep whatever they had previously enabled.
+
 ## 0.1.5
 
 - Wrap the container CMD with `/usr/bin/with-contenv` so the HA s6-overlay init materialises `SUPERVISOR_TOKEN` / `HASSIO_TOKEN` into the process environment. Supervisor writes those tokens to files under `/var/run/s6/container_environment/`, not as plain env vars — without the wrapper a bare `CMD ["deno", …]` sees them unset and Castle falls through to `homeassistant.local:8123` as if running outside Supervisor.

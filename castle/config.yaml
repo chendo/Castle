@@ -1,5 +1,5 @@
 name: Castle
-version: "0.1.5"
+version: "0.2.0"
 slug: castle
 description: Natural-language Home Assistant agent backed by your own LLM.
 url: https://github.com/chendo/castle
@@ -9,7 +9,12 @@ arch:
 init: false
 boot: auto
 startup: services
-hassio_role: default
+# manager role + hassio_api: true are required for the ha_list_addons /
+# ha_update_addon tools. ha_update_addon is default-disabled in settings.json
+# so the wider permission isn't reachable via the LLM unless the user
+# explicitly turns it on.
+hassio_role: manager
+hassio_api: true
 homeassistant_api: true
 homeassistant: "2024.1.0"
 ingress: true
