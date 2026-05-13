@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.1.4
+## 0.1.5
 
-- Set `hassio_api: true` in `config.yaml` so Supervisor actually mints and injects a token. `homeassistant_api: true` alone wasn't sufficient on the user's Supervisor — the add-on installed but neither `SUPERVISOR_TOKEN` nor `HASSIO_TOKEN` appeared in the container env, so Castle fell back to `homeassistant.local:8123` and looped on DNS errors. Combined with the existing `hassio_role: default`, this grants the token Supervisor's minimal role.
+- Wrap the container CMD with `/usr/bin/with-contenv` so the HA s6-overlay init materialises `SUPERVISOR_TOKEN` / `HASSIO_TOKEN` into the process environment. Supervisor writes those tokens to files under `/var/run/s6/container_environment/`, not as plain env vars — without the wrapper a bare `CMD ["deno", …]` sees them unset and Castle falls through to `homeassistant.local:8123` as if running outside Supervisor.
 
 ## 0.1.3
 

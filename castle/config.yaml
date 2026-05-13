@@ -1,5 +1,5 @@
 name: Castle
-version: "0.1.4"
+version: "0.1.5"
 slug: castle
 description: Natural-language Home Assistant agent backed by your own LLM.
 url: https://github.com/chendo/castle
@@ -10,7 +10,6 @@ init: false
 boot: auto
 startup: services
 hassio_role: default
-hassio_api: true
 homeassistant_api: true
 homeassistant: "2024.1.0"
 ingress: true

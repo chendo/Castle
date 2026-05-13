@@ -58,4 +58,10 @@ ENV CASTLE_DATA_DIR=/data
 # Pre-cache deno modules so first-boot doesn't pause on network fetch.
 RUN deno cache main.ts || true
 
-CMD ["deno", "run", "--allow-all", "--unstable-node-globals", "main.ts"]
+# Wrap the entrypoint in /usr/bin/with-contenv so the HA s6-overlay init
+# materialises Supervisor's environment (notably SUPERVISOR_TOKEN /
+# HASSIO_TOKEN) into the process. The token lives in
+# /var/run/s6/container_environment/ and is NOT inherited by a plain CMD —
+# without this wrapper the add-on starts but main.ts can't see the token
+# and falls through to homeassistant.local as if running outside Supervisor.
+CMD ["/usr/bin/with-contenv", "deno", "run", "--allow-all", "--unstable-node-globals", "main.ts"]
