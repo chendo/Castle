@@ -2105,6 +2105,111 @@ export function buildTools(
     },
 
     {
+      name: "ha_create_automation",
+      label: "Create Automation",
+      description: "Create a new automation. Provide alias + at least one trigger + at least one action; condition / mode / description are optional. If automation_id is omitted Castle generates a millisecond-timestamp id (matches HA's own scheme); if provided it must NOT already exist. Validates entity_ids and service names against the live registry the same way ha_update_automation does — unknown ones produce warnings unless strict=true. The new automation reloads into HA immediately; no automation.reload service call needed.",
+      parameters: Type.Object({
+        config: Type.Record(Type.String(), Type.Unknown(), {
+          description: "Complete automation config. Must include `alias` (string), `trigger` (array), and `action` (array). Optional: `condition`, `mode` ('single'|'restart'|'queued'|'parallel'), `description`, `max`, `max_exceeded`, etc.",
+        }),
+        automation_id: Type.Optional(Type.String({
+          description: "Id for the new automation. Refused if an automation with this id already exists. Omit to auto-generate (millisecond timestamp).",
+        })),
+        strict: Type.Optional(Type.Boolean({
+          description: "If true, refuse to create when validation produces any warning. Default false (create with warnings).",
+        })),
+      }),
+      async execute(_id: string, params: { config: Record<string, unknown>; automation_id?: string; strict?: boolean }): Promise<ToolResult> {
+        // Required-shape check before hitting HA — refuse early on obviously
+        // wrong inputs (HA's own error is "Message format incorrect" with no
+        // hint about which field).
+        const cfg = params.config;
+        if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) {
+          return ok(`config must be an object with at least alias, trigger, action fields.`);
+        }
+        const missing: string[] = [];
+        if (typeof cfg.alias !== "string" || !cfg.alias.trim()) missing.push("alias (string)");
+        if (!Array.isArray(cfg.trigger) || (cfg.trigger as unknown[]).length === 0) missing.push("trigger (non-empty array)");
+        if (!Array.isArray(cfg.action) || (cfg.action as unknown[]).length === 0) missing.push("action (non-empty array)");
+        if (missing.length > 0) {
+          return ok(`Missing required fields: ${missing.join(", ")}. Build the config and call again.`);
+        }
+
+        // Reuse the existing entity / service validation.
+        const knownEntityIds = new Set(ha.getAllStates().map((s) => s.entity_id));
+        const services = await ha.getServices();
+        const knownServices = new Set<string>();
+        for (const [domain, svcs] of Object.entries(services)) {
+          for (const name of Object.keys(svcs)) knownServices.add(`${domain}.${name}`);
+        }
+        const { warnings, entityIds, services: refServices } = validateAutomationConfig(cfg, knownEntityIds, knownServices);
+        if (params.strict && warnings.length > 0) {
+          return ok(`Refused (strict mode): ${warnings.length} validation warning(s):\n- ${warnings.join("\n- ")}\nDrop strict=true to create anyway, or fix the config.`);
+        }
+
+        // Resolve the id. Honour caller's choice; otherwise generate a
+        // ms-timestamp id (matches HA's UI scheme closely enough that it'll
+        // sort newest-last like the others).
+        const automationId = params.automation_id?.trim() || String(Date.now());
+
+        // Refuse overwriting an existing automation — that's what
+        // ha_update_automation is for, and silently overwriting on "create"
+        // would be a footgun.
+        try {
+          const existing = await ha.restCall(`/api/config/automation/config/${encodeURIComponent(automationId)}`);
+          if (existing.ok) {
+            return ok(`Automation ${automationId} already exists. Call ha_update_automation to modify it, or choose a different id.`);
+          }
+        } catch {
+          // Network blip — fall through and let the POST below surface a real
+          // error rather than blocking on a probably-transient failure.
+        }
+
+        // Make sure the supplied config doesn't carry a conflicting `id` field
+        // — HA accepts it but Castle's downstream tools key off the URL id, so
+        // a mismatch would be confusing.
+        if (typeof cfg.id === "string" && cfg.id !== automationId) {
+          return ok(`config.id (${cfg.id}) doesn't match automation_id (${automationId}). Drop config.id or align the two.`);
+        }
+
+        try {
+          const res = await ha.restCall(`/api/config/automation/config/${encodeURIComponent(automationId)}`, {
+            method: "POST",
+            body: JSON.stringify(cfg),
+          });
+          if (!res.ok) {
+            const body = await res.text();
+            return ok(`Failed to create automation ${automationId}: ${res.status} ${body.slice(0, 500)}`);
+          }
+          // No baseline capture — there was nothing before this. Record the
+          // initial state as v1 directly.
+          let recorded: Awaited<ReturnType<typeof automationHistory.record>> | null = null;
+          try {
+            recorded = await automationHistory.record(automationId, {
+              config: cfg,
+              source: "castle",
+              alias_at_save: aliasOfAutomation(cfg),
+            });
+          } catch (err) {
+            console.warn(`[history] post-create record failed for ${automationId}:`, (err as Error).message);
+          }
+          const lines: string[] = [
+            `Automation ${automationId} created (alias: "${aliasOfAutomation(cfg) ?? "—"}"). Referenced ${entityIds.length} entity_id(s), ${refServices.length} service(s).`,
+          ];
+          if (recorded) lines.push(`Saved as version ${recorded.version}.`);
+          if (warnings.length > 0) {
+            lines.push("");
+            lines.push(`${warnings.length} warning(s) (created anyway, strict=false):`);
+            for (const w of warnings) lines.push(`- ${w}`);
+          }
+          return ok(lines.join("\n"));
+        } catch (err) {
+          return ok(`Failed to create automation ${automationId}: ${(err as Error).message}`);
+        }
+      },
+    },
+
+    {
       name: "ha_update_automation",
       label: "Update Automation",
       description: "Replace the full config for one automation. ALWAYS call ha_get_automation first, edit the returned config, then pass the modified config back. Validates entity_ids and service names against the live registry — unknown ones produce warnings (templates and unknown-but-future entities are common false positives, so we warn rather than refuse). Pass strict=true to refuse on any warning.",

@@ -90,6 +90,83 @@ function makeTools(ha: FakeHAClient, root: string) {
   return buildTools(ha as any, { historyRoot: root });
 }
 
+Deno.test("ha_create_automation — writes new automation + records v1", () =>
+  withFreshRoot(async (root) => {
+    const ha = new FakeHAClient();
+    const tools = makeTools(ha, root);
+    const create = findTool(tools, "ha_create_automation");
+    const list = findTool(tools, "ha_list_automation_versions");
+
+    const cfg = {
+      alias: "Front door notify",
+      trigger: [{ platform: "state", entity_id: "lock.front_door", to: "unlocked" }],
+      action: [{ action: "persistent_notification.create", data: { message: "Door opened" } }],
+    };
+    const out = await create.execute("c1", { automation_id: "new-1", config: cfg });
+    assertStringIncludes(resultText(out), "Automation new-1 created");
+    assertStringIncludes(resultText(out), "Saved as version 1");
+    assertEquals(ha.automations["new-1"], cfg);
+
+    const listOut = resultText(await list.execute("c2", { automation_id: "new-1" }));
+    assertStringIncludes(listOut, "v1");
+  }));
+
+Deno.test("ha_create_automation — refuses when id already exists", () =>
+  withFreshRoot(async (root) => {
+    const ha = new FakeHAClient();
+    ha.automations["existing"] = { alias: "Already here", trigger: [], action: [] };
+    const tools = makeTools(ha, root);
+    const create = findTool(tools, "ha_create_automation");
+
+    const out = await create.execute("c1", {
+      automation_id: "existing",
+      config: {
+        alias: "Different",
+        trigger: [{ platform: "time", at: "08:00" }],
+        action: [{ action: "light.turn_on", target: { entity_id: "light.bed_light" } }],
+      },
+    });
+    assertStringIncludes(resultText(out), "already exists");
+    // HA's stored config is unchanged.
+    assertEquals((ha.automations["existing"] as { alias: string }).alias, "Already here");
+  }));
+
+Deno.test("ha_create_automation — auto-generates id when omitted", () =>
+  withFreshRoot(async (root) => {
+    const ha = new FakeHAClient();
+    const tools = makeTools(ha, root);
+    const create = findTool(tools, "ha_create_automation");
+
+    const out = await create.execute("c1", {
+      config: {
+        alias: "Generated id",
+        trigger: [{ platform: "time", at: "09:00" }],
+        action: [{ action: "switch.turn_on", target: { entity_id: "switch.ac" } }],
+      },
+    });
+    assertStringIncludes(resultText(out), "created");
+    // Exactly one automation, with a generated id (millisecond timestamp).
+    const ids = Object.keys(ha.automations);
+    assertEquals(ids.length, 1);
+    assert(/^\d+$/.test(ids[0]), `expected numeric generated id, got ${ids[0]}`);
+  }));
+
+Deno.test("ha_create_automation — refuses when required fields missing", () =>
+  withFreshRoot(async (root) => {
+    const ha = new FakeHAClient();
+    const tools = makeTools(ha, root);
+    const create = findTool(tools, "ha_create_automation");
+
+    // No trigger.
+    const out = await create.execute("c1", {
+      automation_id: "missing-trigger",
+      config: { alias: "X", action: [{ action: "light.turn_on" }] },
+    });
+    assertStringIncludes(resultText(out), "Missing required fields");
+    assertStringIncludes(resultText(out), "trigger");
+    assertEquals(ha.automations["missing-trigger"], undefined);
+  }));
+
 Deno.test("ha_update_automation — first edit records baseline + new version", () =>
   withFreshRoot(async (root) => {
     const ha = new FakeHAClient();
