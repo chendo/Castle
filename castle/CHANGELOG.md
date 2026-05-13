@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.4
+
+- Set `hassio_api: true` in `config.yaml` so Supervisor actually mints and injects a token. `homeassistant_api: true` alone wasn't sufficient on the user's Supervisor — the add-on installed but neither `SUPERVISOR_TOKEN` nor `HASSIO_TOKEN` appeared in the container env, so Castle fell back to `homeassistant.local:8123` and looped on DNS errors. Combined with the existing `hassio_role: default`, this grants the token Supervisor's minimal role.
+
 ## 0.1.3
 
 - Fall back to the legacy `HASSIO_TOKEN` env var when `SUPERVISOR_TOKEN` isn't set. Older Supervisor versions only emit the legacy name, which is why 0.1.2 still fell through to the dev fallback and tried `homeassistant.local:8123` from inside the add-on container.
