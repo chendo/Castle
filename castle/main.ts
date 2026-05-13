@@ -32,10 +32,16 @@ import { DATA_DIR } from "./paths.ts";
 // Two ways Castle reaches HA:
 //
 //  1. **Supervisor proxy** (the default when running as an add-on). HA
-//     Supervisor injects `SUPERVISOR_TOKEN` and exposes the HA APIs at
+//     Supervisor injects a token env var and exposes the HA APIs at
 //     `http://supervisor/core/...` (REST) and `ws://supervisor/core/websocket`
 //     (WebSocket — note: NO `/api/` segment, the proxy mounts the WS at a
 //     different path than HA Core's own `/api/websocket`).
+//
+//     The token's env-var name has changed across Supervisor versions:
+//     `SUPERVISOR_TOKEN` is the current name, `HASSIO_TOKEN` is the legacy
+//     name that older Supervisors set and current ones still emit
+//     alongside the new one. Check both so the add-on boots cleanly on
+//     either.
 //
 //  2. **Explicit endpoint** when the user wants to point Castle at a
 //     specific HA instance (a different host, or a dev compose run with no
@@ -44,7 +50,7 @@ import { DATA_DIR } from "./paths.ts";
 // User-set values always win. We treat HA_URL *or* HA_TOKEN being set as
 // "user has opinions" — partial overrides under Supervisor mix the proxy URL
 // with a user token (or vice versa) and never work, so warn loudly.
-const SUPERVISOR_TOKEN = Deno.env.get("SUPERVISOR_TOKEN") ?? "";
+const SUPERVISOR_TOKEN = Deno.env.get("SUPERVISOR_TOKEN") ?? Deno.env.get("HASSIO_TOKEN") ?? "";
 const ENV_HA_URL = (Deno.env.get("HA_URL") ?? "").trim();
 const ENV_HA_TOKEN = (Deno.env.get("HA_TOKEN") ?? "").trim();
 const USER_SET_HA = Boolean(ENV_HA_URL || ENV_HA_TOKEN);
@@ -52,11 +58,13 @@ const USER_SET_HA = Boolean(ENV_HA_URL || ENV_HA_TOKEN);
 let HA_URL: string;
 let HA_TOKEN: string;
 let HA_WS_URL: string | undefined;
+let HA_MODE: string;
 
 if (USER_SET_HA) {
   HA_URL = ENV_HA_URL || "http://homeassistant.local:8123";
   HA_TOKEN = ENV_HA_TOKEN;
   HA_WS_URL = undefined;
+  HA_MODE = "explicit (HA_URL/HA_TOKEN)";
   if (SUPERVISOR_TOKEN) {
     console.log("[castle] HA_URL/HA_TOKEN set — bypassing Supervisor proxy");
   }
@@ -72,14 +80,29 @@ if (USER_SET_HA) {
   HA_URL = "http://supervisor/core";
   HA_TOKEN = SUPERVISOR_TOKEN;
   HA_WS_URL = "ws://supervisor/core/websocket";
-  console.log("[castle] using Supervisor proxy for HA");
+  HA_MODE = "supervisor";
 } else {
   // No Supervisor, no overrides. Most likely a dev-compose boot before .env
   // is filled in — let the HA client fail loudly so the user notices.
   HA_URL = "http://homeassistant.local:8123";
   HA_TOKEN = "";
   HA_WS_URL = undefined;
+  HA_MODE = "fallback (no supervisor token, no user override)";
 }
+
+// Surface the resolved mode and which env vars were seen. Token *values* are
+// never logged; only whether they're set, so debugging boot-time auth/URL
+// confusion doesn't require turning on a debug flag or shelling into the
+// container.
+console.log(
+  `[castle] HA mode: ${HA_MODE} | url=${HA_URL} | ws=${HA_WS_URL ?? "<derived>"} | token=${HA_TOKEN ? "set" : "EMPTY"}`,
+);
+console.log(
+  `[castle] env seen: SUPERVISOR_TOKEN=${Deno.env.get("SUPERVISOR_TOKEN") ? "set" : "unset"}` +
+    `, HASSIO_TOKEN=${Deno.env.get("HASSIO_TOKEN") ? "set" : "unset"}` +
+    `, HA_URL=${ENV_HA_URL ? "set" : "unset"}` +
+    `, HA_TOKEN=${ENV_HA_TOKEN ? "set" : "unset"}`,
+);
 
 const PORT = Number(Deno.env.get("PORT") ?? "7090");
 // CASTLE_AUTH_TOKEN gates the WS/HTTP endpoints for standalone deploys. Under
