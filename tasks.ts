@@ -6,15 +6,16 @@
 // fire path lives in tasks-fire.ts; this module owns lifecycle, persistence,
 // and trigger wiring.
 //
-// Persistence: each task is one JSON file under .pi-agent/tasks/<id>.json. Frame
-// blobs live in .pi-agent/tasks/<id>/frames/. On boot, init() rehydrates every
-// non-terminal task and re-arms its triggers; terminal tasks past their TTL are
-// purged.
+// Persistence: each task is one JSON file under <DATA_DIR>/tasks/<id>.json.
+// Frame blobs live in <DATA_DIR>/tasks/<id>/frames/. On boot, init()
+// rehydrates every non-terminal task and re-arms its triggers; terminal tasks
+// past their TTL are purged.
 
 import type { HAClient } from "./ha-client.ts";
 import { fireTask, type FireOutcome } from "./tasks-fire.ts";
+import { DATA_DIR } from "./paths.ts";
 
-const TASKS_DIR = new URL(".pi-agent/tasks/", import.meta.url).pathname.replace(/\/$/, "");
+const TASKS_DIR = `${DATA_DIR}/tasks`;
 
 // ---------------------------------------------------------------------------
 // Types

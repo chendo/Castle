@@ -1,3 +1,6 @@
+// Side-effect import: applies /data/options.json (HA add-on) before any
+// module reads env vars at init.
+import "./options.ts";
 import { HAClient } from "./ha-client.ts";
 import { setTasksSingleton, TasksManager, type Task, type TaskEvent } from "./tasks.ts";
 import { extractEntityIds, RecentEntitiesManager, type RecentEntity, setRecentEntitiesSingleton } from "./recent-entities.ts";
@@ -20,13 +23,22 @@ import {
   writeModelsJson,
   deleteSession,
 } from "./agent.ts";
-import { parseHistoryPoints } from "./tools.ts";
+import { parseChartHistory } from "./tools.ts";
 import { ALL_TOOL_NAMES, loadSettings, saveSettings, TOOL_DESCRIPTIONS, type ToolName } from "./settings.ts";
+import { DATA_DIR } from "./paths.ts";
 
-const HA_URL = Deno.env.get("HA_URL") ?? "http://homeassistant.local:8123";
-const HA_TOKEN = Deno.env.get("HA_TOKEN") ?? "";
+// Home Assistant add-on hand-off: when running under Supervisor, the
+// SUPERVISOR_TOKEN env var is auto-injected and `http://supervisor/core` is
+// the canonical route to HA. Honour that automatically so add-on users don't
+// need to mint a long-lived access token by hand. Explicit HA_URL / HA_TOKEN
+// still win for users who want to point at a different HA instance.
+const SUPERVISOR_TOKEN = Deno.env.get("SUPERVISOR_TOKEN") ?? "";
+const HA_URL = Deno.env.get("HA_URL") ?? (SUPERVISOR_TOKEN ? "http://supervisor/core" : "http://homeassistant.local:8123");
+const HA_TOKEN = Deno.env.get("HA_TOKEN") || SUPERVISOR_TOKEN;
 const PORT = Number(Deno.env.get("PORT") ?? "7090");
-const AUTH_TOKEN = Deno.env.get("CASTLE_AUTH_TOKEN") ?? "";
+// CASTLE_AUTH_TOKEN gates the WS/HTTP endpoints for standalone deploys. Under
+// HA ingress, Supervisor already auth-walls the iframe — skip the token check.
+const AUTH_TOKEN = SUPERVISOR_TOKEN ? "" : (Deno.env.get("CASTLE_AUTH_TOKEN") ?? "");
 
 const ha = new HAClient(HA_URL, HA_TOKEN);
 const tasks = new TasksManager(ha);
@@ -66,8 +78,7 @@ async function regenerateCatalog(): Promise<void> {
       catalog: catalogData,
       disabledTools,
     });
-    const agentDir = new URL(".pi-agent/", import.meta.url).pathname.replace(/\/$/, "");
-    await Deno.writeTextFile(`${agentDir}/AGENTS.md`, agentsMd);
+    await Deno.writeTextFile(`${DATA_DIR}/AGENTS.md`, agentsMd);
     console.log(`[castle] catalog refreshed (${exposed ? exposed.size : 'all'} entities, ${Object.keys(services).length} service domains)`);
   } catch (err) {
     console.error(`[castle] catalog refresh failed:`, (err as Error).message);
@@ -226,7 +237,7 @@ async function handler(req: Request): Promise<Response> {
     // actually sees. text/plain so the browser displays inline; ?download=1
     // forces a save dialog.
     try {
-      const path = `${new URL(".pi-agent/AGENTS.md", import.meta.url).pathname}`;
+      const path = `${DATA_DIR}/AGENTS.md`;
       const text = await Deno.readTextFile(path);
       const headers = new Headers({
         "Content-Type": "text/plain; charset=utf-8",
@@ -254,7 +265,7 @@ async function handler(req: Request): Promise<Response> {
     await Promise.all(entityIds.map(async (id) => {
       try {
         const raw = await ha.getHistory(id, start, end);
-        const pts = parseHistoryPoints(raw) ?? [];
+        const pts = parseChartHistory(raw, id);
         out[id] = pts.map((p) => ({ t: p.rawIso, v: p.value }));
       } catch (err) {
         console.warn(`[history] ${id}:`, (err as Error).message);
@@ -678,7 +689,7 @@ async function handleSocket(socket: WebSocket): Promise<void> {
     }
 
     if (msg.type === "set_settings") {
-      const incoming = (msg as unknown as { settings: { enabledTools?: ToolName[]; contextWindow?: number; allowUnexposedWrites?: boolean; conversationCapMb?: number } }).settings;
+      const incoming = (msg as unknown as { settings: { enabledTools?: ToolName[]; contextWindow?: number; allowUnexposedWrites?: boolean; conversationCapMb?: number; automationHistoryMaxVersions?: number; dashboardHistoryMaxVersions?: number } }).settings;
       const saved = await saveSettings(incoming);
       // Refresh AGENTS.md *before* rebuilding the session — the new agent reads
       // .pi-agent/AGENTS.md on construction, so a stale file would leave it

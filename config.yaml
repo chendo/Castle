@@ -1,0 +1,34 @@
+name: Castle
+version: "0.1.0"
+slug: castle
+description: Natural-language Home Assistant agent backed by your own LLM.
+url: https://github.com/chendo/castle
+arch:
+  - amd64
+  - aarch64
+init: false
+boot: auto
+startup: services
+hassio_role: default
+homeassistant_api: true
+homeassistant: "2024.1.0"
+ingress: true
+ingress_port: 7090
+panel_icon: mdi:castle
+panel_title: Castle
+options:
+  llm_url: "http://homeassistant.local:1234/v1"
+  llm_type: openai-completions
+  llm_api_key: ""
+  model_name: ""
+  automation_history_max_versions: 50
+  dashboard_history_max_versions: 20
+schema:
+  llm_url: url
+  llm_type: list(openai-completions|openai-responses|anthropic|google|google-vertex|azure-openai-responses|mistral)
+  llm_api_key: password?
+  model_name: str?
+  ha_url: url?
+  ha_token: password?
+  automation_history_max_versions: int(0,)?
+  dashboard_history_max_versions: int(0,)?

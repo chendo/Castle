@@ -10,9 +10,10 @@ import {
 import type { HAClient } from "./ha-client.ts";
 import { buildTools } from "./tools.ts";
 import { loadSettings, type ToolName } from "./settings.ts";
+import { DATA_DIR, SOURCE_DIR } from "./paths.ts";
 
-const AGENT_DIR = new URL(".pi-agent/", import.meta.url).pathname.replace(/\/$/, "");
-const CWD = new URL(".", import.meta.url).pathname.replace(/\/$/, "");
+const AGENT_DIR = DATA_DIR;
+const CWD = SOURCE_DIR;
 export const SESSIONS_DIR = `${AGENT_DIR}/sessions`;
 
 const authStorage = AuthStorage.create(`${AGENT_DIR}/auth.json`);
