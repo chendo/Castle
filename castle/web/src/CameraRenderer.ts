@@ -5,6 +5,7 @@ import { summaryWithDuration } from "./ToolHeader";
 import { html } from "lit";
 import { createRef, ref } from "lit/directives/ref.js";
 import { Camera, Video } from "lucide";
+import { withBase } from "./base";
 import { buildEntityCard, type CardDeps } from "./EntityCard";
 
 interface CameraArgs {
@@ -27,7 +28,7 @@ function buildSnapshot(args: CameraArgs, container: HTMLElement, captureTs?: num
   // Cache-bust with the *capture* timestamp (when the tool ran) so the image
   // shown in the UI lines up with what the agent saw, not whatever the camera
   // happens to return now if the user re-renders the chat later.
-  img.src = `/camera/${encodeURIComponent(args.entity_id)}?ts=${captureTs ?? Date.now()}`;
+  img.src = withBase(`/camera/${encodeURIComponent(args.entity_id)}`) + `?ts=${captureTs ?? Date.now()}`;
   img.alt = args.entity_id;
   img.style.cssText = "max-width: 100%; border-radius: 8px; display: block; background: var(--muted);";
   img.onerror = () => {
@@ -69,7 +70,7 @@ class CastleLiveCamera extends HTMLElement {
     if (this.wrap) return; // already initialised; reuse on re-attach
     this.entityId = this.getAttribute("entity-id") ?? "";
     if (!this.entityId) return;
-    this.streamUrl = `/camera_stream/${encodeURIComponent(this.entityId)}`;
+    this.streamUrl = withBase(`/camera_stream/${encodeURIComponent(this.entityId)}`);
     ensurePulseStyle();
 
     this.wrap = document.createElement("div");

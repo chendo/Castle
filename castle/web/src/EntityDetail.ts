@@ -134,7 +134,7 @@ function renderPreviews(entity: State): HTMLElement | null {
     const wrap = document.createElement("div");
     wrap.style.cssText = "border-radius: 10px; overflow: hidden; background: var(--muted); aspect-ratio: 16/9; display: flex; align-items: center; justify-content: center;";
     const img = document.createElement("img");
-    img.src = `/camera/${encodeURIComponent(entity.entity_id)}?ts=${Date.now()}`;
+    img.src = withBase(`/camera/${encodeURIComponent(entity.entity_id)}`) + `?ts=${Date.now()}`;
     img.alt = entity.entity_id;
     img.style.cssText = "width: 100%; height: 100%; object-fit: cover; display: block;";
     img.onerror = () => {
