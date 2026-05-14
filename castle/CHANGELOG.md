@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1
+
+- Auto-reconnect the browser WebSocket when running behind HA's ingress proxy. The proxy silently drops idle sockets without sending a close frame, so the browser sat in `OPEN` state forever — `onclose` never fired, the existing reconnect never kicked in, and prompts queued into the void. Adds an app-level ping/pong heartbeat that force-closes the socket after 60 s of silence, and raises the reconnect backoff cap from 10 s to 60 s.
+
 ## 0.3.0
 
 - **Remove scheduled / triggered tasks subsystem.** `schedule_task`, `list_tasks`, `cancel_task`, the camera-frame watcher loop, the tasks dialog and tasks chip in the topbar, and the `<DATA_DIR>/tasks/` persistence layer are all gone. The implementation never worked reliably in practice, and the surface area was costing more than it was paying for.

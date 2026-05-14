@@ -79,19 +79,35 @@ type Frame =
   | { type: "session_deleted"; path: string }
   | { type: "service_call_ack"; id?: string; ok: boolean; error?: string }
   | { type: "recent_entities_snapshot"; entities: RecentEntityWire[] }
+  | { type: "pong" }
   | { type: "error"; message: string };
+
+// Heartbeat: HA's ingress proxy (and most reverse proxies) silently drop idle
+// WebSockets after ~60s, but the browser's `WebSocket` stays in OPEN state
+// because no close frame was ever sent — `onclose` never fires, `send()` just
+// buffers into the void, and the user sits there typing prompts that never
+// reach the server. App-level ping/pong is the only way to detect this from
+// the browser; we close the socket ourselves when pongs stop arriving, which
+// then triggers the normal reconnect path.
+const PING_INTERVAL_MS = 25_000;
+const STALE_AFTER_MS = 60_000;
 
 /**
  * RemoteAgent that talks to the Deno backend over /ws.
  * On connect: sends `hello`, receives a snapshot, then ingests every AgentEvent
- * the server forwards. Reconnects with exponential backoff on close.
+ * the server forwards. Reconnects with exponential backoff (capped at 60s) on
+ * close, and runs an app-level ping/pong heartbeat so silent half-open sockets
+ * (common behind HA's ingress proxy) get detected and recycled.
  */
 export class WebSocketRemoteAgent extends RemoteAgent {
   private ws?: WebSocket;
   private url: string;
   private reconnectDelay = 500;
-  private readonly maxReconnectDelay = 10_000;
+  private readonly maxReconnectDelay = 60_000;
   private closed = false;
+  private heartbeatTimer?: ReturnType<typeof setInterval>;
+  private reconnectTimer?: ReturnType<typeof setTimeout>;
+  private lastActivityAt = 0;
   public onConnectionChange?: (connected: boolean) => void;
   public onError?: (message: string) => void;
   public onSettings?: (settings: ServerSettings, allTools: string[]) => void;
@@ -134,6 +150,11 @@ export class WebSocketRemoteAgent extends RemoteAgent {
 
   close(): void {
     this.closed = true;
+    this.stopHeartbeat();
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
     this.ws?.close();
   }
 
@@ -224,20 +245,26 @@ export class WebSocketRemoteAgent extends RemoteAgent {
 
   private connect(): void {
     if (this.closed) return;
+    this.reconnectTimer = undefined;
     this.ws = new WebSocket(this.url);
 
     this.ws.onopen = () => {
       this.reconnectDelay = 500;
+      this.lastActivityAt = Date.now();
+      this.startHeartbeat();
       this.onConnectionChange?.(true);
       this.send({ type: "hello" });
     };
 
     this.ws.onmessage = async (ev) => {
+      this.lastActivityAt = Date.now();
       let frame: Frame;
       try { frame = JSON.parse(typeof ev.data === "string" ? ev.data : ""); }
       catch { return; }
 
-      if (frame.type === "snapshot") {
+      if (frame.type === "pong") {
+        return;
+      } else if (frame.type === "snapshot") {
         this.applySnapshot(frame.state);
       } else if (frame.type === "event") {
         await this.ingestEvent(frame.event);
@@ -277,13 +304,41 @@ export class WebSocketRemoteAgent extends RemoteAgent {
     };
 
     this.ws.onclose = () => {
+      this.stopHeartbeat();
       this.onConnectionChange?.(false);
-      if (this.closed) return;
-      const delay = this.reconnectDelay;
-      this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay);
-      setTimeout(() => this.connect(), delay);
+      this.scheduleReconnect();
     };
 
     this.ws.onerror = () => { /* let onclose handle reconnect */ };
+  }
+
+  private scheduleReconnect(): void {
+    if (this.closed) return;
+    if (this.reconnectTimer) return;
+    const delay = this.reconnectDelay;
+    this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay);
+    this.reconnectTimer = setTimeout(() => this.connect(), delay);
+  }
+
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    this.heartbeatTimer = setInterval(() => {
+      if (this.ws?.readyState !== WebSocket.OPEN) return;
+      // No frames for STALE_AFTER_MS — the proxy almost certainly dropped us
+      // without a close frame. Force-close so onclose triggers reconnect.
+      if (Date.now() - this.lastActivityAt > STALE_AFTER_MS) {
+        console.warn("[ws] heartbeat: no frames received in", STALE_AFTER_MS, "ms, reconnecting");
+        try { this.ws.close(); } catch { /* ignore */ }
+        return;
+      }
+      try { this.ws.send(JSON.stringify({ type: "ping" })); } catch { /* onclose will fire */ }
+    }, PING_INTERVAL_MS);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = undefined;
+    }
   }
 }

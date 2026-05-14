@@ -673,6 +673,14 @@ async function handleSocket(socket: WebSocket): Promise<void> {
     try { msg = JSON.parse(typeof ev.data === "string" ? ev.data : ""); }
     catch { return; }
 
+    if (msg.type === "ping") {
+      // App-level keepalive. The browser can't send WS ping frames itself, and
+      // HA's ingress proxy drops idle sockets without sending a close frame, so
+      // the client polls us and reconnects if pongs stop coming back.
+      try { socket.send(JSON.stringify({ type: "pong" })); } catch { /* socket closing */ }
+      return;
+    }
+
     if (msg.type === "hello") {
       try {
         await ensureAgentBroadcast();
