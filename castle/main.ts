@@ -683,28 +683,97 @@ function invalidateAreasCache(): void {
  * Wire the HA state_changed → WS clients fan-out exactly once. Idempotent:
  * subsequent calls are no-ops. Called from startup AFTER the HA connection
  * lands so HAClient's listener registry is alive.
+ *
+ * Filter the fan-out per socket: skip the broadcast entirely when the wire
+ * state is identical to what we last sent that socket (HA re-emits state
+ * frequently for unchanged values, especially on chatty sensors), and send
+ * a `partial: true` frame carrying only `state` when attributes/exposed/
+ * label haven't moved (power meters, temperature sensors, etc — state
+ * flickers, attributes don't). The client merges partials with its cached
+ * EntityState. WeakMap keys mean dropped sockets get auto-evicted.
  */
+type LastSent = { state: string; attrJSON: string; exposed: boolean; label?: string };
+const lastSentBySocket = new WeakMap<WebSocket, Map<string, LastSent>>();
+
 let stateBroadcastWired = false;
 function wireStateBroadcast(): void {
   if (stateBroadcastWired) return;
   stateBroadcastWired = true;
   ha.onStateChange((entityId, newState) => {
-    const payload = newState
-      ? {
-        entity_id: entityId,
-        state: newState.state,
-        attributes: newState.attributes,
-        domain: entityId.split(".")[0],
-        exposed: ha.isExposed(entityId),
-        label: entityLabelsCache.get(entityId),
-      }
-      // Removed entity — clients drop it from their local map.
-      : { entity_id: entityId, removed: true as const };
-    const frame = JSON.stringify({ type: "state_change", entity: payload });
-    for (const ws of sockets) {
-      if (ws.readyState === WebSocket.OPEN) {
+    if (!newState) {
+      // Removal: broadcast to all, clear per-socket memory for this entity.
+      const frame = JSON.stringify({
+        type: "state_change",
+        entity: { entity_id: entityId, removed: true as const },
+      });
+      for (const ws of sockets) {
+        if (ws.readyState !== WebSocket.OPEN) continue;
         try { ws.send(frame); } catch (err) { console.error("[ws] state push failed:", err); }
+        lastSentBySocket.get(ws)?.delete(entityId);
       }
+      return;
+    }
+
+    const state = newState.state;
+    const attrJSON = JSON.stringify(newState.attributes ?? {});
+    const exposed = ha.isExposed(entityId);
+    const label = entityLabelsCache.get(entityId);
+    const domain = entityId.split(".")[0];
+
+    // Build at most one full frame and one partial frame per state_change.
+    let fullFrame: string | undefined;
+    let partialFrame: string | undefined;
+
+    for (const ws of sockets) {
+      if (ws.readyState !== WebSocket.OPEN) continue;
+      let perSocket = lastSentBySocket.get(ws);
+      const last = perSocket?.get(entityId);
+
+      // Identical to last sent — drop on the floor.
+      if (last && last.state === state && last.attrJSON === attrJSON
+          && last.exposed === exposed && last.label === label) {
+        continue;
+      }
+
+      // Only state moved — send a partial; client merges with its cache.
+      const onlyState = last !== undefined
+        && last.attrJSON === attrJSON
+        && last.exposed === exposed
+        && last.label === label;
+
+      let frame: string;
+      if (onlyState) {
+        if (!partialFrame) {
+          partialFrame = JSON.stringify({
+            type: "state_change",
+            entity: { entity_id: entityId, state, partial: true as const },
+          });
+        }
+        frame = partialFrame;
+      } else {
+        if (!fullFrame) {
+          fullFrame = JSON.stringify({
+            type: "state_change",
+            entity: {
+              entity_id: entityId,
+              state,
+              attributes: newState.attributes,
+              domain,
+              exposed,
+              label,
+            },
+          });
+        }
+        frame = fullFrame;
+      }
+
+      try { ws.send(frame); } catch (err) { console.error("[ws] state push failed:", err); }
+
+      if (!perSocket) {
+        perSocket = new Map();
+        lastSentBySocket.set(ws, perSocket);
+      }
+      perSocket.set(entityId, { state, attrJSON, exposed, label });
     }
   });
   console.log("[ws] state_change broadcast wired");
@@ -770,7 +839,21 @@ async function handleSocket(socket: WebSocket): Promise<void> {
         socket.send(JSON.stringify({ type: "snapshot", state: serializeSnapshot(session) }));
         // Bootstrap the entity catalog over the WS. After this, state_change
         // frames are pushed for every HA state_changed event.
-        socket.send(JSON.stringify({ type: "states_snapshot", states: serializeStates() }));
+        const states = serializeStates();
+        socket.send(JSON.stringify({ type: "states_snapshot", states }));
+        // Seed the per-socket dedupe map with what the snapshot just shipped,
+        // so the first state_change for each entity can be a partial / no-op
+        // instead of a redundant full payload.
+        const perSocket = new Map<string, LastSent>();
+        for (const s of states) {
+          perSocket.set(s.entity_id, {
+            state: s.state,
+            attrJSON: JSON.stringify(s.attributes ?? {}),
+            exposed: s.exposed,
+            label: s.label,
+          });
+        }
+        lastSentBySocket.set(socket, perSocket);
         socket.send(JSON.stringify({ type: "recent_entities_snapshot", entities: recentEntities.snapshot() }));
         socket.send(await buildAreasFrame());
         // Initial health frame; further updates are pushed when HA connection

@@ -43,6 +43,7 @@ export interface EntityState {
 
 export type EntityStateChange =
   | EntityState
+  | { entity_id: string; state: string; partial: true }
   | { entity_id: string; removed: true };
 
 export interface AreaInfo {

@@ -109,6 +109,24 @@ export class EntityStateCache {
       if (bucket) for (const fn of bucket) fn(null);
       return;
     }
+    if ("partial" in change && change.partial) {
+      // Server omitted attributes/domain/exposed/label because they
+      // haven't changed since we last received this entity in full.
+      // Merge state onto our cached copy and reuse the rest.
+      const cached = this.states.get(change.entity_id);
+      if (!cached) {
+        // Partial without a prior full — should only happen if a state
+        // arrived before the hello snapshot. Drop it; the snapshot will
+        // bring us back in sync.
+        return;
+      }
+      const merged: EntityState = { ...cached, state: change.state };
+      this.states.set(change.entity_id, merged);
+      this.notifyAll();
+      const bucket = this.perEntity.get(change.entity_id);
+      if (bucket) for (const fn of bucket) fn(merged);
+      return;
+    }
     const next = change as EntityState;
     this.states.set(next.entity_id, next);
     this.notifyAll();
