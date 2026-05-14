@@ -237,7 +237,17 @@ const MIME: Record<string, string> = {
   ".map": "application/json; charset=utf-8",
 };
 
-async function serveStatic(pathname: string): Promise<Response | null> {
+/** Pick the best precompressed sibling the client accepts. Build-time
+ *  step (web/scripts/compress-dist.mjs) emits .br + .gz for files >1 KB. */
+function pickEncoding(accept: string): "br" | "gzip" | null {
+  // br first: ~20% smaller than gzip on our bundle. We assume modern
+  // browsers (Brotli has had universal support since 2017).
+  if (/\bbr\b/.test(accept)) return "br";
+  if (/\bgzip\b/.test(accept)) return "gzip";
+  return null;
+}
+
+async function serveStatic(pathname: string, req: Request): Promise<Response | null> {
   const rel = pathname === "/" ? "index.html" : pathname.replace(/^\//, "");
   // Block traversal
   if (rel.includes("..")) return null;
@@ -245,11 +255,41 @@ async function serveStatic(pathname: string): Promise<Response | null> {
   try {
     const stat = await Deno.stat(filePath);
     if (!stat.isFile) return null;
-    const file = await Deno.open(filePath, { read: true });
     const ext = rel.slice(rel.lastIndexOf(".")).toLowerCase();
-    return new Response(file.readable, {
-      headers: { "Content-Type": MIME[ext] ?? "application/octet-stream" },
-    });
+    const headers: Record<string, string> = {
+      "Content-Type": MIME[ext] ?? "application/octet-stream",
+    };
+    // Hashed asset files under /assets/ are immutable — vite emits the
+    // content hash in the filename, so any change ships under a new URL.
+    // Everything else (index.html, /, root) must revalidate so deploys
+    // ship a new bundle without users having to hard-refresh.
+    if (rel.startsWith("assets/")) {
+      headers["Cache-Control"] = "public, max-age=31536000, immutable";
+    } else {
+      headers["Cache-Control"] = "no-cache";
+    }
+
+    // Negotiate precompressed sibling if present. We always set Vary so
+    // intermediate caches (HA's ingress nginx, browsers) keep
+    // encoding-specific cache entries.
+    headers["Vary"] = "Accept-Encoding";
+    const enc = pickEncoding(req.headers.get("accept-encoding") ?? "");
+    if (enc) {
+      const sibling = `${filePath}.${enc === "br" ? "br" : "gz"}`;
+      try {
+        const sStat = await Deno.stat(sibling);
+        if (sStat.isFile) {
+          headers["Content-Encoding"] = enc;
+          headers["Content-Length"] = String(sStat.size);
+          const file = await Deno.open(sibling, { read: true });
+          return new Response(file.readable, { headers });
+        }
+      } catch { /* sibling missing — fall through to raw */ }
+    }
+
+    headers["Content-Length"] = String(stat.size);
+    const file = await Deno.open(filePath, { read: true });
+    return new Response(file.readable, { headers });
   } catch {
     return null;
   }
@@ -350,7 +390,7 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (req.method === "GET") {
-    const staticResponse = await serveStatic(url.pathname);
+    const staticResponse = await serveStatic(url.pathname, req);
     if (staticResponse) return staticResponse;
     // SPA fallback: any GET that didn't match a static file or another
     // explicit route falls through to index.html so client-side routes
@@ -358,7 +398,7 @@ async function handler(req: Request): Promise<Response> {
     // /ws and any path containing a dot are excluded so a missing asset
     // still 404s instead of silently returning HTML.
     if (url.pathname !== "/ws" && !url.pathname.includes(".")) {
-      const indexHtml = await serveStatic("/");
+      const indexHtml = await serveStatic("/", req);
       if (indexHtml) return indexHtml;
     }
   }
@@ -449,6 +489,47 @@ function captureEntityReferences(event: unknown): void {
   if (ids.length > 0) recentEntities.pushMany(ids);
 }
 
+/**
+ * Strip duplicated payload from `message_update` events before they hit the
+ * wire. pi-agent emits a `partial` (full accumulated AssistantMessage) on
+ * every sub-event and pi-agent-core wraps that with another full `message`
+ * copy on the outer event — so each streamed token previously paid ~1.2 KB
+ * of redundant JSON for ~10 bytes of new content (O(n²) over a long
+ * reasoning trace).
+ *
+ * - `assistantMessageEvent.partial` is dropped unconditionally. Nothing in
+ *   the client reads it; the outer `event.message` carries the same data.
+ * - For `text_delta` and `thinking_delta`, `event.message` is also dropped.
+ *   The client appends the delta to its mirror of `_streamingMessage` and
+ *   re-attaches it before pi-web-ui's subscribers run.
+ *
+ * `toolcall_delta` keeps `event.message`: pi-ai's openai-completions stream
+ * maintains a `partialArgs` accumulator + a parseStreamingJson-derived live
+ * `arguments` object on the content block, and reimplementing that on the
+ * client to save a few hundred bytes per tool call isn't worth the
+ * surface area. Reasoning/text streams are where the bytes are anyway.
+ *
+ * `message_start`, `*_start`, `*_end`, `toolcall_*`, and `message_end` keep
+ * `event.message` — the client uses those as resync points (and
+ * `message_end` is the canonical full message that gets pushed into
+ * state.messages).
+ */
+const DELTA_SUBEVENTS_TO_STRIP_MESSAGE = new Set(["text_delta", "thinking_delta"]);
+function trimMessageUpdate(event: unknown): unknown {
+  // deno-lint-ignore no-explicit-any
+  const e = event as any;
+  if (!e || e.type !== "message_update") return event;
+  const sub = e.assistantMessageEvent;
+  if (!sub) return event;
+  const subTrimmed = { ...sub };
+  delete subTrimmed.partial;
+  const out: Record<string, unknown> = { ...e, assistantMessageEvent: subTrimmed };
+  if (DELTA_SUBEVENTS_TO_STRIP_MESSAGE.has(sub.type)) {
+    delete out.message;
+  }
+  return out;
+}
+
 function enrichErrorEvent(event: unknown): unknown {
   // deno-lint-ignore no-explicit-any
   const e = event as any;
@@ -480,7 +561,8 @@ async function ensureAgentBroadcast(): Promise<void> {
     logLlmFailure(event);
     if (isWarmingUp()) return;
     captureEntityReferences(event);
-    const enriched = enrichErrorEvent(event);
+    const trimmed = trimMessageUpdate(event);
+    const enriched = enrichErrorEvent(trimmed);
     const frame = JSON.stringify({ type: "event", event: enriched });
     for (const ws of sockets) {
       if (ws.readyState === WebSocket.OPEN) {

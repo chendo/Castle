@@ -110,6 +110,10 @@ export class RemoteAgent {
 
   /** Receive a single AgentEvent forwarded from the server. */
   async ingestEvent(event: AgentEvent): Promise<void> {
+    // reduce() handles delta-only message_updates by mutating
+    // `_streamingMessage` in place and back-filling event.message so the
+    // downstream pi-web-ui listener sees a complete event. Done before
+    // dispatch so subscribers and turnTimings observe a consistent shape.
     this.reduce(event);
     turnTimings.onEvent(event);
     const signal = this.abortController?.signal ?? new AbortController().signal;
@@ -177,9 +181,39 @@ export class RemoteAgent {
         this._errorMessage = undefined;
         break;
       case "message_start":
-      case "message_update":
         this._streamingMessage = event.message;
         break;
+      case "message_update": {
+        // Server strips event.message from text_delta / thinking_delta to cut
+        // O(n²) bandwidth — see trimMessageUpdate in main.ts. We rebuild the
+        // accumulated message here by appending the delta to the block at
+        // contentIndex on the mirror we kept from the last *_start / *_end /
+        // message_start, then re-attach it to the event so listeners
+        // (pi-web-ui's AgentInterface) and turnTimings see a full event.
+        const sub = (event as any).assistantMessageEvent as
+          | { type: string; contentIndex?: number; delta?: string }
+          | undefined;
+        if (event.message) {
+          this._streamingMessage = event.message;
+        } else if (
+          this._streamingMessage &&
+          sub &&
+          typeof sub.contentIndex === "number" &&
+          typeof sub.delta === "string"
+        ) {
+          const block = (this._streamingMessage.content as any[])?.[sub.contentIndex];
+          if (block) {
+            if (sub.type === "thinking_delta" && typeof block.thinking === "string") {
+              block.thinking += sub.delta;
+            } else if (sub.type === "text_delta" && typeof block.text === "string") {
+              block.text += sub.delta;
+            }
+          }
+          // Back-fill so downstream listeners get the full event shape they expect.
+          (event as any).message = this._streamingMessage;
+        }
+        break;
+      }
       case "message_end": {
         this._streamingMessage = undefined;
         // If the server is echoing back the user message we already added

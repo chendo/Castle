@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.2
+
+- **Compress and cache the browser bundle.** A post-build step (`web/scripts/compress-dist.mjs`) precomputes brotli (quality 11) and gzip siblings for every compressible asset > 1 KB; `serveStatic` negotiates `Accept-Encoding` and serves the matching precomputed file. Hashed `/assets/*` files get `Cache-Control: public, max-age=31536000, immutable`; `/` and `/index.html` stay `no-cache`. The main JS chunk drops 3.6 MB → 0.8 MB on cold load, and reloads pay zero bandwidth.
+- **Strip duplicated payload from streaming WS frames.** Each `thinking_delta` / `text_delta` previously carried a full accumulated message snapshot in both `assistantMessageEvent.partial` and `event.message` — O(n²) bandwidth in token count. `partial` is now dropped unconditionally; for text/thinking deltas `event.message` is dropped too and the client rebuilds the streaming message from deltas. Frame size on a reasoning stream drops from ~1.2 KB/token to ~140 B/token. Tool-call deltas are unaffected (the live `partialArgs` accumulator on the content block is non-trivial to mirror client-side).
+
 ## 0.3.1
 
 - Auto-reconnect the browser WebSocket when running behind HA's ingress proxy. The proxy silently drops idle sockets without sending a close frame, so the browser sat in `OPEN` state forever — `onclose` never fired, the existing reconnect never kicked in, and prompts queued into the void. Adds an app-level ping/pong heartbeat that force-closes the socket after 60 s of silence, and raises the reconnect backoff cap from 10 s to 60 s.
