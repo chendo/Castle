@@ -195,6 +195,20 @@ export class RemoteAgent {
           | undefined;
         if (event.message) {
           this._streamingMessage = event.message;
+          // pi-ai's provider uses `partial: output` as a LIVE reference and
+          // mutates `currentBlock.thinking/text += delta` between pushes; the
+          // WS subscriber serializes asynchronously, so a *_start event can
+          // arrive over the wire with the first chunk(s) already accumulated
+          // into the just-pushed block. Resetting on *_start gives us a
+          // clean "" to append subsequent deltas onto without doubling up.
+          if (typeof sub?.contentIndex === "number") {
+            const block = (this._streamingMessage.content as any[])?.[sub.contentIndex];
+            if (sub.type === "thinking_start" && block?.type === "thinking") {
+              block.thinking = "";
+            } else if (sub.type === "text_start" && block?.type === "text") {
+              block.text = "";
+            }
+          }
         } else if (
           this._streamingMessage &&
           sub &&
