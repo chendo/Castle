@@ -394,15 +394,20 @@ function buildChatDock(chatPanel: ChatPanel, agent: WebSocketRemoteAgent): HTMLE
   // drifted into empty space on wide screens. Living inside the button row
   // keeps these visually attached to the input regardless of viewport width.
   //
-  // Settings is here (in addition to the AppMenu drawer) specifically so the
-  // bare `/chat` view used by the HA ingress iframe — which has no topbar
-  // and no drawer — still has an entry point to Castle's settings dialog.
+  // New-conversation + Settings are here (in addition to the AppMenu drawer)
+  // specifically so the bare `/chat` view used by the HA ingress iframe —
+  // which has no topbar and no drawer — still has entry points for both.
+  const newChat = buildComposerIconButton({
+    title: "New conversation",
+    svg: NEW_CHAT_SVG,
+    onClick: () => agent.reset(),
+  });
   const settings = buildComposerIconButton({
     title: "Castle settings",
     svg: SETTINGS_GEAR_SVG,
     onClick: () => openSettingsDialog(agent),
   });
-  mountComposerButtons(chatPanel as unknown as HTMLElement, [buildVoiceButton(), settings]);
+  mountComposerButtons(chatPanel as unknown as HTMLElement, [newChat, buildVoiceButton(), settings]);
 
   return wrap;
 }
@@ -434,6 +439,13 @@ function mountComposerButtons(chatPanel: HTMLElement, buttons: HTMLButtonElement
   obs.observe(chatPanel, { childList: true, subtree: true });
   tryMount();
 }
+
+const NEW_CHAT_SVG = `
+  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+    <path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/>
+  </svg>
+`;
 
 const SETTINGS_GEAR_SVG = `
   <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
