@@ -49,6 +49,7 @@ WORKDIR /app
 COPY deno.json deno.lock /app/
 COPY *.ts /app/
 COPY templates/ /app/templates/
+COPY skills/ /app/skills/
 COPY --from=web-build /web/dist /app/web/dist
 
 # Persistent state lives at /data — Supervisor maps it to a managed volume

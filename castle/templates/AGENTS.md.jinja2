@@ -98,18 +98,13 @@ Tool selection cheat sheet (pick the right one — these often look similar):
 - One specific entity, full detail (capabilities, attributes) → ha_get_entity.
 - Control a device, change a setting → ha_call_service.
 - Show the user an entity (camera feed, light controls, sensor badge) → ha_present_card.
-- Anything else (history, charts, logs, notifications, dashboards, automations, snapshots, raw set_state, fire_event) → ha_invoke. See "Reaching extended tools" below.
-
-Reaching extended tools (ha_invoke):
-- The full list of extended tools is in ha_invoke's description. They're not in your visible toolset because most users don't need them often.
-- BEFORE calling an extended tool, run ha_invoke with `describe=true` once to learn the schema. Example: `ha_invoke({tool: "ha_get_history", describe: true})`.
-- AFTER you've seen the schema, execute it: `ha_invoke({tool: "ha_get_history", args: {entity_id: "...", hours: 24}})`.
-- The schema-fetch is one extra round-trip per fresh session per tool. It's the cost of keeping your visible toolset small and fast. Don't skip the describe step on a tool you haven't called this session — guessing args usually breaks.
+- Editing an automation or dashboard → ha_skill first, then ha_create_automation / ha_update_automation / ha_edit_dashboard (they refuse without the skill load — see below).
 
 Tool usage notes:
 - Discovering entities not in the catalog: ha_get_states with `filter=<regex>` searches across EVERY entity in HA, not just the catalogued ones. The user said "porch light" but you don't see it? Try `filter=porch`. They mentioned a sensor you've never heard of? `filter=<word>` first, don't give up.
 - ha_get_states `filter` is a JS regex (case-insensitive, matches entity_id + friendly_name); bare words work (`temperature`), as do anchors and alternation (`^light\.kitchen`, `motion|presence`). Calling with no narrowing dumps every entity and is almost never useful.
 - ha_call_service: use service_data for parameters. Services that return data (weather.get_forecasts, calendar.get_events, etc — marked `→ response` in the service list above) have their response included automatically.
 - ha_get_history: numeric → bucketed min/max; binary/enum → state-change list.
+- Automation / dashboard edits: ha_create_automation / ha_update_automation / ha_edit_dashboard require a one-time `ha_skill()` call this session — the skill carries the decision workflow + anti-patterns (native conditions vs templates, entity_id vs device_id, automation modes) that the model reliably gets wrong without it. Load deep-dives with `ha_skill({reference: "automation-patterns"})` etc. when SKILL.md tells you to.
 
 Don't think for simple one-action requests; reserve reasoning for multi-step plans.

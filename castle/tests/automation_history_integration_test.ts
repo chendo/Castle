@@ -86,9 +86,47 @@ function resultText(result: { content: Array<{ type: string; text?: string }> })
 
 // deno-lint-ignore no-explicit-any
 function makeTools(ha: FakeHAClient, root: string) {
+  // Pre-mark the best-practices skill as loaded so the write-class
+  // automation/dashboard tools accept calls in isolation tests. The
+  // skillGate is exercised separately in the unit suite where we
+  // explicitly pass an empty Set.
+  const loadedSkills = new Set<string>(["ha_best_practices"]);
   // deno-lint-ignore no-explicit-any
-  return buildTools(ha as any, { historyRoot: root });
+  return buildTools(ha as any, { historyRoot: root, loadedSkills });
 }
+
+Deno.test("ha_create_automation — refuses when ha_skill hasn't loaded", () =>
+  withFreshRoot(async (root) => {
+    const ha = new FakeHAClient();
+    // Default empty set — no skill loaded.
+    // deno-lint-ignore no-explicit-any
+    const tools = buildTools(ha as any, { historyRoot: root });
+    const create = findTool(tools, "ha_create_automation");
+    const out = await create.execute("c1", {
+      automation_id: "new-1",
+      config: {
+        alias: "x",
+        trigger: [{ platform: "state", entity_id: "lock.front_door", to: "unlocked" }],
+        action: [{ action: "persistent_notification.create" }],
+      },
+    });
+    assertStringIncludes(resultText(out), "load the Home Assistant best-practices skill first");
+    // Confirm HA wasn't touched.
+    assertEquals(ha.automations["new-1"], undefined);
+  }));
+
+Deno.test("ha_edit_dashboard — refuses when ha_skill hasn't loaded", () =>
+  withFreshRoot(async (root) => {
+    const ha = new FakeHAClient();
+    // deno-lint-ignore no-explicit-any
+    const tools = buildTools(ha as any, { historyRoot: root });
+    const edit = findTool(tools, "ha_edit_dashboard");
+    const out = await edit.execute("d1", {
+      name: "(default)",
+      ops: [{ op: "set", path: "title", value: "x" }],
+    });
+    assertStringIncludes(resultText(out), "load the Home Assistant best-practices skill first");
+  }));
 
 Deno.test("ha_create_automation — writes new automation + records v1", () =>
   withFreshRoot(async (root) => {

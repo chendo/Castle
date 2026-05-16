@@ -2,6 +2,7 @@ import { Type } from "npm:@sinclair/typebox";
 import { encodeBase64 } from "jsr:@std/encoding@1/base64";
 import type { HAClient } from "./ha-client.ts";
 import { diffConfigs, ResourceHistoryStore } from "./resource-history.ts";
+import { SOURCE_DIR } from "./paths.ts";
 
 type ToolContent = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
 export type TruncationInfo = {
@@ -1308,6 +1309,11 @@ export function buildTools(
     allowUnexposedWrites?: boolean;
     automationHistoryMaxVersions?: number;
     dashboardHistoryMaxVersions?: number;
+    /** Per-session Set of skill names the agent has loaded via ha_skill.
+     *  Write-class automation/dashboard tools refuse until this contains
+     *  "ha_best_practices". Defaults to a fresh empty Set, so each
+     *  buildTools call (= each session) starts cold. */
+    loadedSkills?: Set<string>;
     /** Override the on-disk history root. Only intended for tests — production
      *  uses the default (under DATA_DIR) baked into ResourceHistoryStore. */
     historyRoot?: string;
@@ -1316,6 +1322,7 @@ export function buildTools(
   const isMultimodal = opts.multimodal === true;
   const dashboardCache = opts.dashboardCache ?? new Map<string, unknown>();
   const allowUnexposedWrites = opts.allowUnexposedWrites === true;
+  const loadedSkills = opts.loadedSkills ?? new Set<string>();
   const automationHistory = new ResourceHistoryStore("automation", opts.automationHistoryMaxVersions ?? 50, opts.historyRoot);
   const dashboardHistory = new ResourceHistoryStore("dashboard", opts.dashboardHistoryMaxVersions ?? 20, opts.historyRoot);
 
@@ -1376,6 +1383,17 @@ export function buildTools(
   }
 
   const REFUSAL_HINT = `Refused: not allowed to control non-exposed entities. To proceed, the user can either (a) expose the entity to assistants in Home Assistant (Settings → Voice assistants → Expose), or (b) flip "Allow agent to control non-exposed entities" in Castle's Settings dialog. Stop and ask which they'd like to do — don't retry until one of the two is in place.`;
+
+  /** Gate write-class automation/dashboard tools on ha_skill having been
+   *  loaded once this session. Without the best-practices doc in context,
+   *  the agent reliably picks `condition: template` over native conditions,
+   *  device_id over entity_id, single mode for motion lights, etc.
+   *  The cost of one round-trip per session is small compared to the cost
+   *  of generating broken automations the user then has to debug. */
+  function skillGate(toolName: string): string | null {
+    if (loadedSkills.has("ha_best_practices")) return null;
+    return `Refused: load the Home Assistant best-practices skill first.\n\nCall ha_skill() (no args) once this session before invoking ${toolName}. The skill is the curated decision workflow + anti-patterns table for HA automations/dashboards — Castle has observed agents reliably get these tools wrong without it (templates over native conditions, device_id over entity_id, wrong automation modes). One round-trip, then retry.`;
+  }
   return [
     {
       name: "ha_call_service",
@@ -1901,7 +1919,7 @@ export function buildTools(
     {
       name: "ha_edit_dashboard",
       label: "Edit Dashboard",
-      description: "Apply a list of partial edits to a dashboard. ALWAYS call ha_get_dashboard first so you know the current path layout. Each op uses the same dotted path syntax (e.g. `views.0.cards.3`) you used to drill in. Three op kinds:\n  - {op: 'set', path, value} — replace value at path; if parent is an array, key must be an existing index (use 'insert' to add).\n  - {op: 'delete', path} — remove the item at path. Object key, or array element (others shift down).\n  - {op: 'insert', path, value, index?} — insert into the array AT path (path itself points at the array). index defaults to end. Bounds: 0..array.length.\nOps apply in order, atomic — if any op fails, nothing is written. The response includes a per-op before/after diff of each op's parent so you can verify the change landed correctly without re-fetching. Top-level shape (must have at least one view) is checked after the ops apply. Entity_ids and service names referenced in the post-edit config are validated against the live registry; unknowns produce warnings (saved anyway). Use '(default)' for the main dashboard.",
+      description: "Apply a list of partial edits to a dashboard. REQUIRES ha_skill() loaded once this session — refuses otherwise. ALWAYS call ha_get_dashboard first so you know the current path layout. Each op uses the same dotted path syntax (e.g. `views.0.cards.3`) you used to drill in. Three op kinds:\n  - {op: 'set', path, value} — replace value at path; if parent is an array, key must be an existing index (use 'insert' to add).\n  - {op: 'delete', path} — remove the item at path. Object key, or array element (others shift down).\n  - {op: 'insert', path, value, index?} — insert into the array AT path (path itself points at the array). index defaults to end. Bounds: 0..array.length.\nOps apply in order, atomic — if any op fails, nothing is written. The response includes a per-op before/after diff of each op's parent so you can verify the change landed correctly without re-fetching. Top-level shape (must have at least one view) is checked after the ops apply. Entity_ids and service names referenced in the post-edit config are validated against the live registry; unknowns produce warnings (saved anyway). Use '(default)' for the main dashboard.",
       parameters: Type.Object({
         name: Type.String({ description: "Dashboard url_path. Use '(default)' for the main dashboard." }),
         ops: Type.Array(Type.Record(Type.String(), Type.Unknown()), { description: "Ordered list of edits (set/delete/insert)" }),
@@ -1910,6 +1928,8 @@ export function buildTools(
         _id: string,
         params: { name: string; ops: DashboardOp[] },
       ): Promise<ToolResult> {
+        const gated = skillGate("ha_edit_dashboard");
+        if (gated) return ok(gated);
         if (!Array.isArray(params.ops) || params.ops.length === 0) {
           return ok("ops must be a non-empty list");
         }
@@ -2234,6 +2254,51 @@ export function buildTools(
     },
 
     {
+      name: "ha_skill",
+      label: "Load Skill",
+      description: "Load the vendored Home Assistant best-practices skill — a curated decision workflow and anti-patterns catalogue for writing automations, helpers, scripts, dashboards, and device controls. Call with no arguments to read SKILL.md (the routing doc — anti-pattern table, decision steps, and pointers to deeper references). Pass `reference` to read one of the deep-dive files when you need the detail (e.g. automation-patterns for trigger/condition catalogue, safe-refactoring before renaming entities, dashboard-guide for Lovelace layouts). REQUIRED before ha_create_automation / ha_update_automation / ha_edit_dashboard — those tools refuse until this has been called at least once per session.",
+      parameters: Type.Object({
+        reference: Type.Optional(Type.Union([
+          Type.Literal("automation-patterns"),
+          Type.Literal("safe-refactoring"),
+          Type.Literal("helper-selection"),
+          Type.Literal("template-guidelines"),
+          Type.Literal("device-control"),
+          Type.Literal("dashboard-guide"),
+          Type.Literal("dashboard-cards"),
+          Type.Literal("yaml-only-integrations"),
+          Type.Literal("domain-docs"),
+          Type.Literal("examples"),
+        ], { description: "Deep-dive file to load. Omit to get SKILL.md (the routing doc)." })),
+      }),
+      async execute(_id: string, params: { reference?: string }): Promise<ToolResult> {
+        const SKILL_ROOT = `${SOURCE_DIR}/skills/home-assistant-best-practices`;
+        // Any successful call (with or without reference) flips the gate.
+        // SKILL.md is the canonical loaded form, but loading a reference
+        // means the agent saw the skill name and pulled detail — same
+        // signal that they're aware of the best-practices doc.
+        try {
+          if (!params.reference) {
+            const text = await Deno.readTextFile(`${SKILL_ROOT}/SKILL.md`);
+            loadedSkills.add("ha_best_practices");
+            return ok(text);
+          }
+          // examples is the only .yaml file; everything else is .md.
+          const ext = params.reference === "examples" ? "yaml" : "md";
+          const path = `${SKILL_ROOT}/references/${params.reference}.${ext}`;
+          const text = await Deno.readTextFile(path);
+          loadedSkills.add("ha_best_practices");
+          return ok(text);
+        } catch (err) {
+          // Mostly indicates the vendored bundle is missing — e.g. running
+          // against a checkout where skills/ wasn't pulled. Surface plainly
+          // rather than letting the unhandled error abort the agent loop.
+          return ok(`ha_skill: failed to load ${params.reference ?? "SKILL.md"}: ${(err as Error).message}`);
+        }
+      },
+    },
+
+    {
       name: "ha_get_automation",
       label: "Get Automation",
       description: "Fetch the full config for one automation. `automation_id` is the numeric id from the entity's `attributes.id` (NOT the entity_id slug — e.g. for automation.morning_lights with attributes.id=1776352404227, pass 1776352404227). Returns the JSON config you'd see in HA's automation editor.",
@@ -2258,7 +2323,7 @@ export function buildTools(
     {
       name: "ha_create_automation",
       label: "Create Automation",
-      description: "Create a new automation. Provide alias + at least one trigger + at least one action; condition / mode / description are optional. If automation_id is omitted Castle generates a millisecond-timestamp id (matches HA's own scheme); if provided it must NOT already exist. Validates entity_ids and service names against the live registry the same way ha_update_automation does — unknown ones produce warnings unless strict=true. The new automation reloads into HA immediately; no automation.reload service call needed.",
+      description: "Create a new automation. REQUIRES ha_skill() loaded once this session — refuses otherwise. Provide alias + at least one trigger + at least one action; condition / mode / description are optional. If automation_id is omitted Castle generates a millisecond-timestamp id (matches HA's own scheme); if provided it must NOT already exist. Validates entity_ids and service names against the live registry the same way ha_update_automation does — unknown ones produce warnings unless strict=true. The new automation reloads into HA immediately; no automation.reload service call needed.",
       parameters: Type.Object({
         config: Type.Record(Type.String(), Type.Unknown(), {
           description: "Complete automation config. Must include `alias` (string), `trigger` (array), and `action` (array). Optional: `condition`, `mode` ('single'|'restart'|'queued'|'parallel'), `description`, `max`, `max_exceeded`, etc.",
@@ -2271,6 +2336,8 @@ export function buildTools(
         })),
       }),
       async execute(_id: string, params: { config: Record<string, unknown>; automation_id?: string; strict?: boolean }): Promise<ToolResult> {
+        const gated = skillGate("ha_create_automation");
+        if (gated) return ok(gated);
         // Required-shape check before hitting HA — refuse early on obviously
         // wrong inputs (HA's own error is "Message format incorrect" with no
         // hint about which field).
@@ -2363,13 +2430,15 @@ export function buildTools(
     {
       name: "ha_update_automation",
       label: "Update Automation",
-      description: "Replace the full config for one automation. ALWAYS call ha_get_automation first, edit the returned config, then pass the modified config back. Validates entity_ids and service names against the live registry — unknown ones produce warnings (templates and unknown-but-future entities are common false positives, so we warn rather than refuse). Pass strict=true to refuse on any warning.",
+      description: "Replace the full config for one automation. REQUIRES ha_skill() loaded once this session — refuses otherwise. ALWAYS call ha_get_automation first, edit the returned config, then pass the modified config back. Validates entity_ids and service names against the live registry — unknown ones produce warnings (templates and unknown-but-future entities are common false positives, so we warn rather than refuse). Pass strict=true to refuse on any warning.",
       parameters: Type.Object({
         automation_id: Type.String({ description: "Numeric automation id (from attributes.id)" }),
         config: Type.Record(Type.String(), Type.Unknown(), { description: "Complete automation config (alias, trigger, condition, action, mode, etc)" }),
         strict: Type.Optional(Type.Boolean({ description: "If true, refuse to save when validation produces any warning. Default false (save with warnings)." })),
       }),
       async execute(_id: string, params: { automation_id: string; config: Record<string, unknown>; strict?: boolean }): Promise<ToolResult> {
+        const gated = skillGate("ha_update_automation");
+        if (gated) return ok(gated);
         // Build the validation universe from live HA state.
         const knownEntityIds = new Set(ha.getAllStates().map((s) => s.entity_id));
         const services = await ha.getServices();

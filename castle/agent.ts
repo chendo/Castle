@@ -282,12 +282,19 @@ export function getAgentSession(ha: HAClient): Promise<AgentSession> {
       const reserveTokens = Math.min(4096, Math.floor(settings.contextWindow * 0.0625));
       const keepRecentTokens = Math.max(8192, Math.floor(settings.contextWindow * 0.125));
 
+      // Per-session memo of which skill bundles the agent has loaded via
+      // ha_skill. The write-class automation/dashboard tools refuse until
+      // "ha_best_practices" is in here. Recreated implicitly by every
+      // session rebuild (recreateAgentSession nulls out sessionPromise,
+      // so the next getAgentSession constructs a fresh buildTools call).
+      const loadedSkills = new Set<string>();
       const customTools = buildTools(ha, {
         multimodal: isMultimodal,
         dashboardCache,
         allowUnexposedWrites: settings.allowUnexposedWrites,
         automationHistoryMaxVersions: settings.automationHistoryMaxVersions,
         dashboardHistoryMaxVersions: settings.dashboardHistoryMaxVersions,
+        loadedSkills,
       }).filter((t) => settings.enabledTools.includes(t.name as ToolName));
       const enabledTools = customTools.map((t) => t.name as string);
       console.log(`[agent] enabled tools: ${enabledTools.join(", ")}`);

@@ -33,6 +33,7 @@ export const ALL_TOOL_NAMES = [
   "ha_list_addons",
   "ha_update_addon",
   "ha_manage",
+  "ha_skill",
 ] as const;
 export type ToolName = typeof ALL_TOOL_NAMES[number];
 
@@ -67,6 +68,7 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
   ha_list_addons: "list installed HA add-ons with their current and latest versions (Supervisor API)",
   ha_update_addon: "update one HA add-on to its latest version (Supervisor API)",
   ha_manage: "manage Home Assistant Core itself — check_config / reload / restart",
+  ha_skill: "load the vendored Home Assistant best-practices skill (decision workflow + anti-patterns) — required before editing automations or dashboards",
 };
 
 export interface Settings {
