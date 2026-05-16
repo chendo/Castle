@@ -88,7 +88,7 @@ Deno.test("buildAgentsMd — services iterate per-domain with required/optional 
   });
   assert(md.includes("### weather"));
   assert(md.includes("get_forecasts(type!, language?)"));
-  assert(md.includes("→ response (set return_response=true)"));
+  assert(md.includes("→ response"));
 });
 
 Deno.test("buildAgentsMd — areas + unassigned entities render under their domains", () => {

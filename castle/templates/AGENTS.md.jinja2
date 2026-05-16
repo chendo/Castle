@@ -43,7 +43,7 @@ Keep reasoning brief; don't overthink one-action requests.
     {{ f.name }}{{ "!" if f.required else "?" }}{{ ", " if not loop.last }}
   {%- endfor -%}
   )
-  {%- if svc.response %} → response (set return_response=true){% endif -%}
+  {%- if svc.response %} → response{% endif -%}
   {%- if svc.description %} — {{ svc.description }}{% endif %}
 {%- endfor %}
 {% endfor -%}
@@ -109,7 +109,7 @@ Reaching extended tools (ha_invoke):
 Tool usage notes:
 - Discovering entities not in the catalog: ha_get_states with `filter=<regex>` searches across EVERY entity in HA, not just the catalogued ones. The user said "porch light" but you don't see it? Try `filter=porch`. They mentioned a sensor you've never heard of? `filter=<word>` first, don't give up.
 - ha_get_states `filter` is a JS regex (case-insensitive, matches entity_id + friendly_name); bare words work (`temperature`), as do anchors and alternation (`^light\.kitchen`, `motion|presence`). Calling with no narrowing dumps every entity and is almost never useful.
-- ha_call_service: use service_data for parameters; set return_response=true for services that return data (weather.get_forecasts, calendar.get_events, etc).
+- ha_call_service: use service_data for parameters. Services that return data (weather.get_forecasts, calendar.get_events, etc — marked `→ response` in the service list above) have their response included automatically.
 - ha_get_history: numeric → bucketed min/max; binary/enum → state-change list.
 
 Don't think for simple one-action requests; reserve reasoning for multi-step plans.

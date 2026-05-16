@@ -1380,7 +1380,7 @@ export function buildTools(
     {
       name: "ha_call_service",
       label: "Call Service",
-      description: "Control a Home Assistant device or trigger a service. Set return_response=true for services that return data (weather.get_forecasts, calendar.get_events, conversation.process, etc.) — without it those services execute but return nothing useful.",
+      description: "Control a Home Assistant device or trigger a service. Services that return data (weather.get_forecasts, calendar.get_events, conversation.process, etc.) have their response included automatically — no flag to set.",
       parameters: Type.Object({
         domain: Type.String({ description: "e.g. light, switch, climate, cover, script, weather, calendar" }),
         service: Type.String({ description: "e.g. turn_on, turn_off, toggle, set_temperature, get_forecasts, get_events" }),
@@ -1388,11 +1388,10 @@ export function buildTools(
         service_data: Type.Optional(Type.Record(Type.String(), Type.Unknown(), {
           description: "Extra data, e.g. {brightness_pct: 50} for lights, {type: 'daily'} for weather.get_forecasts",
         })),
-        return_response: Type.Optional(Type.Boolean({ description: "Set true for services that return data (e.g. forecasts, events)" })),
       }),
       async execute(
         _id: string,
-        params: { domain: string; service: string; entity_id?: string; service_data?: Record<string, unknown>; return_response?: boolean },
+        params: { domain: string; service: string; entity_id?: string; service_data?: Record<string, unknown> },
         _signal: AbortSignal | undefined,
         _onUpdate: unknown,
         _ctx: unknown,
@@ -1425,21 +1424,22 @@ export function buildTools(
             if (!known.has(k)) warnings.push(`unknown field "${k}" for ${params.domain}.${params.service}`);
           }
         }
-        if (params.return_response && !def.response) {
-          warnings.push(`${params.domain}.${params.service} does not return a response — return_response will error in HA`);
-        }
 
+        // Ask HA for the response iff the service registry says one exists.
+        // Passing return_response on a service without `response:` is a
+        // hard error in HA; omitting it on a service with `response:`
+        // silently throws the payload away.
         const result = await ha.callService(
           params.domain,
           params.service,
           params.entity_id ? { entity_id: params.entity_id } : undefined,
           params.service_data,
-          params.return_response === true,
+          def.response != null,
         );
         const target = params.entity_id ? ` on ${params.entity_id}` : "";
         const head = `Called ${params.domain}.${params.service}${target}`;
         const warningSuffix = warnings.length ? `\n\nWarnings:\n- ${warnings.join("\n- ")}` : "";
-        if (params.return_response && result?.response !== undefined && result.response !== null) {
+        if (result?.response !== undefined && result.response !== null) {
           return ok(`${head}${warningSuffix}\n\nResponse:\n${JSON.stringify(result.response, null, 2)}`);
         }
         return ok(head + warningSuffix);
