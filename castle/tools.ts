@@ -2285,17 +2285,20 @@ export function buildTools(
         // means the agent saw the skill name and pulled detail — same
         // signal that they're aware of the best-practices doc.
         try {
+          let text: string;
           if (!params.reference) {
-            const text = await Deno.readTextFile(`${SKILL_ROOT}/SKILL.md`);
-            loadedSkills.add("ha_best_practices");
-            return ok(text);
+            text = await Deno.readTextFile(`${SKILL_ROOT}/SKILL.md`);
+          } else {
+            // examples is the only .yaml file; everything else is .md.
+            const ext = params.reference === "examples" ? "yaml" : "md";
+            text = await Deno.readTextFile(`${SKILL_ROOT}/references/${params.reference}.${ext}`);
           }
-          // examples is the only .yaml file; everything else is .md.
-          const ext = params.reference === "examples" ? "yaml" : "md";
-          const path = `${SKILL_ROOT}/references/${params.reference}.${ext}`;
-          const text = await Deno.readTextFile(path);
           loadedSkills.add("ha_best_practices");
-          return ok(text);
+          // Bypass okText's 8 KB cap — skill files are vendored and
+          // size-bounded at sync time (a few KB up to ~20 KB), not at runtime.
+          // Truncating mid-document defeats the whole point of loading it,
+          // since the elided half usually contains the rules the agent needs.
+          return { content: [{ type: "text", text }], details: {} };
         } catch (err) {
           // Mostly indicates the vendored bundle is missing — e.g. running
           // against a checkout where skills/ wasn't pulled. Surface plainly
