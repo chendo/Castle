@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.4
+
+- **Vendor the [homeassistant-ai/skills](https://github.com/homeassistant-ai/skills) best-practices bundle and gate write-class automation/dashboard tools on it.** New `ha_skill` tool returns `SKILL.md` (decision workflow + anti-patterns catalogue) by default, or one of ten deep-dive references (automation-patterns, safe-refactoring, helper-selection, template-guidelines, device-control, dashboard-guide, dashboard-cards, yaml-only-integrations, domain-docs, examples) when asked. `ha_create_automation`, `ha_update_automation`, and `ha_edit_dashboard` now refuse with a one-line instructional message until the skill has been loaded once per session. Reads, diffs, lists, and rollbacks are unaffected. The gate fires before HA is touched, so an accidental refusal is a no-op. `scripts/sync-skills.sh` re-pulls the bundle at a pinned upstream commit.
+- **Fix dashboard entity validation.** The shared automation/dashboard validator only matched the `entity_id` key, which is rare in dashboards — most cards use `entity` (singular) or `entities` (mixed string-or-object list). `ha_edit_dashboard` now actually surfaces typos in dashboard card references; previously the "validates entity_ids" claim in the tool description was a no-op for the common card shapes.
+- **Clean up the stale `ha_invoke` block in the system prompt.** The describe-then-invoke meta-tool was removed in 0.2.x but its instructions lingered in `AGENTS.md.jinja2`; replaced with concise notes about `ha_skill` and the read/write tool split.
+
 ## 0.3.3
 
 - **Fix: thinking/text tokens doubled at the start of every block in the streaming UI.** 0.3.2's delta-only protocol appended deltas onto whatever the wire `*_start` event already contained, but pi-ai uses a live reference for `partial` and mutates it between event pushes, so by the time the WS subscriber serialized `thinking_start` the first chunk(s) had already accumulated. Reset the just-started content block to empty on `*_start` and let the deltas be the source of truth.
