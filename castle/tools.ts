@@ -1088,14 +1088,21 @@ function stubify(value: unknown, path: string): unknown {
 }
 
 /**
- * Walk an automation config and collect every entity_id and service reference.
- * Skips template strings ({{ ... }}) since we can't statically resolve them.
+ * Walk an automation OR dashboard config and collect every entity_id and
+ * service reference. Skips template strings ({{ ... }}) since we can't
+ * statically resolve them.
  *
  * The walker is intentionally generic: HA's automation/script schema lets any
  * action key (`service`, `target.entity_id`, `entity_id`, `device_id`) appear
- * inside `choose[].sequence`, `repeat.sequence`, `if.then`, etc. Recursive
- * descent on arrays + objects catches everything without per-shape parsing.
+ * inside `choose[].sequence`, `repeat.sequence`, `if.then`, etc. Dashboard
+ * cards add another set of entity-reference keys — `entity` (singular, used
+ * by entity / light / gauge / weather-forecast / picture-entity / glance
+ * item cards), and `entities` (entities / glance card lists, whose items
+ * are either bare entity_id strings or {entity, ...} objects). Recursive
+ * descent on arrays + objects catches all of them without per-shape parsing.
  */
+const ENTITY_REF_KEYS = new Set(["entity_id", "entity", "entities"]);
+const SERVICE_REF_KEYS = new Set(["service", "action"]);
 export function collectConfigReferences(config: unknown): { entityIds: string[]; services: string[] } {
   const entityIds = new Set<string>();
   const services = new Set<string>();
@@ -1122,8 +1129,8 @@ export function collectConfigReferences(config: unknown): { entityIds: string[];
     if (node === null || typeof node !== "object") return;
     const obj = node as Record<string, unknown>;
     for (const [k, v] of Object.entries(obj)) {
-      if (k === "entity_id") addEntity(v);
-      else if (k === "service" || k === "action") addService(v);
+      if (ENTITY_REF_KEYS.has(k)) addEntity(v);
+      else if (SERVICE_REF_KEYS.has(k)) addService(v);
       walk(v, k);
     }
   };

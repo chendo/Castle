@@ -622,7 +622,7 @@ Deno.test("ha_edit_dashboard — refuses post-edit config with no views", () =>
     assertEquals(cfg.views.length, 1);
   }));
 
-Deno.test("ha_edit_dashboard — surfaces validation warning for unknown entity in card tap_action", () =>
+Deno.test("ha_edit_dashboard — surfaces validation warning for unknown entity in card", () =>
   withFreshRoot(async (root) => {
     const ha = new FakeHAClient();
     ha.knownEntityIds = ["light.real"];
@@ -633,24 +633,15 @@ Deno.test("ha_edit_dashboard — surfaces validation warning for unknown entity 
     const tools = makeTools(ha, root);
     const edit = findTool(tools, "ha_edit_dashboard");
 
-    // Most card types use the `entity` / `entities` key (which the shared
-    // automation validator doesn't match — it looks for `entity_id`). The
-    // tap_action service-call path DOES use `target.entity_id`, so unknowns
-    // there surface as warnings — the realistic path for catching typos.
+    // The `entity` key on entity / light / weather-forecast / gauge / etc.
+    // cards is the most common entity reference shape in dashboards. The
+    // shared validator now recognises it alongside automation `entity_id`.
     const out = await edit.execute("c1", {
       name: "d-warn",
       ops: [{
         op: "insert",
         path: "views.0.cards",
-        value: {
-          type: "button",
-          name: "Ghost button",
-          tap_action: {
-            action: "call-service",
-            service: "light.turn_on",
-            target: { entity_id: "light.ghost" },
-          },
-        },
+        value: { type: "entity", entity: "light.ghost" },
       }],
     });
     const text = resultText(out);
@@ -661,6 +652,42 @@ Deno.test("ha_edit_dashboard — surfaces validation warning for unknown entity 
     // deno-lint-ignore no-explicit-any
     const cfg = ha.dashboards["d-warn"] as any;
     assertEquals(cfg.views[0].cards.length, 2);
+  }));
+
+Deno.test("ha_edit_dashboard — warning surfaces for unknown entity in entities-card list", () =>
+  withFreshRoot(async (root) => {
+    const ha = new FakeHAClient();
+    ha.knownEntityIds = ["light.kitchen"];
+    ha.dashboards["d-list"] = {
+      title: "L",
+      views: [{ title: "v", cards: [] }],
+    };
+    const tools = makeTools(ha, root);
+    const edit = findTool(tools, "ha_edit_dashboard");
+
+    // Mixed string + object items in `entities`, two of which are unknown.
+    const out = await edit.execute("c1", {
+      name: "d-list",
+      ops: [{
+        op: "insert",
+        path: "views.0.cards",
+        value: {
+          type: "entities",
+          entities: [
+            "light.kitchen",                          // known
+            "switch.ghost",                           // unknown, bare string
+            { entity: "sensor.phantom", name: "P" },  // unknown, nested object
+          ],
+        },
+      }],
+    });
+    const text = resultText(out);
+    assertStringIncludes(text, "updated");
+    assertStringIncludes(text, "validation warning(s):");
+    assertStringIncludes(text, "switch.ghost");
+    assertStringIncludes(text, "sensor.phantom");
+    // light.kitchen is known — should NOT appear in warnings.
+    assert(!/unknown entity_id: light\.kitchen/.test(text), "known entity should not warn");
   }));
 
 Deno.test("ha_diff_dashboard_versions — surfaces card additions and removals", () =>

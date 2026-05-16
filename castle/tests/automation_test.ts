@@ -60,6 +60,43 @@ Deno.test("collectConfigReferences — entity_id list is flattened", () => {
   assertEquals(out.entityIds.sort(), ["light.a", "light.b", "light.c"]);
 });
 
+Deno.test("collectConfigReferences — dashboard `entity` (singular) key", () => {
+  // Most card types (entity, light, weather-forecast, picture-entity, gauge,
+  // glance items) reference one entity via the `entity` key — not `entity_id`.
+  const config = {
+    views: [{
+      cards: [
+        { type: "entity", entity: "light.kitchen" },
+        { type: "weather-forecast", entity: "weather.home" },
+      ],
+    }],
+  };
+  const out = collectConfigReferences(config);
+  assertEquals(out.entityIds.sort(), ["light.kitchen", "weather.home"]);
+});
+
+Deno.test("collectConfigReferences — dashboard `entities` list (mixed string + object items)", () => {
+  // entities-card items can be either bare entity_id strings OR objects with
+  // an `entity` key carrying metadata (name, icon, secondary_info, …).
+  const config = {
+    views: [{
+      cards: [{
+        type: "entities",
+        entities: [
+          "light.kitchen",
+          { entity: "switch.porch", name: "Porch" },
+          { entity: "sensor.temperature", icon: "mdi:thermometer" },
+        ],
+      }],
+    }],
+  };
+  const out = collectConfigReferences(config);
+  assertEquals(
+    out.entityIds.sort(),
+    ["light.kitchen", "sensor.temperature", "switch.porch"],
+  );
+});
+
 Deno.test("validateAutomationConfig — warnings for unknown entity / service", () => {
   const config = {
     action: [
