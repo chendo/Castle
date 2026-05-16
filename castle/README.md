@@ -27,15 +27,17 @@ This project is in early alpha and is probably not ready for general use, expect
 **History**
 - Bucketed history for numeric sensors (min/max/avg per interval), per-bucket deltas for cumulative meters (kWh, m³ — meter resets handled), and state-change timelines for binary/enum entities.
 
-**Automations**
-- Manage your automations (edits disabled by default)
+**Automations** 🚧 *work in progress*
+- Manage your automations (edits disabled by default).
 - Inspect a recent run trace to see why an automation did or didn't fire.
 - Castle keeps a versioned history of every automation it edits: list versions, diff any two versions, and roll back to a previous one.
+- Models still get HA automations wrong often — wrong mode for the trigger pattern, template conditions where native ones exist, `device_id` instead of `entity_id`. The agent is gated on a vendored best-practices skill (see `castle/skills/`) before it can write, which helps but doesn't eliminate the problem. Treat agent-authored automations as drafts and verify before trusting them.
 
-**Dashboards**
+**Dashboards** 🚧 *work in progress*
 - List all Lovelace dashboards and read their config.
 - Edit a dashboard's config (cards, views, layout).
 - Versioned history with diff and rollback, same as automations.
+- Same caveat as automations: the agent can get card configs subtly wrong (mismatched entity types per card, layout choices that don't render cleanly). The rollback store gives you a one-call escape if an edit lands badly.
 
 **Operations**
 - Read recent HA system / integration logs.
