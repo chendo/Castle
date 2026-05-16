@@ -141,6 +141,7 @@ Deno.test("ha_edit_dashboard — refuses when ha_skill hasn't loaded", () =>
 Deno.test("ha_create_automation — writes new automation + records v1", () =>
   withFreshRoot(async (root) => {
     const ha = new FakeHAClient();
+    ha.knownEntityIds = ["lock.front_door"];
     const tools = makeTools(ha, root);
     const create = findTool(tools, "ha_create_automation");
     const list = findTool(tools, "ha_list_automation_versions");
@@ -162,6 +163,7 @@ Deno.test("ha_create_automation — writes new automation + records v1", () =>
 Deno.test("ha_create_automation — refuses when id already exists", () =>
   withFreshRoot(async (root) => {
     const ha = new FakeHAClient();
+    ha.knownEntityIds = ["light.bed_light"];
     ha.automations["existing"] = { alias: "Already here", trigger: [], action: [] };
     const tools = makeTools(ha, root);
     const create = findTool(tools, "ha_create_automation");
@@ -182,6 +184,7 @@ Deno.test("ha_create_automation — refuses when id already exists", () =>
 Deno.test("ha_create_automation — auto-generates id when omitted", () =>
   withFreshRoot(async (root) => {
     const ha = new FakeHAClient();
+    ha.knownEntityIds = ["switch.ac"];
     const tools = makeTools(ha, root);
     const create = findTool(tools, "ha_create_automation");
 
@@ -369,7 +372,7 @@ Deno.test("ha_rollback_dashboard — restores prior version via lovelace/config/
 
 // ── Automation: complex scenarios ─────────────────────────────────────────────
 
-Deno.test("ha_update_automation — strict=true refuses on unknown entity; HA untouched", () =>
+Deno.test("ha_update_automation — refuses on unknown entity (no override)", () =>
   withFreshRoot(async (root) => {
     const ha = new FakeHAClient();
     ha.knownEntityIds = ["light.kitchen"]; // light.bedroom is intentionally unknown
@@ -384,41 +387,72 @@ Deno.test("ha_update_automation — strict=true refuses on unknown entity; HA un
 
     const out = await update.execute("c1", {
       automation_id: "auto-strict",
-      strict: true,
       config: {
         alias: "Should refuse",
         trigger: [{ platform: "time", at: "07:00" }],
         action: [{ action: "light.turn_on", target: { entity_id: "light.bedroom" } }],
       },
     });
-    assertStringIncludes(resultText(out), "Refused (strict mode)");
-    assertStringIncludes(resultText(out), "light.bedroom");
-    // HA still holds the original config — strict refusal is atomic.
+    const text = resultText(out);
+    assertStringIncludes(text, "Refused");
+    assertStringIncludes(text, "unknown reference(s)");
+    assertStringIncludes(text, "light.bedroom");
+    // Refusal message nudges the agent to look up the right id.
+    assertStringIncludes(text, "ha_get_states");
+    // Refusal does NOT advertise a strict=false bypass — that escape hatch
+    // was removed because the agent reliably reached for it.
+    assert(!text.includes("strict=false"), "refusal should not advertise a bypass");
+    // HA still holds the original config — refusal is atomic.
     assertEquals((ha.automations["auto-strict"] as { alias: string }).alias, "Baseline");
   }));
 
-Deno.test("ha_update_automation — non-strict surfaces validation warnings but writes", () =>
+Deno.test("ha_update_automation — templated entity_id is recognised and skipped", () =>
   withFreshRoot(async (root) => {
     const ha = new FakeHAClient();
-    ha.knownEntityIds = ["light.kitchen"];
-    ha.automations["auto-warn"] = { alias: "v0", trigger: [], action: [] };
+    ha.knownEntityIds = ["sensor.target"];
+    ha.automations["auto-tpl"] = { alias: "v0", trigger: [], action: [] };
     const tools = makeTools(ha, root);
     const update = findTool(tools, "ha_update_automation");
 
     const out = await update.execute("c1", {
-      automation_id: "auto-warn",
+      automation_id: "auto-tpl",
       config: {
-        alias: "warns",
+        alias: "templated",
         trigger: [{ platform: "time", at: "08:00" }],
-        action: [{ action: "light.turn_on", target: { entity_id: "light.bedroom" } }],
+        action: [{
+          action: "light.turn_on",
+          // Templated entity_id — validator should NOT flag this.
+          target: { entity_id: "{{ states('sensor.target') }}" },
+        }],
+      },
+    });
+    assertStringIncludes(resultText(out), "updated");
+    // Write landed because the templated string was skipped.
+    assertEquals((ha.automations["auto-tpl"] as { alias: string }).alias, "templated");
+  }));
+
+Deno.test("ha_create_automation — refuses on unknown entity (no override)", () =>
+  withFreshRoot(async (root) => {
+    const ha = new FakeHAClient();
+    ha.knownEntityIds = ["light.kitchen"]; // light.ghost is unknown
+    const tools = makeTools(ha, root);
+    const create = findTool(tools, "ha_create_automation");
+
+    const out = await create.execute("c1", {
+      automation_id: "auto-strict-create",
+      config: {
+        alias: "Should refuse",
+        trigger: [{ platform: "time", at: "07:00" }],
+        action: [{ action: "light.turn_on", target: { entity_id: "light.ghost" } }],
       },
     });
     const text = resultText(out);
-    assertStringIncludes(text, "updated");
-    assertStringIncludes(text, "warning(s) (saved anyway, strict=false)");
-    assertStringIncludes(text, "light.bedroom");
-    // Write still landed.
-    assertEquals((ha.automations["auto-warn"] as { alias: string }).alias, "warns");
+    assertStringIncludes(text, "Refused");
+    assertStringIncludes(text, "light.ghost");
+    assertStringIncludes(text, "ha_get_states");
+    assert(!text.includes("strict=false"), "refusal should not advertise a bypass");
+    // HA never received the write.
+    assertEquals(ha.automations["auto-strict-create"], undefined);
   }));
 
 Deno.test("ha_update_automation — preserves nested choose/sequence through baseline + diff", () =>

@@ -1401,6 +1401,41 @@ export function buildTools(
     if (loadedSkills.has("ha_best_practices")) return null;
     return `Refused: load the Home Assistant best-practices skill first.\n\nCall ha_skill() (no args) once this session before invoking ${toolName}. The skill is the curated decision workflow + anti-patterns table for HA automations/dashboards — Castle has observed agents reliably get these tools wrong without it (templates over native conditions, device_id over entity_id, wrong automation modes). One round-trip, then retry.`;
   }
+
+  /** Compose the strict-mode refusal message. Pulls the offending entity_ids
+   *  and service names out of the warning lines so the agent has a verbatim
+   *  list to feed back into ha_get_states without re-parsing prose. */
+  function buildStrictRefusal(warnings: string[], verb: "create" | "update"): string {
+    const unknownEntities = warnings
+      .filter((w) => w.startsWith("unknown entity_id:"))
+      .map((w) => w.replace(/^unknown entity_id:\s*/, "").trim());
+    const unknownServices = warnings
+      .filter((w) => w.startsWith("unknown service:"))
+      .map((w) => w.replace(/^unknown service:\s*/, "").trim());
+    const lines = [
+      `Refused: validation found ${warnings.length} unknown reference(s). NOT writing to HA.`,
+      "",
+      ...warnings.map((w) => `- ${w}`),
+      "",
+    ];
+    if (unknownEntities.length > 0) {
+      const sample = unknownEntities[0];
+      const tail = sample.split(".")[1]?.split("_")[0] ?? sample;
+      lines.push(
+        `Most likely cause: hallucinated entity_id. Look up each one with ha_get_states (e.g. ha_get_states({filter: "${tail}"}) or domain=${sample.split(".")[0]}), then ${verb === "create" ? "rebuild the config" : "edit the config"} with the real ids.`,
+      );
+    }
+    if (unknownServices.length > 0) {
+      lines.push(
+        `Unknown service(s) ${unknownServices.join(", ")} — double-check the domain/service name; HA's service registry is the source of truth.`,
+      );
+    }
+    lines.push("");
+    lines.push(
+      `Do NOT retry with the same config — fix the unknown references first. If you genuinely need a template-resolved entity_id, wrap it in {{ }} syntax so the validator skips it; templated strings are recognised and not flagged.`,
+    );
+    return lines.join("\n");
+  }
   return [
     {
       name: "ha_call_service",
@@ -2333,7 +2368,7 @@ export function buildTools(
     {
       name: "ha_create_automation",
       label: "Create Automation",
-      description: "Create a new automation. REQUIRES ha_skill() loaded once this session — refuses otherwise. Provide alias + at least one trigger + at least one action; condition / mode / description are optional. If automation_id is omitted Castle generates a millisecond-timestamp id (matches HA's own scheme); if provided it must NOT already exist. Validates entity_ids and service names against the live registry the same way ha_update_automation does — unknown ones produce warnings unless strict=true. The new automation reloads into HA immediately; no automation.reload service call needed.",
+      description: "Create a new automation. REQUIRES ha_skill() loaded once this session — refuses otherwise. Provide alias + at least one trigger + at least one action; condition / mode / description are optional. If automation_id is omitted Castle generates a millisecond-timestamp id (matches HA's own scheme); if provided it must NOT already exist. Validates entity_ids and service names against the live HA registry; unknown references REFUSE the write — no override. (Templates that resolve to entity_ids at runtime are recognised and skipped.) The new automation reloads into HA immediately; no automation.reload service call needed.",
       parameters: Type.Object({
         config: Type.Record(Type.String(), Type.Unknown(), {
           description: "Complete automation config. Must include `alias` (string), `trigger` (array), and `action` (array). Optional: `condition`, `mode` ('single'|'restart'|'queued'|'parallel'), `description`, `max`, `max_exceeded`, etc.",
@@ -2341,11 +2376,8 @@ export function buildTools(
         automation_id: Type.Optional(Type.String({
           description: "Id for the new automation. Refused if an automation with this id already exists. Omit to auto-generate (millisecond timestamp).",
         })),
-        strict: Type.Optional(Type.Boolean({
-          description: "If true, refuse to create when validation produces any warning. Default false (create with warnings).",
-        })),
       }),
-      async execute(_id: string, params: { config: Record<string, unknown>; automation_id?: string; strict?: boolean }): Promise<ToolResult> {
+      async execute(_id: string, params: { config: Record<string, unknown>; automation_id?: string }): Promise<ToolResult> {
         const gated = skillGate("ha_create_automation");
         if (gated) return ok(gated);
         // Required-shape check before hitting HA — refuse early on obviously
@@ -2371,8 +2403,8 @@ export function buildTools(
           for (const name of Object.keys(svcs)) knownServices.add(`${domain}.${name}`);
         }
         const { warnings, entityIds, services: refServices } = validateAutomationConfig(cfg, knownEntityIds, knownServices);
-        if (params.strict && warnings.length > 0) {
-          return ok(`Refused (strict mode): ${warnings.length} validation warning(s):\n- ${warnings.join("\n- ")}\nDrop strict=true to create anyway, or fix the config.`);
+        if (warnings.length > 0) {
+          return ok(buildStrictRefusal(warnings, "create"));
         }
 
         // Resolve the id. Honour caller's choice; otherwise generate a
@@ -2425,11 +2457,6 @@ export function buildTools(
             `Automation ${automationId} created (alias: "${aliasOfAutomation(cfg) ?? "—"}"). Referenced ${entityIds.length} entity_id(s), ${refServices.length} service(s).`,
           ];
           if (recorded) lines.push(`Saved as version ${recorded.version}.`);
-          if (warnings.length > 0) {
-            lines.push("");
-            lines.push(`${warnings.length} warning(s) (created anyway, strict=false):`);
-            for (const w of warnings) lines.push(`- ${w}`);
-          }
           return ok(lines.join("\n"));
         } catch (err) {
           return ok(`Failed to create automation ${automationId}: ${(err as Error).message}`);
@@ -2440,13 +2467,12 @@ export function buildTools(
     {
       name: "ha_update_automation",
       label: "Update Automation",
-      description: "Replace the full config for one automation. REQUIRES ha_skill() loaded once this session — refuses otherwise. ALWAYS call ha_get_automation first, edit the returned config, then pass the modified config back. Validates entity_ids and service names against the live registry — unknown ones produce warnings (templates and unknown-but-future entities are common false positives, so we warn rather than refuse). Pass strict=true to refuse on any warning.",
+      description: "Replace the full config for one automation. REQUIRES ha_skill() loaded once this session — refuses otherwise. ALWAYS call ha_get_automation first, edit the returned config, then pass the modified config back. Validates entity_ids and service names against the live HA registry; unknown references REFUSE the write — no override. (Templates that resolve to entity_ids at runtime are recognised and skipped.)",
       parameters: Type.Object({
         automation_id: Type.String({ description: "Numeric automation id (from attributes.id)" }),
         config: Type.Record(Type.String(), Type.Unknown(), { description: "Complete automation config (alias, trigger, condition, action, mode, etc)" }),
-        strict: Type.Optional(Type.Boolean({ description: "If true, refuse to save when validation produces any warning. Default false (save with warnings)." })),
       }),
-      async execute(_id: string, params: { automation_id: string; config: Record<string, unknown>; strict?: boolean }): Promise<ToolResult> {
+      async execute(_id: string, params: { automation_id: string; config: Record<string, unknown> }): Promise<ToolResult> {
         const gated = skillGate("ha_update_automation");
         if (gated) return ok(gated);
         // Build the validation universe from live HA state.
@@ -2457,8 +2483,8 @@ export function buildTools(
           for (const name of Object.keys(svcs)) knownServices.add(`${domain}.${name}`);
         }
         const { warnings, entityIds, services: refServices } = validateAutomationConfig(params.config, knownEntityIds, knownServices);
-        if (params.strict && warnings.length > 0) {
-          return ok(`Refused (strict mode): ${warnings.length} validation warning(s):\n- ${warnings.join("\n- ")}\nDrop strict=true to save anyway, or fix the config.`);
+        if (warnings.length > 0) {
+          return ok(buildStrictRefusal(warnings, "update"));
         }
         // Capture the pre-edit state ONCE (first time we ever touch this id),
         // so a rollback can restore what HA had before Castle was involved.
@@ -2496,11 +2522,6 @@ export function buildTools(
           }
           const lines: string[] = [`Automation ${params.automation_id} updated. Referenced ${entityIds.length} entity_id(s), ${refServices.length} service(s).`];
           if (recorded) lines.push(`Saved as version ${recorded.version}.`);
-          if (warnings.length > 0) {
-            lines.push("");
-            lines.push(`${warnings.length} warning(s) (saved anyway, strict=false):`);
-            for (const w of warnings) lines.push(`- ${w}`);
-          }
           return ok(lines.join("\n"));
         } catch (err) {
           return ok(`Failed to update automation ${params.automation_id}: ${(err as Error).message}`);
