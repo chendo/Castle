@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.3
+
+- **Fix: thinking/text tokens doubled at the start of every block in the streaming UI.** 0.3.2's delta-only protocol appended deltas onto whatever the wire `*_start` event already contained, but pi-ai uses a live reference for `partial` and mutates it between event pushes, so by the time the WS subscriber serialized `thinking_start` the first chunk(s) had already accumulated. Reset the just-started content block to empty on `*_start` and let the deltas be the source of truth.
+- **Fix: camera live feed / snapshot URLs were unreachable under HA ingress.** `<img>` srcs hard-coded `/camera/...` and `/camera_stream/...`, which resolved to the HA host root (404) instead of the add-on. Wrapped them with `withBase()`; the helper was already in use for `/ws`, `/history`, `/models`.
+- **Per-socket filter on state_change broadcasts.** Track `(state, attrJSON, exposed, label)` per socket; skip identical re-emissions, send a `partial: true` frame carrying only `state` when only `state` moved (sensor noise, the common case). Client merges partials onto its cached EntityState. Measured against a 1062-entity install: 30 s window cut from ~300 B/frame full payloads to ~114 B/frame partials, all partials, zero fulls.
+- **Drive `return_response` from the service registry instead of the LLM.** `ha_call_service` no longer exposes a `return_response` parameter — the server passes `true` iff the service registry says the service returns a response, and unconditionally renders the response when HA returns one. Removes a parameter the LLM was getting wrong on both sides (passing it on response-less services errors in HA; omitting it on response-bearing services silently discards data).
+- **"New conversation" button in the chat composer.** Mirrors the drawer's "New chat" entry, so the bare `/chat` view that HA's ingress iframe loads now has a one-click reset. Same `agent.reset()` plumbing; prior session is preserved under `.pi-agent/sessions/` and resumable via the Sessions browser.
+
 ## 0.3.2
 
 - **Compress and cache the browser bundle.** A post-build step (`web/scripts/compress-dist.mjs`) precomputes brotli (quality 11) and gzip siblings for every compressible asset > 1 KB; `serveStatic` negotiates `Accept-Encoding` and serves the matching precomputed file. Hashed `/assets/*` files get `Cache-Control: public, max-age=31536000, immutable`; `/` and `/index.html` stay `no-cache`. The main JS chunk drops 3.6 MB → 0.8 MB on cold load, and reloads pay zero bandwidth.
