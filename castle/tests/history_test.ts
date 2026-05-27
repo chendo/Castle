@@ -45,7 +45,7 @@ Deno.test("parseHistoryPoints — legacy REST shape (array of arrays, full keys,
   assertEquals(pts[1].value, 20.5);
 });
 
-Deno.test("parseChartHistory — binary_sensor maps on/off to 1/0 and drops sentinels", () => {
+Deno.test("parseChartHistory — on/off maps to 1/0 and drops sentinels", () => {
   const raw = {
     "binary_sensor.motion": [
       { s: "off", lu: 1714521600 },
@@ -55,14 +55,29 @@ Deno.test("parseChartHistory — binary_sensor maps on/off to 1/0 and drops sent
       { s: "unavailable", lu: 1714522300 }, // dropped
     ],
   };
-  const pts = parseChartHistory(raw, "binary_sensor.motion");
+  const pts = parseChartHistory(raw);
   assertEquals(pts.length, 3);
   assertEquals(pts[0].value, 0);
   assertEquals(pts[1].value, 1);
   assertEquals(pts[2].value, 0);
 });
 
-Deno.test("parseChartHistory — non-binary domain stays numeric-only (existing behaviour)", () => {
+Deno.test("parseChartHistory — non-binary_sensor on/off domains chart (fan, switch, …)", () => {
+  // Regression: a fan's on/off history used to fall through to the numeric
+  // branch and get dropped, yielding "No data in range" for any on/off entity
+  // outside the binary_sensor domain.
+  const raw = {
+    "fan.bathroom_vent": [
+      { s: "off", lu: 1714521600 },
+      { s: "on", lu: 1714521900 },
+      { s: "off", lu: 1714522200 },
+    ],
+  };
+  const pts = parseChartHistory(raw);
+  assertEquals(pts.map((p) => p.value), [0, 1, 0]);
+});
+
+Deno.test("parseChartHistory — numeric series stays numeric-only", () => {
   const raw = {
     "sensor.temperature": [
       { s: "20.1", lu: 1714521600 },
@@ -70,16 +85,16 @@ Deno.test("parseChartHistory — non-binary domain stays numeric-only (existing 
       { s: "21.0", lu: 1714522200 },
     ],
   };
-  const pts = parseChartHistory(raw, "sensor.temperature");
+  const pts = parseChartHistory(raw);
   assertEquals(pts.length, 2);
   assertEquals(pts[0].value, 20.1);
   assertEquals(pts[1].value, 21.0);
 });
 
 Deno.test("parseChartHistory — empty/missing returns []", () => {
-  assertEquals(parseChartHistory(null, "binary_sensor.x"), []);
-  assertEquals(parseChartHistory({}, "binary_sensor.x"), []);
-  assertEquals(parseChartHistory({ "binary_sensor.x": [] }, "binary_sensor.x"), []);
+  assertEquals(parseChartHistory(null), []);
+  assertEquals(parseChartHistory({}), []);
+  assertEquals(parseChartHistory({ "binary_sensor.x": [] }), []);
 });
 
 Deno.test("parseHistoryPoints — null/empty/malformed return null", () => {

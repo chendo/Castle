@@ -379,7 +379,7 @@ async function handler(req: Request): Promise<Response> {
     await Promise.all(entityIds.map(async (id) => {
       try {
         const raw = await ha.getHistory(id, start, end);
-        const pts = parseChartHistory(raw, id);
+        const pts = parseChartHistory(raw);
         out[id] = pts.map((p) => ({ t: p.rawIso, v: p.value }));
       } catch (err) {
         console.warn(`[history] ${id}:`, (err as Error).message);

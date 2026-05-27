@@ -312,23 +312,21 @@ export function parseHistoryPoints(raw: unknown): HistoryPoint[] | null {
 }
 
 /**
- * History parse for chart rendering. Binary sensors ("on"/"off") are mapped to
- * 1/0 so the chart can step-plot them; everything else takes the numeric path.
- * Returns [] (not null) so callers can pass through to the JSON response shape
- * without a coalesce.
+ * History parse for chart rendering. On/off states map to 1/0 so the chart can
+ * step-plot them — keyed off the state value, not the domain, so every on/off
+ * entity (binary_sensor, fan, switch, light, input_boolean, …) charts, not just
+ * `binary_sensor.`. Numeric states take the numeric path. Sentinels
+ * (unknown/unavailable) and other categorical states are dropped — they'd
+ * render as a phantom 0. Returns [] (not null) so callers can pass through to
+ * the JSON response shape without a coalesce.
  */
-export function parseChartHistory(raw: unknown, entityId: string): HistoryPoint[] {
+export function parseChartHistory(raw: unknown): HistoryPoint[] {
   const changes = parseStateChanges(raw);
-  const isBinary = entityId.startsWith("binary_sensor.");
   const points: HistoryPoint[] = [];
   for (const c of changes) {
-    if (isBinary) {
-      if (c.state === "on") points.push({ value: 1, timestamp: c.timestamp, rawIso: c.rawIso });
-      else if (c.state === "off") points.push({ value: 0, timestamp: c.timestamp, rawIso: c.rawIso });
-      // sentinels (unknown/unavailable) are dropped — they'd render as a phantom 0
-    } else if (isNumericState(c.state)) {
-      points.push({ value: parseFloat(c.state), timestamp: c.timestamp, rawIso: c.rawIso });
-    }
+    if (c.state === "on") points.push({ value: 1, timestamp: c.timestamp, rawIso: c.rawIso });
+    else if (c.state === "off") points.push({ value: 0, timestamp: c.timestamp, rawIso: c.rawIso });
+    else if (isNumericState(c.state)) points.push({ value: parseFloat(c.state), timestamp: c.timestamp, rawIso: c.rawIso });
   }
   return points;
 }

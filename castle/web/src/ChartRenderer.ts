@@ -82,8 +82,12 @@ function isDarkMode(): boolean {
   return document.documentElement.classList.contains("dark");
 }
 
-function isBinaryEntity(id: string): boolean {
-  return id.startsWith("binary_sensor.");
+// On/off entities (binary_sensor, fan, switch, light, input_boolean, …) arrive
+// from /history as a series of 0/1. Detect them by value rather than domain so
+// every on/off domain step-plots with on/off axis labels — not just
+// `binary_sensor.`. A series with no points isn't binary (nothing to infer from).
+function isBinarySeries(pts: HistoryPoint[]): boolean {
+  return pts.length > 0 && pts.every((p) => p.v === 0 || p.v === 1);
 }
 
 function buildConfig(series: Record<string, HistoryPoint[]>, args: ChartArgs): ChartConfiguration<"line"> {
@@ -96,9 +100,13 @@ function buildConfig(series: Record<string, HistoryPoint[]>, args: ChartArgs): C
   const durationMs = end.getTime() - start.getTime();
   const timeUnit = durationMs > 7 * 86_400_000 ? "day" : durationMs > 24 * 3_600_000 ? "hour" : "minute";
 
+  const binaryIds = new Set(
+    Object.entries(series).filter(([, pts]) => isBinarySeries(pts)).map(([id]) => id),
+  );
+
   const datasets = Object.entries(series).map(([id, pts], i) => {
     const color = PALETTE[i % PALETTE.length];
-    const binary = isBinaryEntity(id);
+    const binary = binaryIds.has(id);
     // Extend the last sample to the window end so a flat run is visible (HA
     // only emits state changes, so otherwise the line stops at the last flip).
     const data = pts.map((p) => ({ x: new Date(p.t).getTime(), y: p.v }));
@@ -120,7 +128,7 @@ function buildConfig(series: Record<string, HistoryPoint[]>, args: ChartArgs): C
     };
   });
 
-  const allBinary = Object.keys(series).length > 0 && Object.keys(series).every(isBinaryEntity);
+  const allBinary = Object.keys(series).length > 0 && Object.keys(series).every((id) => binaryIds.has(id));
 
   return {
     type: "line",
@@ -150,7 +158,7 @@ function buildConfig(series: Record<string, HistoryPoint[]>, args: ChartArgs): C
             label: (ctx) => {
               const label = ctx.dataset.label ?? "";
               const y = ctx.parsed.y;
-              if (typeof label === "string" && isBinaryEntity(label)) {
+              if (typeof label === "string" && binaryIds.has(label)) {
                 return `${label}: ${y === 1 ? "on" : y === 0 ? "off" : y}`;
               }
               return `${label}: ${y}`;
