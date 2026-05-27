@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.5
+
+- **Fix: charts for non-`binary_sensor` on/off entities showed "No data in range."** `ha_render_chart` mapped `on`/`off` history to 1/0 only for the `binary_sensor.` domain; fans, switches, lights, `input_boolean`, and every other on/off entity fell through to the numeric path, where `"on"`/`"off"` aren't finite numbers, so all points were dropped and the series came back empty. The mapping is now keyed off the state value rather than the domain (any `on`/`off` → 1/0), and the frontend re-derives binary-ness from the data (a series is binary when every point is 0/1), so the stepped line, on/off axis labels, and tooltip apply to all on/off domains.
+
 ## 0.3.4
 
 - **Vendor the [homeassistant-ai/skills](https://github.com/homeassistant-ai/skills) best-practices bundle and gate write-class automation/dashboard tools on it.** New `ha_skill` tool returns `SKILL.md` (decision workflow + anti-patterns catalogue) by default, or one of ten deep-dive references (automation-patterns, safe-refactoring, helper-selection, template-guidelines, device-control, dashboard-guide, dashboard-cards, yaml-only-integrations, domain-docs, examples) when asked. `ha_create_automation`, `ha_update_automation`, and `ha_edit_dashboard` now refuse with a one-line instructional message until the skill has been loaded once per session. Reads, diffs, lists, and rollbacks are unaffected. The gate fires before HA is touched, so an accidental refusal is a no-op. `scripts/sync-skills.sh` re-pulls the bundle at a pinned upstream commit.
