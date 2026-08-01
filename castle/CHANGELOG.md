@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.0
+
+- **Castle can now be a Home Assistant Assist conversation agent.** The add-on bundles a `castle_conversation` custom integration and installs it into HA's config dir on boot (one HA restart to load, then Supervisor discovery auto-prompts setup — or add it manually with **Add Integration → Castle**). Pick **Castle** as the conversation agent under **Settings → Voice assistants** and voice satellites, the Assist dialog, and the companion app route through Castle's LLM. Replies stream into the Assist chat as they generate (chat-log API, needs HA 2025.x+), and Assist turns share the conversation with the chat panel. Backed by a new `POST /conversation` endpoint (JSON or SSE).
+- **Request queue with cancellation and background execution.** Prompts now queue visibly: a strip above the chat lists queued/running requests with per-request cancel, a topbar pill shows background activity from the Now/Dashboard views, and you can line up a follow-up while a turn is running. Closing the page no longer aborts an in-flight turn — the server runs it to completion and the result is waiting on reconnect.
+
 ## 0.3.5
 
 - **Fix: charts for non-`binary_sensor` on/off entities showed "No data in range."** `ha_render_chart` mapped `on`/`off` history to 1/0 only for the `binary_sensor.` domain; fans, switches, lights, `input_boolean`, and every other on/off entity fell through to the numeric path, where `"on"`/`"off"` aren't finite numbers, so all points were dropped and the series came back empty. The mapping is now keyed off the state value rather than the domain (any `on`/`off` → 1/0), and the frontend re-derives binary-ness from the data (a series is binary when every point is 0/1), so the stepped line, on/off axis labels, and tooltip apply to all on/off domains.
