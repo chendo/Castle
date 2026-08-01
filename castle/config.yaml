@@ -17,6 +17,17 @@ hassio_role: manager
 hassio_api: true
 homeassistant_api: true
 homeassistant: "2024.1.0"
+# Write access to HA's config dir so the add-on can install the bundled
+# `castle_conversation` integration into /homeassistant/custom_components/ on
+# boot (see install-bridge.ts). That integration registers Castle as an Assist
+# conversation agent; an add-on can't register an entity itself.
+map:
+  - type: homeassistant_config
+    read_only: false
+# Lets the add-on advertise itself to Home Assistant via Supervisor discovery so
+# the castle_conversation integration auto-prompts setup (see register-discovery.ts).
+discovery:
+  - castle_conversation
 ingress: true
 ingress_port: 7090
 panel_icon: mdi:castle

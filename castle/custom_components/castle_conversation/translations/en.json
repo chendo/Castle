@@ -1,0 +1,24 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Castle",
+        "description": "Connect to your Castle add-on so it can act as a conversation agent. The URL must be reachable from Home Assistant (the add-on's internal hostname, e.g. http://local-castle:7090).",
+        "data": {
+          "url": "Castle URL",
+          "token": "Auth token (leave blank when running as the add-on)"
+        }
+      },
+      "hassio_confirm": {
+        "title": "Castle",
+        "description": "Set up the discovered Castle add-on ({url}) as a conversation agent?"
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not reach Castle at that URL. Check the address, that the add-on is running, and the token if you set one."
+    },
+    "abort": {
+      "already_configured": "This Castle instance is already configured."
+    }
+  }
+}

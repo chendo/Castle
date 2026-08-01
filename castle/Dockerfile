@@ -50,6 +50,9 @@ COPY deno.json deno.lock /app/
 COPY *.ts /app/
 COPY templates/ /app/templates/
 COPY skills/ /app/skills/
+# The Assist conversation bridge (a HA custom integration) is copied into HA's
+# config dir at boot by install-bridge.ts — bundle it into the image here.
+COPY custom_components/ /app/custom_components/
 COPY --from=web-build /web/dist /app/web/dist
 
 # Persistent state lives at /data — Supervisor maps it to a managed volume

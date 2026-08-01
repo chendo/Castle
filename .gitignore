@@ -18,6 +18,10 @@ node_modules/
 *.log
 .DS_Store
 
+# Python bytecode (the bundled castle_conversation custom integration)
+__pycache__/
+*.pyc
+
 # Local dev scratch — notes, throwaway scripts that shouldn't be tracked
 workspace/
 

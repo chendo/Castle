@@ -15,6 +15,7 @@ import {
   peekAgentSession,
   recreateAgentSession,
   resumeSession,
+  runConversationTurn,
   setActiveModel,
   submitPrompt,
   cancelRequest,
@@ -28,6 +29,8 @@ import {
   deleteSession,
 } from "./agent.ts";
 import { parseChartHistory } from "./tools.ts";
+import { installBridgeComponent } from "./install-bridge.ts";
+import { registerHassioDiscovery } from "./register-discovery.ts";
 import { ALL_TOOL_NAMES, loadSettings, saveSettings, TOOL_DESCRIPTIONS, type ToolName } from "./settings.ts";
 import { DATA_DIR } from "./paths.ts";
 
@@ -112,6 +115,17 @@ const PORT = Number(Deno.env.get("PORT") ?? "7090");
 // CASTLE_AUTH_TOKEN gates the WS/HTTP endpoints for standalone deploys. Under
 // HA ingress, Supervisor already auth-walls the iframe — skip the token check.
 const AUTH_TOKEN = SUPERVISOR_TOKEN ? "" : (Deno.env.get("CASTLE_AUTH_TOKEN") ?? "");
+
+/** Token gate for plain HTTP requests (WS has its own subprotocol path). Open
+ *  when no token is configured — under Supervisor the endpoints are only
+ *  reachable on the internal hassio network anyway. Accepts an
+ *  `Authorization: Bearer <token>` header or a `?token=` query param. */
+function checkHttpAuth(req: Request, url: URL): boolean {
+  if (!AUTH_TOKEN) return true;
+  const auth = req.headers.get("authorization") ?? "";
+  const bearer = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7) : "";
+  return bearer === AUTH_TOKEN || url.searchParams.get("token") === AUTH_TOKEN;
+}
 
 const ha = new HAClient(HA_URL, HA_TOKEN, HA_WS_URL);
 const recentEntities = new RecentEntitiesManager();
@@ -316,6 +330,57 @@ async function handler(req: Request): Promise<Response> {
 
   if (url.pathname === "/health") {
     return Response.json(buildHealth());
+  }
+
+  if (url.pathname === "/conversation" && req.method === "POST") {
+    // One-shot turn for the Home Assistant Assist bridge (the castle_conversation
+    // custom integration). Request: {text, conversation_id?, language?}.
+    // Response: {response, conversation_id}. Runs through the shared agent
+    // session/queue so it streams into the chat panel like a typed prompt.
+    if (!checkHttpAuth(req, url)) return new Response("Unauthorized", { status: 401 });
+    let body: { text?: string; conversation_id?: string | null; stream?: boolean };
+    try { body = await req.json(); }
+    catch { return Response.json({ error: "invalid JSON body" }, { status: 400 }); }
+    const text = body.text?.trim();
+    if (!text) return Response.json({ error: "text required" }, { status: 400 });
+    if (!ha.isConnected) return Response.json({ error: "Not connected to Home Assistant" }, { status: 503 });
+    const convId = body.conversation_id ?? null;
+    const wantsStream = body.stream === true || (req.headers.get("accept") ?? "").includes("text/event-stream");
+
+    if (!wantsStream) {
+      try {
+        const response = await runConversationTurn(text, ha);
+        return Response.json({ response, conversation_id: convId });
+      } catch (err) {
+        return Response.json({ error: (err as Error).message }, { status: 502 });
+      }
+    }
+
+    // Server-Sent Events: `delta` per assistant text chunk, then a terminal
+    // `done` (full text) or `error`. The bridge feeds the deltas into HA's
+    // chat-log so the Assist UI streams the reply and TTS can start early.
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      async start(controller) {
+        const send = (event: string, data: unknown) =>
+          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+        try {
+          const response = await runConversationTurn(text, ha, (delta) => send("delta", { text: delta }));
+          send("done", { response, conversation_id: convId });
+        } catch (err) {
+          send("error", { error: (err as Error).message });
+        } finally {
+          controller.close();
+        }
+      },
+    });
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-store",
+        "Access-Control-Allow-Origin": "*",
+      },
+    });
   }
 
   if ((url.pathname.startsWith("/camera/") || url.pathname.startsWith("/camera_stream/")) && req.method === "GET") {
@@ -1176,6 +1241,8 @@ function maybeAbortOrphaned(): void {
 }
 
 await writeModelsJson();
+await installBridgeComponent(); // copy the Assist conversation integration into HA's config dir (Supervisor only)
+await registerHassioDiscovery(AUTH_TOKEN, PORT); // auto-prompt the integration's setup in HA (Supervisor only)
 setupHaSupervisor(); // wires HAClient's auto-reconnect loop; runs in background
 startLlmProbe();     // periodically pings LLM_URL/models so the UI bubble reflects reality
 await recentEntities.init();

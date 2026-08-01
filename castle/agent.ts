@@ -743,6 +743,99 @@ export function submitPrompt(text: string, ha: HAClient): string {
   return req.id;
 }
 
+/**
+ * Run one conversation turn on behalf of the Home Assistant Assist bridge and
+ * resolve with the assistant's final text. Shares the single agent session (and
+ * therefore the conversation history) with the browser UI, and goes through the
+ * same sequential queue as user/warmup prompts — so a voice turn never races a
+ * browser prompt and never violates pi-coding-agent's one-turn-at-a-time rule.
+ *
+ * The turn is observable (carries a QueuedRequest) so it shows in the queue
+ * strip and streams into the chat panel like any other prompt.
+ */
+export function runConversationTurn(
+  text: string,
+  ha: HAClient,
+  onDelta?: (delta: string) => void,
+): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const req: QueuedRequest = {
+      id: genRequestId(),
+      text,
+      status: "queued",
+      createdAt: Date.now(),
+    };
+    requests.push(req);
+    queue.push({
+      req,
+      run: async () => {
+        let unsubscribe: (() => void) | undefined;
+        try {
+          const session = await getAgentSession(ha);
+          if (onDelta) {
+            // Tap this turn's assistant text deltas for the streaming caller.
+            // Safe because the queue is sequential — only our turn's events are
+            // in flight right now — and we unsubscribe in finally.
+            unsubscribe = session.subscribe((event) => {
+              const delta = extractTextDelta(event);
+              if (delta) onDelta(delta);
+            });
+          }
+          await session.prompt(text);
+          await session.agent.waitForIdle();
+          resolve(extractAssistantText(session.agent.state.messages));
+        } catch (err) {
+          // Reject the caller's promise, then rethrow so drainQueue marks the
+          // QueuedRequest as errored and broadcasts the failure like any prompt.
+          reject(err);
+          throw err;
+        } finally {
+          unsubscribe?.();
+        }
+      },
+    });
+    notifyQueue();
+    drainQueue();
+  });
+}
+
+/** Pull the incremental text out of a streaming agent event, or null when the
+ *  event isn't an assistant text delta (thinking deltas, tool calls, etc.). */
+function extractTextDelta(event: unknown): string | null {
+  const e = event as { type?: string; assistantMessageEvent?: { type?: string; delta?: unknown } };
+  if (e?.type !== "message_update") return null;
+  const sub = e.assistantMessageEvent;
+  if (!sub || sub.type !== "text_delta" || typeof sub.delta !== "string") return null;
+  return sub.delta;
+}
+
+/** Pull the plain text out of the most recent assistant message. Throws if that
+ *  message ended in an error so the caller surfaces it instead of an empty reply. */
+function extractAssistantText(messages: readonly unknown[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i] as { role?: string; content?: unknown; stopReason?: string; errorMessage?: string };
+    if (m.role !== "assistant") continue;
+    if (m.stopReason === "error" && typeof m.errorMessage === "string") {
+      throw new Error(m.errorMessage);
+    }
+    return textFromContent(m.content);
+  }
+  return "";
+}
+
+/** Concatenate the text blocks of a message's content, ignoring thinking and
+ *  tool-call blocks. Tolerates the plain-string content shape too. */
+function textFromContent(content: unknown): string {
+  if (typeof content === "string") return content.trim();
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((b): b is { type: string; text: string } =>
+      !!b && (b as { type?: string }).type === "text" && typeof (b as { text?: unknown }).text === "string")
+    .map((b) => b.text)
+    .join("")
+    .trim();
+}
+
 export interface WarmupResult { at: number; durationMs: number }
 
 let lastWarmup: WarmupResult | null = null;

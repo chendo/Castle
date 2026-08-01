@@ -22,6 +22,33 @@ The first message kicks off a real model call; if the status dot next to
 reachable *from the HA host* (the add-on connects from inside Supervisor's
 network — `localhost` will not resolve to your laptop).
 
+## Use Castle as a voice assistant (Assist conversation agent)
+
+Castle can register itself as a conversation agent so Home Assistant's **Assist**
+pipeline — voice satellites, the companion-app chat, the Assist dialog — routes
+through Castle (and therefore your own LLM). (Streaming replies use the chat-log
+API, so a reasonably recent Home Assistant — 2025.x or newer — is required.)
+
+When the add-on starts, it copies a small companion integration
+(`castle_conversation`) into Home Assistant's `custom_components/` folder and
+advertises itself via Supervisor discovery. To finish setup:
+
+1. **Restart Home Assistant** (Core) once after first starting the add-on —
+   Home Assistant only loads new integrations at startup. (The add-on log prints
+   `[bridge] castle_conversation installed …` when the files land.)
+2. A **"Castle — Configure?"** card should appear under **Settings → Devices &
+   Services**; click it and confirm. The URL is filled in for you. If the card
+   doesn't show, add it manually with **Add Integration → Castle** and use the
+   add-on's internal hostname, e.g. `http://local-castle:7090` (a store install
+   uses a hashed prefix — check the add-on page). Leave the token blank when
+   running as the add-on.
+3. Go to **Settings → Voice assistants**, edit (or add) an assistant, and pick
+   **Castle** as the *Conversation agent*.
+
+Replies stream into the Assist dialog as Castle generates them. Voice/Assist
+turns share Castle's conversation and show up in the chat panel alongside what
+you type there.
+
 ## Troubleshooting
 
 **LLM status dot stays red.** Open the add-on Log and find
