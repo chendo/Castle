@@ -16,6 +16,7 @@ import { recentEntitiesStore } from "./RecentEntitiesStore";
 import { entityCache } from "./EntityStateCache";
 import { buildEntityCard, type CardHandle } from "./EntityCard";
 import { buildAppMenu } from "./AppMenu";
+import { buildQueueStrip, buildQueueIndicator } from "./RequestQueue";
 import { BASE, withBase, stripBase } from "./base";
 
 type Route = "now" | "dashboard" | "chat";
@@ -62,6 +63,15 @@ export function buildShell({ agent, chatPanel, dashboard }: ShellInputs): HTMLEl
   logo.textContent = "Castle";
   logo.style.cssText = "font-weight: 700; color: var(--primary, #58a6ff); font-size: 16px; flex: 1;";
   topbar.appendChild(logo);
+
+  // Background-activity pill: visible on Now / Dashboard while a turn runs in
+  // the background. Clicking it surfaces the chat (on mobile, where chat isn't
+  // otherwise reachable; on desktop the sidebar is already visible). `navigate`
+  // and `isDesktop` are declared further down but hoisted into this closure.
+  const queueIndicator = buildQueueIndicator(agent, () => {
+    if (!isDesktop) navigate("chat");
+  });
+  topbar.appendChild(queueIndicator);
 
   const settingsBtn = iconButton("⚙", "Settings");
   settingsBtn.onclick = () => openSettingsDialog(agent);
@@ -386,7 +396,15 @@ function buildChatDock(chatPanel: ChatPanel, agent: WebSocketRemoteAgent): HTMLE
     display: flex; flex-direction: column;
     background: var(--background);
   `;
-  wrap.appendChild(chatPanel as unknown as HTMLElement);
+  // Queue strip sits above the chat transcript: shows queued / running
+  // requests with cancel, and a follow-up input for steering while busy.
+  wrap.appendChild(buildQueueStrip(agent));
+  const panelEl = chatPanel as unknown as HTMLElement;
+  // The strip is a fixed-height sibling, so the panel must grow to fill the
+  // remaining column height (it was previously the sole child).
+  panelEl.style.flex = "1";
+  panelEl.style.minHeight = "0";
+  wrap.appendChild(panelEl);
 
   // Composer buttons — mounted inside pi-web-ui's message-editor button row,
   // alongside the paperclip. The composer is `max-w-3xl mx-auto` so anchoring

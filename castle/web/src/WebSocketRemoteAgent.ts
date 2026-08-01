@@ -65,6 +65,19 @@ export interface RecentEntityWire {
   ts: number;
 }
 
+export type RequestStatus = "queued" | "running" | "done" | "error" | "cancelled";
+
+/** A tracked agent request. Mirrors the server's QueuedRequest. */
+export interface QueuedRequestWire {
+  id: string;
+  text: string;
+  status: RequestStatus;
+  createdAt: number;
+  startedAt?: number;
+  completedAt?: number;
+  error?: string;
+}
+
 type Frame =
   | { type: "snapshot"; state: any }
   | { type: "event"; event: AgentEvent }
@@ -80,6 +93,7 @@ type Frame =
   | { type: "session_deleted"; path: string }
   | { type: "service_call_ack"; id?: string; ok: boolean; error?: string }
   | { type: "recent_entities_snapshot"; entities: RecentEntityWire[] }
+  | { type: "queue"; requests: QueuedRequestWire[] }
   | { type: "pong" }
   | { type: "error"; message: string };
 
@@ -130,6 +144,10 @@ export class WebSocketRemoteAgent extends RemoteAgent {
   /** Global LRU of agent-touched entities. Pushed on hello + on every change. */
   public onRecentEntitiesSnapshot?: (entities: RecentEntityWire[]) => void;
   private catalogListeners = new Set<() => void>();
+  private queueListeners = new Set<(requests: QueuedRequestWire[]) => void>();
+  /** Last queue snapshot, replayed to new subscribers so late mounts (e.g. the
+   *  topbar indicator) render immediately instead of waiting for the next change. */
+  private lastQueue: QueuedRequestWire[] = [];
 
   /**
    * Subscribe to the server's "catalog regenerated" ack. Returns an unsubscribe
@@ -139,6 +157,29 @@ export class WebSocketRemoteAgent extends RemoteAgent {
   onCatalogRegenerated(listener: () => void): () => void {
     this.catalogListeners.add(listener);
     return () => this.catalogListeners.delete(listener);
+  }
+
+  /** Subscribe to request-queue changes (queued / running / finished). The
+   *  callback fires immediately with the last known snapshot, then on every
+   *  update. Returns an unsubscribe fn. */
+  subscribeQueue(listener: (requests: QueuedRequestWire[]) => void): () => void {
+    this.queueListeners.add(listener);
+    listener(this.lastQueue);
+    return () => this.queueListeners.delete(listener);
+  }
+
+  /** Cancel a specific request by id — drops it if queued, aborts it if running. */
+  cancelRequest(id: string): void {
+    this.send({ type: "cancel", id });
+  }
+
+  /** Enqueue a prompt without going through the streaming-guarded prompt()
+   *  path. Used to queue a follow-up while a turn is already running (the
+   *  normal composer is disabled mid-stream). The server appends it to the
+   *  FIFO; its user message lands in the transcript when it starts running. */
+  enqueuePrompt(text: string): void {
+    const trimmed = text.trim();
+    if (trimmed) this.send({ type: "prompt", text: trimmed });
   }
 
   constructor(url: string) {
@@ -298,6 +339,11 @@ export class WebSocketRemoteAgent extends RemoteAgent {
         }
       } else if (frame.type === "recent_entities_snapshot") {
         this.onRecentEntitiesSnapshot?.(frame.entities);
+      } else if (frame.type === "queue") {
+        this.lastQueue = frame.requests;
+        for (const l of this.queueListeners) {
+          try { l(frame.requests); } catch (err) { console.error("[ws] queue listener:", err); }
+        }
       } else if (frame.type === "error") {
         console.error("[ws] server error:", frame.message);
         this.onError?.(frame.message);
