@@ -451,22 +451,141 @@ export function getAgentSession(ha: HAClient): Promise<AgentSession> {
   return sessionPromise;
 }
 
-// Sequential prompt queue — pi-agent-core throws if you call prompt while another is active.
-const queue: Array<() => Promise<void>> = [];
+// ---------------------------------------------------------------------------
+// Request queue.
+//
+// pi-agent-core throws if you call prompt() while another turn is active, so
+// every prompt (and the warmup turn) runs through one sequential queue. User
+// prompts carry an observable `QueuedRequest` so the UI can show what's
+// queued / running, survive a page close, and cancel a specific request by id.
+// Internal jobs (warmup) carry `req: null` so they never surface in that view.
+// ---------------------------------------------------------------------------
+
+export type RequestStatus = "queued" | "running" | "done" | "error" | "cancelled";
+
+export interface QueuedRequest {
+  id: string;
+  text: string;
+  status: RequestStatus;
+  createdAt: number;
+  startedAt?: number;
+  completedAt?: number;
+  error?: string;
+}
+
+interface QueueJob {
+  /** Observable metadata for user prompts; null for internal jobs (warmup). */
+  req: QueuedRequest | null;
+  run: () => Promise<void>;
+}
+
+const queue: QueueJob[] = [];
 let running = false;
+
+// Observable request log: queued + running + a bounded tail of finished
+// requests, oldest-first. main.ts subscribes to broadcast it over the WS.
+const requests: QueuedRequest[] = [];
+const MAX_FINISHED = 20;
+let runningId: string | null = null;
+
+const queueListeners = new Set<(reqs: QueuedRequest[]) => void>();
+
+/** Subscribe to request-queue changes. The callback fires on every status
+ *  transition with a fresh snapshot. Returns an unsubscribe fn. */
+export function subscribeQueue(cb: (reqs: QueuedRequest[]) => void): () => void {
+  queueListeners.add(cb);
+  return () => queueListeners.delete(cb);
+}
+
+/** Snapshot of all tracked requests (deep-copied so callers can't mutate state). */
+export function getRequests(): QueuedRequest[] {
+  return requests.map((r) => ({ ...r }));
+}
+
+function notifyQueue(): void {
+  const snapshot = getRequests();
+  for (const cb of queueListeners) {
+    try { cb(snapshot); } catch (err) { console.error("[queue] listener error:", err); }
+  }
+}
+
+/** Keep all active requests plus the most recent MAX_FINISHED finished ones,
+ *  so the log doesn't grow without bound across a long-lived session. */
+function pruneFinished(): void {
+  const finished = requests.filter(
+    (r) => r.status === "done" || r.status === "error" || r.status === "cancelled",
+  );
+  if (finished.length <= MAX_FINISHED) return;
+  const drop = new Set(finished.slice(0, finished.length - MAX_FINISHED));
+  for (let i = requests.length - 1; i >= 0; i--) {
+    if (drop.has(requests[i])) requests.splice(i, 1);
+  }
+}
+
+function genRequestId(): string {
+  return `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
 
 async function drainQueue(): Promise<void> {
   if (running) return;
   running = true;
   while (queue.length > 0) {
     const job = queue.shift()!;
+    const req = job.req;
+    if (req) {
+      req.status = "running";
+      req.startedAt = Date.now();
+      runningId = req.id;
+      notifyQueue();
+    }
     try {
-      await job();
+      await job.run();
+      // A cancel may have flipped status mid-run; only a still-"running"
+      // request completed normally.
+      if (req && req.status === "running") req.status = "done";
     } catch (err) {
       console.error("[agent] prompt error:", err);
+      if (req && req.status === "running") {
+        req.status = "error";
+        req.error = (err as Error).message;
+      }
+    } finally {
+      if (req) {
+        req.completedAt = Date.now();
+        runningId = null;
+        pruneFinished();
+        notifyQueue();
+      }
     }
   }
   running = false;
+}
+
+/** Cancel a queued or running request by id. Queued requests are dropped
+ *  before they run; the running request is aborted (drainQueue's finally
+ *  stamps completedAt and broadcasts). No-op for unknown / finished ids. */
+export function cancelRequest(id: string): void {
+  const req = requests.find((r) => r.id === id);
+  if (!req) return;
+  if (req.status === "queued") {
+    req.status = "cancelled";
+    req.completedAt = Date.now();
+    const idx = queue.findIndex((j) => j.req === req);
+    if (idx >= 0) queue.splice(idx, 1);
+    pruneFinished();
+    notifyQueue();
+  } else if (req.status === "running") {
+    // Mark cancelled now so drainQueue's done-branch won't overwrite it, then
+    // abort the in-flight turn. peekAgentSession avoids a lazy session build.
+    req.status = "cancelled";
+    const live = peekAgentSession();
+    void live?.then((s) => s.agent.abort()).catch(() => { /* never built */ });
+  }
+}
+
+/** Cancel whatever request is currently running. Backs the bare `abort` frame. */
+export function cancelRunning(): void {
+  if (runningId) cancelRequest(runningId);
 }
 
 /**
@@ -601,13 +720,27 @@ export async function deleteSession(path: string): Promise<boolean> {
   }
 }
 
-export function submitPrompt(text: string, ha: HAClient): void {
-  queue.push(async () => {
-    const session = await getAgentSession(ha);
-    await session.prompt(text);
-    await session.agent.waitForIdle();
+/** Enqueue a user prompt. Returns its request id immediately (the turn runs
+ *  asynchronously); status transitions broadcast via subscribeQueue. */
+export function submitPrompt(text: string, ha: HAClient): string {
+  const req: QueuedRequest = {
+    id: genRequestId(),
+    text,
+    status: "queued",
+    createdAt: Date.now(),
+  };
+  requests.push(req);
+  queue.push({
+    req,
+    run: async () => {
+      const session = await getAgentSession(ha);
+      await session.prompt(text);
+      await session.agent.waitForIdle();
+    },
   });
+  notifyQueue();
   drainQueue();
+  return req.id;
 }
 
 export interface WarmupResult { at: number; durationMs: number }
@@ -643,7 +776,7 @@ export function isWarmingUp(): boolean {
 export async function warmupPromptCache(ha: HAClient): Promise<WarmupResult | null> {
   const t0 = performance.now();
   return await new Promise<WarmupResult | null>((resolve) => {
-    queue.push(async () => {
+    queue.push({ req: null, run: async () => {
       // `warming` brackets the entire prompt+reset sequence so the broadcast
       // layer can drop every event the warmup turn generates. Cleared in
       // finally so a thrown agent error doesn't leave us stuck filtering.
@@ -663,7 +796,7 @@ export async function warmupPromptCache(ha: HAClient): Promise<WarmupResult | nu
       } finally {
         warming = false;
       }
-    });
+    } });
     drainQueue();
   });
 }

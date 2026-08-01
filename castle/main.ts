@@ -17,6 +17,11 @@ import {
   resumeSession,
   setActiveModel,
   submitPrompt,
+  cancelRequest,
+  cancelRunning,
+  getRequests,
+  subscribeQueue,
+  type QueuedRequest,
   trimSessions,
   warmupPromptCache,
   writeModelsJson,
@@ -863,6 +868,9 @@ async function handleSocket(socket: WebSocket): Promise<void> {
         if (warmup) {
           socket.send(JSON.stringify({ type: "cache_warmed", at: warmup.at, durationMs: warmup.durationMs }));
         }
+        // Current request queue — lets a reconnecting client repopulate any
+        // queued / still-running work it left behind when the page closed.
+        socket.send(JSON.stringify({ type: "queue", requests: getRequests() }));
       } catch (err) {
         socket.send(JSON.stringify({ type: "error", message: (err as Error).message }));
       }
@@ -883,12 +891,14 @@ async function handleSocket(socket: WebSocket): Promise<void> {
     }
 
     if (msg.type === "abort") {
-      try {
-        const session = await getAgentSession(ha);
-        session.agent.abort();
-      } catch (err) {
-        console.error("[ws] abort failed:", err);
-      }
+      // Cancel the running request (aborts its turn and broadcasts cancelled).
+      cancelRunning();
+      return;
+    }
+
+    if (msg.type === "cancel") {
+      const id = (msg as unknown as { id?: string }).id;
+      if (typeof id === "string" && id) cancelRequest(id);
       return;
     }
 
@@ -1120,25 +1130,40 @@ async function handleSocket(socket: WebSocket): Promise<void> {
     }
   };
 
-  socket.onclose = () => { sockets.delete(socket); abortIfOrphaned(); };
-  socket.onerror = () => { sockets.delete(socket); abortIfOrphaned(); };
+  socket.onclose = () => { sockets.delete(socket); maybeAbortOrphaned(); };
+  socket.onerror = () => { sockets.delete(socket); maybeAbortOrphaned(); };
 }
 
+/** Broadcast the request queue to every connected client. Wired once via
+ *  subscribeQueue; fires on every status transition. */
+function broadcastQueue(requests: QueuedRequest[]): void {
+  const frame = JSON.stringify({ type: "queue", requests });
+  for (const ws of sockets) {
+    if (ws.readyState === WebSocket.OPEN) {
+      try { ws.send(frame); } catch { /* socket closing */ }
+    }
+  }
+}
+
+// Background execution: by default the server owns the agent run and keeps
+// going when the last client disconnects, so a long turn survives a page
+// close and its result is waiting on reconnect (the HA add-on behaviour). The
+// only consumer that still needs orphan-abort is the integration suite:
+// shared.ts closes the WS on a per-test timeout, and without the abort the
+// abandoned run's eventual `agent_end` lands on whichever WS the next test
+// opens, terminating it with no tool calls and cascading the failure. That
+// path opts in via CASTLE_ABORT_ON_ORPHAN=1 (set in the test compose env).
+const ABORT_ON_ORPHAN = Deno.env.get("CASTLE_ABORT_ON_ORPHAN") === "1";
+
 /**
- * If the last connected client just dropped while the agent is mid-stream,
- * abort the in-flight run. Two reasons:
- *  - Production: the user closed the only tab; pumping LLM tokens into the
- *    void wastes their backend's GPU and runs up tokens nobody will read.
- *  - Tests: shared.ts closes the WS on a per-test timeout. Without this hook,
- *    the abandoned run's eventual `agent_end` lands on whichever WS the next
- *    test opens, terminates that test with no tool calls, and cascades the
- *    failure across the rest of the suite. (Diagnosed via integration runs
- *    where one slow LLM turn poisoned every subsequent test.)
+ * Abort the in-flight run when the last client drops — only when opted in via
+ * CASTLE_ABORT_ON_ORPHAN (tests). Production keeps running to completion.
  *
  * Peeks rather than building a session so an idle server doesn't pay the
  * lazy-build cost on every disconnect.
  */
-function abortIfOrphaned(): void {
+function maybeAbortOrphaned(): void {
+  if (!ABORT_ON_ORPHAN) return;
   if (sockets.size > 0) return;
   const live = peekAgentSession();
   if (!live) return;
@@ -1155,4 +1180,5 @@ setupHaSupervisor(); // wires HAClient's auto-reconnect loop; runs in background
 startLlmProbe();     // periodically pings LLM_URL/models so the UI bubble reflects reality
 await recentEntities.init();
 recentEntities.subscribe(broadcastRecentEntities);
+subscribeQueue(broadcastQueue);
 Deno.serve({ port: PORT }, handler);

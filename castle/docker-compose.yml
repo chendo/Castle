@@ -23,6 +23,10 @@ services:
       - HA_TOKEN=${HA_TOKEN:-}
       - LLM_API_KEY=${LLM_API_KEY:-}
       - LLM_TYPE=${LLM_TYPE:-openai-completions}
+      # Integration suite sets this to 1 so an abandoned run is aborted on the
+      # per-test timeout. Empty in normal use → server runs to completion when
+      # the last client disconnects (background execution).
+      - CASTLE_ABORT_ON_ORPHAN=${CASTLE_ABORT_ON_ORPHAN:-}
     # If your runtime needs a custom host alias (Lima, Podman, etc.), put it in
     # a local `docker-compose.override.yml` (gitignored) — for example:
     #   services:

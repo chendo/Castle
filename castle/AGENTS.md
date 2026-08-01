@@ -184,7 +184,7 @@ Tokens, API keys, long-lived access tokens, network IPs that identify a private 
 
 ## Architecture
 
-- **main.ts** — HTTP server (`Deno.serve`). Routes: `GET /` (Lit UI from `web/dist/`), `GET /health`, `GET /models`, `GET /agents.md`, `GET /history`, `WS /ws` (the real protocol — every UI action is a WS message: `hello`, `prompt`, `abort`, `reset`, `set_settings`, `set_model`, `set_exposure`, `get_settings`).
+- **main.ts** — HTTP server (`Deno.serve`). Routes: `GET /` (Lit UI from `web/dist/`), `GET /health`, `GET /models`, `GET /agents.md`, `GET /history`, `WS /ws` (the real protocol — every UI action is a WS message: `hello`, `prompt`, `abort`, `cancel`, `reset`, `set_settings`, `set_model`, `set_exposure`, `get_settings`).
 - **ha-client.ts** — WebSocket client to HA (`get_states`, `subscribe_events`, `call_service`, `history`). Fetches exposed entities via `homeassistant/expose_entity/list`.
 - **agent.ts** — Wraps `@mariozechner/pi-coding-agent` into a long-lived session. The system prompt is the auto-generated `.pi-agent/AGENTS.md` (entity catalog), not injected per-prompt.
 - **tools.ts** — 16 HA tools: `ha_call_service`, `ha_fire_event`, `ha_set_state`, `ha_get_states`, `ha_get_entity`, `ha_get_history`, `ha_get_camera_snapshot`, `ha_show_camera`, `ha_get_logs`, `ha_get_notifications`, `ha_get_dashboard`, `ha_edit_dashboard`, `ha_render_chart`, `ha_get_automation`, `ha_update_automation`, `ha_get_automation_trace`. The canonical list lives in `settings.ts:ALL_TOOL_NAMES`.
