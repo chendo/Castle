@@ -477,10 +477,33 @@ interface QueueJob {
   /** Observable metadata for user prompts; null for internal jobs (warmup). */
   req: QueuedRequest | null;
   run: () => Promise<void>;
+  /**
+   * Stop this job's in-flight turn. Owned by the job rather than derived from
+   * the module-level chat session, because a job's turn does not necessarily
+   * run on that session — the observer's passes run on a second AgentSession.
+   * Cancelling by reaching for peekAgentSession() would abort the wrong agent.
+   */
+  abort: () => void;
 }
 
 const queue: QueueJob[] = [];
 let running = false;
+/** The job drainQueue is currently awaiting, or null when idle. */
+let runningJob: QueueJob | null = null;
+
+/** Abort whatever turn is in flight, whichever session it belongs to. */
+function abortRunningJob(): void {
+  if (!runningJob) return;
+  try { runningJob.abort(); }
+  catch (err) { console.warn("[queue] abort threw:", (err as Error).message); }
+}
+
+/** Abort the in-flight turn of the shared chat session. The default `abort`
+ *  for jobs that run on it; peek avoids forcing a lazy session build. */
+function abortChatSession(): void {
+  const live = peekAgentSession();
+  void live?.then((s) => s.agent.abort()).catch(() => { /* never built */ });
+}
 
 // Observable request log: queued + running + a bounded tail of finished
 // requests, oldest-first. main.ts subscribes to broadcast it over the WS.
@@ -531,6 +554,7 @@ async function drainQueue(): Promise<void> {
   running = true;
   while (queue.length > 0) {
     const job = queue.shift()!;
+    runningJob = job;
     const req = job.req;
     if (req) {
       req.status = "running";
@@ -550,6 +574,7 @@ async function drainQueue(): Promise<void> {
         req.error = (err as Error).message;
       }
     } finally {
+      runningJob = null;
       if (req) {
         req.completedAt = Date.now();
         runningId = null;
@@ -576,10 +601,9 @@ export function cancelRequest(id: string): void {
     notifyQueue();
   } else if (req.status === "running") {
     // Mark cancelled now so drainQueue's done-branch won't overwrite it, then
-    // abort the in-flight turn. peekAgentSession avoids a lazy session build.
+    // abort the in-flight turn via the job's own hook.
     req.status = "cancelled";
-    const live = peekAgentSession();
-    void live?.then((s) => s.agent.abort()).catch(() => { /* never built */ });
+    abortRunningJob();
   }
 }
 
@@ -732,6 +756,7 @@ export function submitPrompt(text: string, ha: HAClient): string {
   requests.push(req);
   queue.push({
     req,
+    abort: abortChatSession,
     run: async () => {
       const session = await getAgentSession(ha);
       await session.prompt(text);
@@ -768,6 +793,7 @@ export function runConversationTurn(
     requests.push(req);
     queue.push({
       req,
+      abort: abortChatSession,
       run: async () => {
         let unsubscribe: (() => void) | undefined;
         try {
@@ -869,7 +895,7 @@ export function isWarmingUp(): boolean {
 export async function warmupPromptCache(ha: HAClient): Promise<WarmupResult | null> {
   const t0 = performance.now();
   return await new Promise<WarmupResult | null>((resolve) => {
-    queue.push({ req: null, run: async () => {
+    queue.push({ req: null, abort: abortChatSession, run: async () => {
       // `warming` brackets the entire prompt+reset sequence so the broadcast
       // layer can drop every event the warmup turn generates. Cleared in
       // finally so a thrown agent error doesn't leave us stuck filtering.
