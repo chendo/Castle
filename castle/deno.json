@@ -1,9 +1,4 @@
 {
-  // setup.ts is an abandoned interactive .env wizard that has never parsed
-  // (unbalanced braces from line 60 on) and is imported by nothing, built by
-  // nothing, and documented nowhere. Excluded so the rest of the tree can be
-  // checked; it should be deleted or finished rather than excluded forever.
-  "exclude": ["setup.ts"],
   "tasks": {
     "start": "deno run --allow-all --unstable-node-globals main.ts",
     "test": "deno test --allow-all tests/",
