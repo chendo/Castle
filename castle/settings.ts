@@ -71,6 +71,41 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
   ha_skill: "load the vendored Home Assistant best-practices skill (decision workflow + anti-patterns) — required before editing automations or dashboards",
 };
 
+/**
+ * Observer settings. Cadences and caps only — the debounce window, cooldowns,
+ * per-pass tool cap, wall-clock deadline and byte budgets stay module
+ * constants. Knobs nobody will turn are still surface area to maintain.
+ *
+ * These are the *preference* layer of the observer's three-way split: the user
+ * owns them and the LLM can never write them. (Feedback is expressed by
+ * dismissing observations; the model's own notes live in MEMORY.md.)
+ */
+export interface ObserverSettings {
+  /** Off by default. A background agent that watches your house and reads
+   *  your cameras is opt-in, not a default-on convenience. */
+  enabled: boolean;
+  /** "Is the house healthy right now?" sweep. 0 disables it. */
+  heartbeatMinutes: number;
+  /** Longitudinal pass — habits worth automating, chronic faults. 0 disables. */
+  reviewHours: number;
+  /** Hard ceiling on LLM turns the observer can spend per hour. */
+  maxPassesPerHour: number;
+  /** The observer's own context window, independent of chat's. */
+  contextWindow: number;
+  /** Entity ids the observer never sees at all — dropped at ingest. */
+  mutes: string[];
+  /** The only cameras it may look at. Empty (the default) means no vision. */
+  cameras: string[];
+  /** Which instruction blocks render into the pass prompt. Turning one off is
+   *  a prompt change rather than a post-hoc filter, so it also saves tokens. */
+  scope: {
+    automationHealth: boolean;
+    deviceHealth: boolean;
+    suggestions: boolean;
+    automationGaps: boolean;
+  };
+}
+
 export interface Settings {
   enabledTools: ToolName[];
   // LLM context window in tokens. Drives compaction thresholds in the agent.
@@ -100,6 +135,7 @@ export interface Settings {
    * automations so the default is lower; raise if you want a longer trail.
    */
   dashboardHistoryMaxVersions: number;
+  observer: ObserverSettings;
 }
 
 // 64k chosen per the roadmap; modern open-weights models comfortably support it.
@@ -153,6 +189,24 @@ const DEFAULT_DISABLED_TOOLS = new Set<ToolName>([
 
 const DEFAULT_ENABLED_TOOLS: ToolName[] = ALL_TOOL_NAMES.filter((t) => !DEFAULT_DISABLED_TOOLS.has(t));
 
+export const OBSERVER_DEFAULTS: ObserverSettings = {
+  enabled: false,
+  heartbeatMinutes: 30,
+  reviewHours: 24,
+  maxPassesPerHour: 12,
+  contextWindow: 65536,
+  mutes: [],
+  cameras: [],
+  scope: {
+    automationHealth: true,
+    deviceHealth: true,
+    suggestions: true,
+    automationGaps: true,
+  },
+};
+
+const MIN_OBSERVER_CONTEXT_WINDOW = 16384;
+
 const DEFAULTS: Settings = {
   enabledTools: DEFAULT_ENABLED_TOOLS,
   contextWindow: DEFAULT_CONTEXT_WINDOW,
@@ -160,7 +214,58 @@ const DEFAULTS: Settings = {
   conversationCapMb: DEFAULT_CONVERSATION_CAP_MB,
   automationHistoryMaxVersions: DEFAULT_AUTOMATION_HISTORY_MAX,
   dashboardHistoryMaxVersions: DEFAULT_DASHBOARD_HISTORY_MAX,
+  observer: OBSERVER_DEFAULTS,
 };
+
+/** Entity ids only — anything else in a mute/camera list is a typo or an
+ *  injection attempt, and silently dropping it beats trusting it. */
+function sanitizeEntityIds(raw: unknown, requiredDomain?: string): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out = new Set<string>();
+  for (const v of raw) {
+    if (typeof v !== "string") continue;
+    const id = v.trim();
+    if (!/^[a-z_]+\.[a-z0-9_]+$/.test(id)) continue;
+    if (requiredDomain && !id.startsWith(`${requiredDomain}.`)) continue;
+    out.add(id);
+  }
+  return [...out];
+}
+
+function clampInt(raw: unknown, def: number, min: number, max: number, zeroOk = false): number {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return def;
+  const n = Math.floor(raw);
+  if (zeroOk && n === 0) return 0;
+  return Math.max(min, Math.min(max, n));
+}
+
+function sanitizeObserver(raw: unknown): ObserverSettings {
+  const o = (raw ?? {}) as Partial<ObserverSettings>;
+  const scope = (o.scope ?? {}) as Partial<ObserverSettings["scope"]>;
+  const bool = (v: unknown, def: boolean) => typeof v === "boolean" ? v : def;
+  return {
+    enabled: bool(o.enabled, OBSERVER_DEFAULTS.enabled),
+    heartbeatMinutes: clampInt(o.heartbeatMinutes, OBSERVER_DEFAULTS.heartbeatMinutes, 5, 1440, true),
+    reviewHours: clampInt(o.reviewHours, OBSERVER_DEFAULTS.reviewHours, 1, 168, true),
+    maxPassesPerHour: clampInt(o.maxPassesPerHour, OBSERVER_DEFAULTS.maxPassesPerHour, 1, 30),
+    contextWindow: clampInt(
+      o.contextWindow,
+      OBSERVER_DEFAULTS.contextWindow,
+      MIN_OBSERVER_CONTEXT_WINDOW,
+      1_000_000,
+    ),
+    mutes: sanitizeEntityIds(o.mutes),
+    // Domain-restricted: a non-camera entity in this list can only be a
+    // mistake, and the list is the entire privacy boundary for vision.
+    cameras: sanitizeEntityIds(o.cameras, "camera"),
+    scope: {
+      automationHealth: bool(scope.automationHealth, true),
+      deviceHealth: bool(scope.deviceHealth, true),
+      suggestions: bool(scope.suggestions, true),
+      automationGaps: bool(scope.automationGaps, true),
+    },
+  };
+}
 
 let cached: Settings | null = null;
 
@@ -196,6 +301,7 @@ function sanitize(s: Partial<Settings> | null | undefined): Settings {
     conversationCapMb,
     automationHistoryMaxVersions,
     dashboardHistoryMaxVersions,
+    observer: sanitizeObserver(s?.observer),
   };
 }
 
