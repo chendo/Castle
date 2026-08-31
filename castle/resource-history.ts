@@ -44,7 +44,7 @@ export interface RecordInput {
 
 const HISTORY_ROOT = `${DATA_DIR}/resource-history`;
 
-async function sha256Hex(text: string): Promise<string> {
+export async function sha256Hex(text: string): Promise<string> {
   const data = new TextEncoder().encode(text);
   const buf = await crypto.subtle.digest("SHA-256", data);
   return Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, "0")).join("");
@@ -56,7 +56,7 @@ async function sha256Hex(text: string): Promise<string> {
  * the same hash), which is what we want for "did anything actually change?"
  * comparisons. Arrays preserve order — order is semantic in HA configs.
  */
-function canonicalize(value: unknown): string {
+export function canonicalize(value: unknown): string {
   return JSON.stringify(value, (_k, v) => {
     if (v && typeof v === "object" && !Array.isArray(v)) {
       const sorted: Record<string, unknown> = {};
