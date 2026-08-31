@@ -174,13 +174,28 @@ export interface DisabledTool {
   description: string;
 }
 
+/**
+ * Which agent this prompt is for. Both roles render from the same template and
+ * diverge only in the trailing instruction block, so everything above it —
+ * house, services, the entity catalog, the bulk of the tokens — is
+ * byte-identical between them. That is deliberate: LM Studio keeps roughly one
+ * rolling prefix cache per loaded model, and a separate observer template
+ * would evict chat's catalog on every switch instead of just the tail.
+ *
+ * It does not make the prefix *fully* shared — the two agents have different
+ * toolsets, and most chat templates render the tool schemas inside the system
+ * block — but it bounds the re-prefill to the tail rather than the catalog.
+ */
+export type AgentRole = "chat" | "observer";
+
 interface BuildAgentsMdOptions {
   houseInfo?: Partial<HouseInfo>;
   services?: ServiceDomain[];
   catalog?: CatalogData;
   /** Tools that exist but are disabled in settings — surfaced so the agent can
-   * tell the user which switch to flip in Settings → Tools. */
+   * tell the user which switch to flip in Settings → Tools. Chat only. */
   disabledTools?: DisabledTool[];
+  role?: AgentRole;
 }
 
 // AGENTS.md is the cached system prompt. Layout lives in
@@ -211,6 +226,7 @@ export function buildAgentsMd(opts: BuildAgentsMdOptions = {}): string {
     services: opts.services ?? [],
     catalog: opts.catalog ?? { areas: [], unassigned: {} },
     disabled_tools: opts.disabledTools ?? [],
+    role: opts.role ?? "chat",
   });
   return rendered.endsWith("\n") ? rendered : rendered + "\n";
 }

@@ -313,3 +313,44 @@ Deno.test("buildServicesData — homeassistant + recorder etc are blocked", () =
   const out = buildServicesData(services, new Set(["homeassistant", "light"]));
   assertEquals(out.map((d) => d.name), ["light"]);
 });
+
+// --- role branching ---------------------------------------------------------
+
+Deno.test("buildAgentsMd — chat and observer share a byte-identical prefix", () => {
+  // The whole point of branching inside one template rather than shipping two:
+  // everything above the role block is the entity catalog, which is the bulk of
+  // the tokens and the thing LM Studio's prefix cache is holding. If this test
+  // fails, a switch between the two agents re-prefills the catalog.
+  const opts = { houseInfo: HOUSE, services: SAMPLE_SERVICES, catalog: SAMPLE_CATALOG };
+
+  const chat = buildAgentsMd({ ...opts, role: "chat" });
+  const observer = buildAgentsMd({ ...opts, role: "observer" });
+
+  const split = (s: string) => {
+    const i = s.indexOf("## Reminders");
+    const j = s.indexOf("## Your role");
+    const cut = i >= 0 ? i : j;
+    return s.slice(0, cut);
+  };
+  assertEquals(split(chat), split(observer));
+  assert(split(chat).includes("## Areas"), "the shared prefix must carry the catalog");
+});
+
+Deno.test("buildAgentsMd — role defaults to chat", () => {
+  assertEquals(buildAgentsMd({}), buildAgentsMd({ role: "chat" }));
+});
+
+Deno.test("buildAgentsMd — the observer prompt states observation mode and omits chat rules", () => {
+  const observer = buildAgentsMd({ role: "observer" });
+  assert(observer.includes("OBSERVATION MODE"));
+  assert(observer.includes("does NOT execute"));
+  assert(observer.includes("reply with the single word: none"));
+  assert(!observer.includes("Tool selection cheat sheet"), "chat-only guidance leaked in");
+  assert(!observer.includes("## Reminders"));
+});
+
+Deno.test("buildAgentsMd — disabled tools are advertised to chat only", () => {
+  const disabledTools = [{ name: "ha_manage", description: "restart HA" }];
+  assert(buildAgentsMd({ role: "chat", disabledTools }).includes("ha_manage"));
+  assert(!buildAgentsMd({ role: "observer", disabledTools }).includes("ha_manage"));
+});
