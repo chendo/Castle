@@ -4,6 +4,15 @@ export interface HAState {
   attributes: Record<string, unknown>;
   last_changed: string;
   last_updated: string;
+  /**
+   * HA's causation record, present on every state object it sends. `user_id`
+   * set means a human did it (UI, app, voice); `parent_id` set means it
+   * cascaded from another event, i.e. an automation or script; neither means
+   * the device or integration reported it on its own. This is the only
+   * available signal for "was this a manual action?", which the observer needs
+   * to tell a habit worth automating from an automation already doing its job.
+   */
+  context?: { id: string; parent_id: string | null; user_id: string | null };
 }
 
 export interface HAServiceField {
