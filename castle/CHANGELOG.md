@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **Proactive observer (dry run).** A second, background agent reads Home Assistant's event stream and records what it notices — automations that fired without effect, entities that went unavailable, security-relevant events, and repeated manual actions worth automating. It has **no write tools**: `perform_action` carries the real name and schema of a service call but records the action instead of executing it, so the dry run measures the behaviour a live mode would actually have. Off by default; a new **Observer** tab lists findings, and a band above the chat transcript surfaces unread ones. Enable it under Settings → Observer.
+  - Four tools only (`get_state`, `get_history`, `get_camera_snapshot`, `perform_action`) so the schema block stays small and passes stay fast. The observer can see *that* an automation fired and what did or did not change, but not its trace — "Ask about this" hands a finding to the chat agent, which can.
+  - Cameras are opt-in and empty by default, capped at one snapshot per pass with a five-minute per-camera cooldown, and not registered at all on a text-only model.
+  - Its own session with a 64k rolling context that compacts to the most recent 16k; anything that must outlive that goes in a plain-text, hand-editable `MEMORY.md` re-injected into every pass.
+  - Passes run as internal jobs on the existing request queue, so one can never overlap a user turn, and typing preempts a running pass.
+  - Findings deduplicate on a server-computed fingerprint, and dismissing one suppresses it for a week.
+
 ## 0.4.0
 
 - **Castle can now be a Home Assistant Assist conversation agent.** The add-on bundles a `castle_conversation` custom integration and installs it into HA's config dir on boot (one HA restart to load, then Supervisor discovery auto-prompts setup — or add it manually with **Add Integration → Castle**). Pick **Castle** as the conversation agent under **Settings → Voice assistants** and voice satellites, the Assist dialog, and the companion app route through Castle's LLM. Replies stream into the Assist chat as they generate (chat-log API, needs HA 2025.x+), and Assist turns share the conversation with the chat panel. Backed by a new `POST /conversation` endpoint (JSON or SSE).

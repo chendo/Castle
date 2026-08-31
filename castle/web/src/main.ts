@@ -24,6 +24,7 @@ import { openModelPickerDialog } from "./ModelPickerDialog";
 import { buildShell } from "./Shell";
 import { entityCache } from "./EntityStateCache";
 import { recentEntitiesStore } from "./RecentEntitiesStore";
+import { observerStore } from "./ObserverStore";
 
 registerHAToolRenderers();
 registerChartRenderer();
@@ -63,6 +64,7 @@ const agent = new WebSocketRemoteAgent(wsUrl);
 // reads from a single stream of WS frames.
 entityCache.attachToAgent(agent);
 recentEntitiesStore.attachToAgent(agent);
+observerStore.attachToAgent(agent);
 
 // Now safe to register the camera/present-card renderer — it needs the
 // cache + the agent (for ha_call_service via /ws service_call).

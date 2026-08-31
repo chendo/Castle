@@ -71,7 +71,7 @@ async function withRuntime(
   });
   const ha = new FakeHAClient();
   // deno-lint-ignore no-explicit-any
-  const rt = new ObserverRuntime(ha as any, () => T0);
+  const rt = new ObserverRuntime(ha as any, () => T0, dir);
   try {
     await rt.start();
     await fn(rt, ha);
@@ -93,12 +93,13 @@ Deno.test("start — subscribes to transitions and both bus event types", async 
 });
 
 Deno.test("stop — releases every subscription and timer it took", async () => {
+  const dir = await Deno.makeTempDir();
   const ha = new FakeHAClient();
   await saveSettings({
     observer: { ...OBSERVER_DEFAULTS, enabled: true, heartbeatMinutes: 5, reviewHours: 1 },
   });
   // deno-lint-ignore no-explicit-any
-  const rt = new ObserverRuntime(ha as any, () => T0);
+  const rt = new ObserverRuntime(ha as any, () => T0, dir);
   await rt.start();
   rt.stop();
   assertEquals(ha.transitionListeners.length, 0);
@@ -107,17 +108,20 @@ Deno.test("stop — releases every subscription and timer it took", async () => 
   assertEquals(rt.status().nextHeartbeatAt, null);
   // A leaked interval would fail this test via Deno's timer sanitizer.
   await saveSettings({ observer: OBSERVER_DEFAULTS });
+  await Deno.remove(dir, { recursive: true });
 });
 
 Deno.test("stop — is idempotent and safe before start", async () => {
+  const dir = await Deno.makeTempDir();
   const ha = new FakeHAClient();
   // deno-lint-ignore no-explicit-any
-  const rt = new ObserverRuntime(ha as any, () => T0);
+  const rt = new ObserverRuntime(ha as any, () => T0, dir);
   rt.stop();
   await rt.start();
   rt.stop();
   rt.stop();
   assertEquals(rt.status().enabled, false);
+  await Deno.remove(dir, { recursive: true });
 });
 
 Deno.test("manual actions are captured for the review pass", async () => {
@@ -174,15 +178,17 @@ Deno.test("status reports what the UI needs and starts clean", async () => {
 });
 
 Deno.test("status listeners fire on start and unsubscribe cleanly", async () => {
+  const dir = await Deno.makeTempDir();
   const ha = new FakeHAClient();
   // deno-lint-ignore no-explicit-any
-  const rt = new ObserverRuntime(ha as any, () => T0);
+  const rt = new ObserverRuntime(ha as any, () => T0, dir);
   const seen: boolean[] = [];
   const off = rt.onStatus((s) => seen.push(s.enabled));
   await rt.start();
   off();
   rt.stop();
   assertEquals(seen, [true]);
+  await Deno.remove(dir, { recursive: true });
 });
 
 Deno.test("runNow declines when HA is down rather than firing blind", async () => {

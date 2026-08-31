@@ -16,7 +16,10 @@ const AGENT_DIR = DATA_DIR;
 const CWD = SOURCE_DIR;
 export const SESSIONS_DIR = `${AGENT_DIR}/sessions`;
 
-const authStorage = AuthStorage.create(`${AGENT_DIR}/auth.json`);
+/** Shared across every session Castle builds — the observer's included. Its
+ *  own agentDir has no auth.json, and a session without this fails at the
+ *  first LLM call with "No API key found for local". */
+export const authStorage = AuthStorage.create(`${AGENT_DIR}/auth.json`);
 
 // ---------------------------------------------------------------------------
 // Model lifecycle.

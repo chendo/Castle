@@ -129,20 +129,52 @@ export function buildPassPrompt(input: PassPromptInput): string | null {
   return sections.join("\n\n");
 }
 
-/** Heartbeat evidence: what is broken right now, computed server-side. Null
- *  when the house is healthy, so a healthy house costs nothing. */
+/**
+ * Anything down longer than this is the house's steady state, not news. A real
+ * install carries a long tail of entities from devices that were removed months
+ * ago; listing them every half hour is pure noise and would crowd out the one
+ * thing that actually broke this morning.
+ */
+const CHRONIC_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
+/** Enough to see a pattern, few enough to leave budget for the rest. */
+const MAX_LISTED = 25;
+
+function ageLabel(ms: number): string {
+  const hours = Math.floor(ms / 3_600_000);
+  if (hours >= 24) return `${Math.floor(hours / 24)}d`;
+  return hours >= 1 ? `${hours}h` : "<1h";
+}
+
+/**
+ * Heartbeat evidence: what is broken right now, computed server-side. Null when
+ * there is nothing recent to report — a house whose only faults are chronic
+ * costs no LLM turn at all.
+ */
 export function renderHealthSummary(
   unavailable: Array<{ entityId: string; sinceMs: number }>,
   now: number,
 ): string | null {
-  if (unavailable.length === 0) return null;
-  const lines = [`${unavailable.length} entities are currently unavailable or unknown:`];
-  const sorted = [...unavailable].sort((a, b) => a.sinceMs - b.sinceMs);
-  for (const u of sorted.slice(0, 40)) {
-    const hours = Math.floor((now - u.sinceMs) / 3_600_000);
-    const age = hours >= 24 ? `${Math.floor(hours / 24)}d` : hours >= 1 ? `${hours}h` : "<1h";
-    lines.push(`  ${u.entityId}  (for ${age})`);
+  const recent: Array<{ entityId: string; sinceMs: number }> = [];
+  let chronic = 0;
+  for (const u of unavailable) {
+    if (now - u.sinceMs > CHRONIC_AFTER_MS) chronic++;
+    else recent.push(u);
   }
-  if (sorted.length > 40) lines.push(`  ... and ${sorted.length - 40} more`);
+  // Chronic-only means nothing has changed since the last sweep. Reporting it
+  // again would be the definition of noise.
+  if (recent.length === 0) return null;
+
+  const sorted = recent.sort((a, b) => a.sinceMs - b.sinceMs);
+  const lines = [`${recent.length} entities have gone unavailable or unknown in the last 7 days:`];
+  for (const u of sorted.slice(0, MAX_LISTED)) {
+    lines.push(`  ${u.entityId}  (for ${ageLabel(now - u.sinceMs)})`);
+  }
+  if (sorted.length > MAX_LISTED) lines.push(`  ... and ${sorted.length - MAX_LISTED} more`);
+  if (chronic > 0) {
+    lines.push(
+      `\n(${chronic} further entities have been down for over a week — long-standing, ` +
+        `already known, not worth reporting again.)`,
+    );
+  }
   return lines.join("\n");
 }

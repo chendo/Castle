@@ -39,6 +39,12 @@ This project is in early alpha and is probably not ready for general use, expect
 - Versioned history with diff and rollback, same as automations.
 - Same caveat as automations: the agent can get card configs subtly wrong (mismatched entity types per card, layout choices that don't render cleanly). The rollback store gives you a one-call escape if an edit lands badly.
 
+**Proactive observer** 🚧 *dry run*
+- A background agent reads Home Assistant's event stream and records what it notices: automations that fired without achieving anything, devices that dropped offline, security-relevant events, and manual habits worth automating.
+- **It cannot act.** Its write tool carries the real name and arguments of a service call but records the action instead of performing it — so you can read a week of "here's what I would have done" and judge it before anything is allowed to touch the house.
+- Off by default. Turn it on under **Settings → Observer**; findings appear in a new **Observer** tab.
+- Cameras are opt-in and empty by default. It never looks at one unless you list it, at most once per pass.
+
 **Operations**
 - Read recent HA system / integration logs.
 - Read active persistent notifications.

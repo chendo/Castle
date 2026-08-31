@@ -130,9 +130,33 @@ Deno.test("renderHealthSummary — lists what is down and for how long", () => {
     { entityId: "sensor.garage", sinceMs: NOW - 3 * 3_600_000 },
     { entityId: "light.shed", sinceMs: NOW - 50 * 3_600_000 },
   ], NOW)!;
-  assertStringIncludes(out, "2 entities are currently unavailable");
+  assertStringIncludes(out, "2 entities have gone unavailable");
   assertStringIncludes(out, "sensor.garage  (for 3h)");
   assertStringIncludes(out, "light.shed  (for 2d)");
+});
+
+Deno.test("renderHealthSummary — a house with only chronic faults costs nothing", () => {
+  // Observed on a real install: 305 unavailable entities, nearly all from
+  // devices removed a month ago. Reporting that every 30 minutes is noise and
+  // would crowd out the thing that actually broke this morning.
+  const dead = Array.from({ length: 305 }, (_, i) => ({
+    entityId: `sensor.removed_${i}`,
+    sinceMs: NOW - 30 * 24 * 3_600_000,
+  }));
+  assertEquals(renderHealthSummary(dead, NOW), null);
+});
+
+Deno.test("renderHealthSummary — chronic faults are counted, not listed", () => {
+  const out = renderHealthSummary([
+    { entityId: "sensor.broke_today", sinceMs: NOW - 2 * 3_600_000 },
+    ...Array.from({ length: 40 }, (_, i) => ({
+      entityId: `sensor.long_gone_${i}`,
+      sinceMs: NOW - 30 * 24 * 3_600_000,
+    })),
+  ], NOW)!;
+  assertStringIncludes(out, "sensor.broke_today");
+  assert(!out.includes("sensor.long_gone_0"), "chronic entities must not be listed");
+  assertStringIncludes(out, "40 further entities have been down for over a week");
 });
 
 Deno.test("renderHealthSummary — longest-down first, and the list is capped", () => {
@@ -141,6 +165,8 @@ Deno.test("renderHealthSummary — longest-down first, and the list is capped", 
     sinceMs: NOW - (60 - i) * 3_600_000,
   }));
   const out = renderHealthSummary(many, NOW)!;
-  assert(out.indexOf("sensor.s0") < out.indexOf("sensor.s39"));
-  assertStringIncludes(out, "and 20 more");
+  // s0 has been down longest, so it leads; s39 is past the cap and absent.
+  assert(out.indexOf("sensor.s0") < out.indexOf("sensor.s10"));
+  assert(!out.includes("sensor.s39"));
+  assertStringIncludes(out, "and 35 more");
 });

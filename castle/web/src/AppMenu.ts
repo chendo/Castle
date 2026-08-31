@@ -29,6 +29,7 @@ export function buildAppMenu(agent: WebSocketRemoteAgent): HTMLElement {
   nav.style.cssText = "padding: 6px 0;";
   nav.appendChild(navRow("💬", "Now", () => navigate("/")));
   nav.appendChild(navRow("▦", "Dashboard", () => navigate("/dashboard")));
+  nav.appendChild(navRow("👁", "Observer", () => navigate("/observer")));
   root.appendChild(nav);
 
   divider(root);

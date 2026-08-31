@@ -16,14 +16,18 @@ import { recentEntitiesStore } from "./RecentEntitiesStore";
 import { entityCache } from "./EntityStateCache";
 import { buildEntityCard, type CardHandle } from "./EntityCard";
 import { buildAppMenu } from "./AppMenu";
+import { buildObserverFeed } from "./ObserverFeed";
 import { buildQueueStrip, buildQueueIndicator } from "./RequestQueue";
 import { BASE, withBase, stripBase } from "./base";
+import { buildObserverView } from "./ObserverView";
+import { observerStore } from "./ObserverStore";
 
-type Route = "now" | "dashboard" | "chat";
+type Route = "now" | "dashboard" | "observer" | "chat";
 
 function resolveRoute(): Route {
   const p = stripBase(location.pathname);
   if (p.startsWith("/dashboard")) return "dashboard";
+  if (p.startsWith("/observer")) return "observer";
   if (p.startsWith("/chat")) return "chat";
   // When loaded inside HA's Supervisor ingress iframe, the panel root opens
   // straight into the bare chat view — that's the primary use case for the
@@ -131,6 +135,7 @@ export function buildShell({ agent, chatPanel, dashboard }: ShellInputs): HTMLEl
   // Route panes — only the active one is mounted into contentArea.
   const nowPane = buildNowPane(agent);
   const dashPane = dashboard.root;
+  const observerView = buildObserverView(agent);
 
   // contentArea holds the routed pane (Now / Dashboard). chatDock sits
   // alongside it on desktop as a resizable right sidebar, or replaces it
@@ -205,7 +210,17 @@ export function buildShell({ agent, chatPanel, dashboard }: ShellInputs): HTMLEl
   `;
   const navNow = navButton("now", "💬", "Now");
   const navDash = navButton("dashboard", "▦", "Dashboard");
-  bottomNav.append(navNow, navDash);
+  const navObserver = navButton("observer", "👁", "Observer");
+  bottomNav.append(navNow, navDash, navObserver);
+
+  // Unread badge on the Observer tab. Subscribing here rather than inside
+  // render() keeps it to one subscription for the page's lifetime instead of
+  // one per navigation.
+  observerStore.subscribe(() => {
+    const open = observerStore.open().length;
+    const label = navObserver.querySelector("span:last-child");
+    if (label) label.textContent = open > 0 ? `Observer (${open})` : "Observer";
+  });
 
   function navButton(route: Route, icon: string, label: string): HTMLButtonElement {
     const b = document.createElement("button");
@@ -246,6 +261,7 @@ export function buildShell({ agent, chatPanel, dashboard }: ShellInputs): HTMLEl
     // 1. Load the routed pane into contentArea (Now / Dashboard / nothing-on-chat).
     contentArea.innerHTML = "";
     if (route === "now") contentArea.appendChild(nowPane);
+    else if (route === "observer") contentArea.appendChild(observerView.root);
     else if (route === "dashboard") {
       // Dashboard's legacy "collapsed" localStorage flag could leave display:none
       // baked into its root from a prior session; force-show it on mount.
@@ -399,6 +415,10 @@ function buildChatDock(chatPanel: ChatPanel, agent: WebSocketRemoteAgent): HTMLE
   // Queue strip sits above the chat transcript: shows queued / running
   // requests with cancel, and a follow-up input for steering while busy.
   wrap.appendChild(buildQueueStrip(agent));
+  // Sits between the queue strip and the transcript: what the observer noticed
+  // while you were away. A sibling of the transcript, never a message in it —
+  // see ObserverFeed.ts for why.
+  wrap.appendChild(buildObserverFeed(agent));
   const panelEl = chatPanel as unknown as HTMLElement;
   // The strip is a fixed-height sibling, so the panel must grow to fill the
   // remaining column height (it was previously the sole child).

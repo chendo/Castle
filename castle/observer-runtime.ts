@@ -93,10 +93,13 @@ export class ObserverRuntime {
   constructor(
     private readonly ha: HAClient,
     private readonly now: () => number = Date.now,
+    /** Storage root. Overridable so tests can use a temp dir — without this
+     *  a test run writes observations into the live <DATA_DIR>/observer. */
+    root: string = OBSERVER_DIR,
   ) {
-    this.observations = new ObservationStore(OBSERVER_DIR);
-    this.memory = new MemoryStore(OBSERVER_DIR);
-    this.manualActions = new ManualActionLog(OBSERVER_DIR);
+    this.observations = new ObservationStore(root);
+    this.memory = new MemoryStore(root);
+    this.manualActions = new ManualActionLog(root);
   }
 
   async init(): Promise<void> {

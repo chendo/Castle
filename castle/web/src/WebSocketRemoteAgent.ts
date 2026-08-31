@@ -21,11 +21,29 @@ export interface SessionInfo {
   modified: Date;
 }
 
+export interface ObserverSettingsWire {
+  enabled: boolean;
+  heartbeatMinutes: number;
+  reviewHours: number;
+  maxPassesPerHour: number;
+  contextWindow: number;
+  mutes: string[];
+  cameras: string[];
+  scope: {
+    automationHealth: boolean;
+    deviceHealth: boolean;
+    suggestions: boolean;
+    automationGaps: boolean;
+  };
+}
+
 export interface ServerSettings {
   enabledTools: string[];
   contextWindow: number;
   allowUnexposedWrites: boolean;
   conversationCapMb: number;
+  /** Optional so a client talking to an older server still typechecks. */
+  observer?: ObserverSettingsWire;
 }
 
 export interface EntityState {
@@ -58,6 +76,49 @@ export interface HealthSnapshot {
   /** null while the first probe is in flight; boolean once known. */
   llm_ok: boolean | null;
   llm_url: string;
+}
+
+export type ObservationSeverity = "info" | "warn" | "critical";
+export type ObservationStatusWire = "open" | "acknowledged" | "dismissed" | "resolved";
+export type ObserverPassKind = "reactive" | "heartbeat" | "review";
+
+export type ObservationBodyWire =
+  | {
+    type: "concern";
+    severity: ObservationSeverity;
+    summary: string;
+    detail?: string;
+    entities: string[];
+  }
+  | {
+    type: "proposal";
+    tool: string;
+    args: Record<string, unknown>;
+    reason: string;
+    entities: string[];
+  };
+
+export interface ObservationWire {
+  id: string;
+  createdAt: number;
+  lastSeenAt: number;
+  occurrences: number;
+  pass: { id: string; kind: ObserverPassKind; startedAt: number; durationMs: number; toolCalls: number };
+  fingerprint: string;
+  status: ObservationStatusWire;
+  dismissReason?: string;
+  body: ObservationBodyWire;
+}
+
+export interface ObserverStatusWire {
+  enabled: boolean;
+  running: boolean;
+  passesThisHour: number;
+  lastPassAt: number | null;
+  lastPassKind: ObserverPassKind | null;
+  lastDurationMs: number | null;
+  nextHeartbeatAt: number | null;
+  nextReviewAt: number | null;
 }
 
 export interface RecentEntityWire {
@@ -94,6 +155,10 @@ type Frame =
   | { type: "service_call_ack"; id?: string; ok: boolean; error?: string }
   | { type: "recent_entities_snapshot"; entities: RecentEntityWire[] }
   | { type: "queue"; requests: QueuedRequestWire[] }
+  | { type: "observations_snapshot"; observations: ObservationWire[]; status: ObserverStatusWire }
+  | { type: "observation"; observation: ObservationWire }
+  | { type: "observer_status"; status: ObserverStatusWire }
+  | { type: "observer_pass_ack"; ran: boolean; reason?: string }
   | { type: "pong" }
   | { type: "error"; message: string };
 
@@ -143,6 +208,9 @@ export class WebSocketRemoteAgent extends RemoteAgent {
   public onCacheWarmed?: (at: number, durationMs: number) => void;
   /** Global LRU of agent-touched entities. Pushed on hello + on every change. */
   public onRecentEntitiesSnapshot?: (entities: RecentEntityWire[]) => void;
+  public onObservationsSnapshot?: (observations: ObservationWire[], status: ObserverStatusWire) => void;
+  public onObservation?: (observation: ObservationWire) => void;
+  public onObserverStatus?: (status: ObserverStatusWire) => void;
   private catalogListeners = new Set<() => void>();
   private queueListeners = new Set<(requests: QueuedRequestWire[]) => void>();
   /** Last queue snapshot, replayed to new subscribers so late mounts (e.g. the
@@ -180,6 +248,22 @@ export class WebSocketRemoteAgent extends RemoteAgent {
   enqueuePrompt(text: string): void {
     const trimmed = text.trim();
     if (trimmed) this.send({ type: "prompt", text: trimmed });
+  }
+
+  setObservationStatus(id: string, status: ObservationStatusWire, reason?: string): void {
+    this.send({ type: "set_observation_status", id, status, reason });
+  }
+
+  runObserverPass(kind: ObserverPassKind = "reactive"): void {
+    this.send({ type: "run_observer_pass", kind });
+  }
+
+  resetObserverContext(): void {
+    this.send({ type: "reset_observer_context" });
+  }
+
+  forgetObserverMemory(): void {
+    this.send({ type: "forget_observer_memory" });
   }
 
   constructor(url: string) {
@@ -339,6 +423,12 @@ export class WebSocketRemoteAgent extends RemoteAgent {
         }
       } else if (frame.type === "recent_entities_snapshot") {
         this.onRecentEntitiesSnapshot?.(frame.entities);
+      } else if (frame.type === "observations_snapshot") {
+        this.onObservationsSnapshot?.(frame.observations, frame.status);
+      } else if (frame.type === "observation") {
+        this.onObservation?.(frame.observation);
+      } else if (frame.type === "observer_status") {
+        this.onObserverStatus?.(frame.status);
       } else if (frame.type === "queue") {
         this.lastQueue = frame.requests;
         for (const l of this.queueListeners) {

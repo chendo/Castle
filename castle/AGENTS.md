@@ -191,7 +191,8 @@ Tokens, API keys, long-lived access tokens, network IPs that identify a private 
 - **agent.ts** — Wraps `@mariozechner/pi-coding-agent` into a long-lived session. The system prompt is the auto-generated `.pi-agent/AGENTS.md` (entity catalog), not injected per-prompt.
 - **tools.ts** — 16 HA tools: `ha_call_service`, `ha_fire_event`, `ha_set_state`, `ha_get_states`, `ha_get_entity`, `ha_get_history`, `ha_get_camera_snapshot`, `ha_show_camera`, `ha_get_logs`, `ha_get_notifications`, `ha_get_dashboard`, `ha_edit_dashboard`, `ha_render_chart`, `ha_get_automation`, `ha_update_automation`, `ha_get_automation_trace`. The canonical list lives in `settings.ts:ALL_TOOL_NAMES`.
 - **catalog.ts** — Filters entities by HA exposure status, renders the system-prompt entity catalog from `templates/AGENTS.md.jinja2`. Skips noisy domains (update, device_tracker, etc.).
-- **settings.ts** — Persists `.pi-agent/settings.json` (enabled tools, context window, `allowUnexposedWrites`).
+- **settings.ts** — Persists `.pi-agent/settings.json` (enabled tools, context window, `allowUnexposedWrites`, the `observer` block).
+- **observer-\*.ts** — The proactive observer (default off). `observer-events.ts` filters HA's state_changed firehose into typed, rate-controlled batches; `observer-render.ts` turns a batch into prompt text; `observer-store.ts` persists findings with server-side dedup; `observer-memory.ts` owns the hand-editable `MEMORY.md`; `observer-patterns.ts` logs manual actions and computes the timing statistics the review pass reasons over; `observer-tools.ts` builds its four tools (with `perform_action` shadowed — it records, never executes); `observer-prompts.ts` assembles each pass; `observer-agent.ts` owns its separate pi-coding-agent session; `observer-runtime.ts` owns every subscription and timer; `observer-ws.ts` is its WS surface.
 
 ## .pi-agent/ directory
 

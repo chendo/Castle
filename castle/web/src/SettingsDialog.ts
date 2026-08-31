@@ -1,4 +1,4 @@
-import type { ServerSettings, WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
+import type { ObserverSettingsWire, ServerSettings, WebSocketRemoteAgent } from "./WebSocketRemoteAgent";
 
 interface DialogState {
   allTools: string[];
@@ -6,10 +6,32 @@ interface DialogState {
   contextWindow: number;
   allowUnexposedWrites: boolean;
   conversationCapMb: number;
+  observer: ObserverSettingsWire;
   loaded: boolean;
 }
 
+
+const OBSERVER_FALLBACK: ObserverSettingsWire = {
+  enabled: false,
+  heartbeatMinutes: 30,
+  reviewHours: 24,
+  maxPassesPerHour: 12,
+  contextWindow: 65536,
+  mutes: [],
+  cameras: [],
+  scope: { automationHealth: true, deviceHealth: true, suggestions: true, automationGaps: true },
+};
+
 const MIN_CONTEXT_WINDOW = 8192;
+
+function intOr(raw: string, fallback: number): number {
+  const n = Math.floor(Number(raw));
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+function splitIds(raw: string): string[] {
+  return raw.split(",").map((s) => s.trim()).filter(Boolean);
+}
 const MIN_CONVERSATION_CAP_MB = 10;
 
 /**
@@ -27,6 +49,7 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
     contextWindow: 65536,
     allowUnexposedWrites: false,
     conversationCapMb: 100,
+    observer: OBSERVER_FALLBACK,
     loaded: false,
   };
 
@@ -71,6 +94,32 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
         Off (default): the agent can only call services / set state on entities exposed to assistants. Reads are unaffected.
       </div>
 
+      <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted-foreground); margin: 18px 0 10px;">Observer</div>
+      <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px;">
+        <input id="castle-settings-observer-enabled" type="checkbox" />
+        <span>Watch the event stream in the background</span>
+      </label>
+      <div style="margin-top: 6px; font-size: 12px; color: var(--muted-foreground);">
+        Off (default). When on, a second agent reads Home Assistant's event stream and records
+        concerns and the actions it <em>would</em> have taken. It has no write tools — this release
+        is a dry run and nothing it proposes is executed.
+      </div>
+      <div style="display: flex; gap: 12px; flex-wrap: wrap; margin-top: 10px;">
+        <label style="font-size: 12px; color: var(--muted-foreground);">Health sweep (min, 0 = off)<br>
+          <input id="castle-settings-observer-heartbeat" type="number" min="0" step="5" style="width: 90px; padding: 4px 8px; font-size: 13px; background: var(--background); color: var(--foreground); border: 1px solid var(--border); border-radius: 6px;" />
+        </label>
+        <label style="font-size: 12px; color: var(--muted-foreground);">Review (hours, 0 = off)<br>
+          <input id="castle-settings-observer-review" type="number" min="0" step="1" style="width: 90px; padding: 4px 8px; font-size: 13px; background: var(--background); color: var(--foreground); border: 1px solid var(--border); border-radius: 6px;" />
+        </label>
+        <label style="font-size: 12px; color: var(--muted-foreground);">Max passes / hour<br>
+          <input id="castle-settings-observer-rate" type="number" min="1" max="30" step="1" style="width: 90px; padding: 4px 8px; font-size: 13px; background: var(--background); color: var(--foreground); border: 1px solid var(--border); border-radius: 6px;" />
+        </label>
+      </div>
+      <div style="margin-top: 10px; font-size: 12px; color: var(--muted-foreground);">Cameras the observer may look at (comma-separated entity ids). Empty means it never looks at any.</div>
+      <input id="castle-settings-observer-cameras" type="text" placeholder="camera.front_door, camera.driveway" style="width: 100%; margin-top: 4px; padding: 4px 8px; font-size: 13px; background: var(--background); color: var(--foreground); border: 1px solid var(--border); border-radius: 6px;" />
+      <div style="margin-top: 10px; font-size: 12px; color: var(--muted-foreground);">Entities to ignore entirely (comma-separated).</div>
+      <input id="castle-settings-observer-mutes" type="text" placeholder="binary_sensor.flaky_motion" style="width: 100%; margin-top: 4px; padding: 4px 8px; font-size: 13px; background: var(--background); color: var(--foreground); border: 1px solid var(--border); border-radius: 6px;" />
+
       <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted-foreground); margin: 18px 0 10px;">Conversation storage cap</div>
       <div style="display: flex; align-items: center; gap: 8px;">
         <input id="castle-settings-cap" type="number" min="${MIN_CONVERSATION_CAP_MB}" step="10" style="width: 100px; padding: 4px 8px; font-size: 13px; background: var(--background); color: var(--foreground); border: 1px solid var(--border); border-radius: 6px;" />
@@ -107,6 +156,12 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
   const noneBtn = panel.querySelector("#castle-settings-none") as HTMLButtonElement;
   const contextInput = panel.querySelector("#castle-settings-context") as HTMLInputElement;
   const allowUnexposedInput = panel.querySelector("#castle-settings-allow-unexposed") as HTMLInputElement;
+  const obsEnabled = panel.querySelector("#castle-settings-observer-enabled") as HTMLInputElement;
+  const obsHeartbeat = panel.querySelector("#castle-settings-observer-heartbeat") as HTMLInputElement;
+  const obsReview = panel.querySelector("#castle-settings-observer-review") as HTMLInputElement;
+  const obsRate = panel.querySelector("#castle-settings-observer-rate") as HTMLInputElement;
+  const obsCameras = panel.querySelector("#castle-settings-observer-cameras") as HTMLInputElement;
+  const obsMutes = panel.querySelector("#castle-settings-observer-mutes") as HTMLInputElement;
   const capInput = panel.querySelector("#castle-settings-cap") as HTMLInputElement;
 
   const renderToolRow = (name: string): HTMLElement => {
@@ -145,7 +200,14 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
     state.contextWindow = settings.contextWindow;
     state.allowUnexposedWrites = settings.allowUnexposedWrites;
     state.conversationCapMb = settings.conversationCapMb;
+    state.observer = settings.observer ?? OBSERVER_FALLBACK;
     state.loaded = true;
+    obsEnabled.checked = state.observer.enabled;
+    obsHeartbeat.value = String(state.observer.heartbeatMinutes);
+    obsReview.value = String(state.observer.reviewHours);
+    obsRate.value = String(state.observer.maxPassesPerHour);
+    obsCameras.value = state.observer.cameras.join(", ");
+    obsMutes.value = state.observer.mutes.join(", ");
     contextInput.value = String(settings.contextWindow);
     allowUnexposedInput.checked = settings.allowUnexposedWrites;
     capInput.value = String(settings.conversationCapMb);
@@ -183,6 +245,17 @@ export function openSettingsDialog(agent: WebSocketRemoteAgent): void {
         contextWindow,
         allowUnexposedWrites: allowUnexposedInput.checked,
         conversationCapMb,
+        observer: {
+          ...state.observer,
+          enabled: obsEnabled.checked,
+          heartbeatMinutes: intOr(obsHeartbeat.value, state.observer.heartbeatMinutes),
+          reviewHours: intOr(obsReview.value, state.observer.reviewHours),
+          maxPassesPerHour: intOr(obsRate.value, state.observer.maxPassesPerHour),
+          // The server re-validates both lists (entity-id shape, and the
+          // camera domain) — this is only a convenience split.
+          cameras: splitIds(obsCameras.value),
+          mutes: splitIds(obsMutes.value),
+        },
       },
     });
     close();

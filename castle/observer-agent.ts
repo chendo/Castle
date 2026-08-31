@@ -28,7 +28,7 @@
 import { createAgentSession, SessionManager, SettingsManager } from "npm:@mariozechner/pi-coding-agent";
 import type { AgentSession } from "npm:@mariozechner/pi-coding-agent";
 import type { HAClient } from "./ha-client.ts";
-import { getLocalModel } from "./agent.ts";
+import { authStorage, getLocalModel } from "./agent.ts";
 import { DATA_DIR, SOURCE_DIR } from "./paths.ts";
 import { loadSettings } from "./settings.ts";
 import { buildObserverTools, SnapshotBudget, type ObserverToolDeps } from "./observer-tools.ts";
@@ -153,6 +153,12 @@ async function build(deps: ObserverSessionDeps): Promise<ObserverSession> {
   const multimodal = Array.isArray(model.input) && model.input.includes("image");
 
   await Deno.mkdir(OBSERVER_SESSIONS_DIR, { recursive: true });
+  // pi-coding-agent resolves the provider (and therefore the API key) from
+  // <agentDir>/models.json, not from the model object or authStorage. The
+  // observer has its own agentDir so it needs its own copy, refreshed on every
+  // build so a model swap can't leave it pointing at the old one. Without this
+  // every pass dies at the first LLM call with "No API key found for local".
+  await Deno.copyFile(`${DATA_DIR}/models.json`, `${OBSERVER_DIR}/models.json`);
   const resume = await pickResumeTarget(OBSERVER_SESSIONS_DIR, VERSION_FILE, Date.now());
   await Deno.writeTextFile(VERSION_FILE, OBSERVER_PROMPT_VERSION);
 
@@ -162,6 +168,7 @@ async function build(deps: ObserverSessionDeps): Promise<ObserverSession> {
   const result = await createAgentSession({
     cwd: SOURCE_DIR,
     agentDir: OBSERVER_DIR,
+    authStorage,
     model,
     noTools: "builtin",
     tools: customTools.map((t) => t.name as string),
