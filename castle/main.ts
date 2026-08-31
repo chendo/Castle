@@ -20,6 +20,7 @@ import {
   submitPrompt,
   cancelRequest,
   cancelRunning,
+  onAgentSessionReset,
   getRequests,
   subscribeQueue,
   type QueuedRequest,
@@ -31,7 +32,16 @@ import {
 import { parseChartHistory } from "./tools.ts";
 import { installBridgeComponent } from "./install-bridge.ts";
 import { registerHassioDiscovery } from "./register-discovery.ts";
-import { ALL_TOOL_NAMES, loadSettings, saveSettings, TOOL_DESCRIPTIONS, type ToolName } from "./settings.ts";
+import { ALL_TOOL_NAMES, loadSettings, saveSettings, TOOL_DESCRIPTIONS, type ToolName, type Settings } from "./settings.ts";
+import { ObserverRuntime } from "./observer-runtime.ts";
+import { recreateObserverSession } from "./observer-agent.ts";
+import {
+  handleObserverMessage,
+  observationFrame,
+  observerHelloFrames,
+  observerStatusFrame,
+  setObserverRuntime,
+} from "./observer-ws.ts";
 import { DATA_DIR } from "./paths.ts";
 
 // Home Assistant connection mode resolution.
@@ -497,6 +507,10 @@ async function handler(req: Request): Promise<Response> {
 
 // --- WebSocket handling ----------------------------------------------------
 
+// The proactive observer. Constructed here so it shares the one HA connection;
+// it stays inert until settings.observer.enabled is on (see observer.init()).
+const observer = new ObserverRuntime(ha);
+
 const sockets = new Set<WebSocket>();
 // Tracked per-agent: recreateAgentSession() rebuilds the agent, so a single
 // module-level "wired" boolean would leave the new agent unsubscribed and the
@@ -907,6 +921,7 @@ async function handleSocket(socket: WebSocket): Promise<void> {
         await ensureAgentBroadcast();
         const session = await getAgentSession(ha);
         socket.send(JSON.stringify({ type: "snapshot", state: serializeSnapshot(session) }));
+        for (const frame of observerHelloFrames()) socket.send(frame);
         // Bootstrap the entity catalog over the WS. After this, state_change
         // frames are pushed for every HA state_changed event.
         const states = serializeStates();
@@ -967,6 +982,8 @@ async function handleSocket(socket: WebSocket): Promise<void> {
       return;
     }
 
+    if (await handleObserverMessage(socket, msg as Record<string, unknown> & { type?: string })) return;
+
     if (msg.type === "get_settings") {
       const settings = await loadSettings();
       socket.send(JSON.stringify({
@@ -978,7 +995,7 @@ async function handleSocket(socket: WebSocket): Promise<void> {
     }
 
     if (msg.type === "set_settings") {
-      const incoming = (msg as unknown as { settings: { enabledTools?: ToolName[]; contextWindow?: number; allowUnexposedWrites?: boolean; conversationCapMb?: number; automationHistoryMaxVersions?: number; dashboardHistoryMaxVersions?: number } }).settings;
+      const incoming = (msg as unknown as { settings: Partial<Settings> }).settings;
       const saved = await saveSettings(incoming);
       // Refresh AGENTS.md *before* rebuilding the session — the new agent reads
       // .pi-agent/AGENTS.md on construction, so a stale file would leave it
@@ -988,6 +1005,10 @@ async function handleSocket(socket: WebSocket): Promise<void> {
       // broadcast onto the new agent (recreateAgentSession nulls the old one), and
       // push a snapshot so every client sees the cleared state.
       await recreateAgentSession();
+      // Start / stop the observer and rebuild its session against the new
+      // settings. Deliberately after recreateAgentSession, which preempts any
+      // pass that is mid-turn on the old configuration.
+      await observer.applySettings();
       // Trim sessions after any settings change — ensures we stay under the cap
       // even if files grew between saves (e.g. many long agent turns).
       const trimCount = await trimSessions(saved.conversationCapMb * 1_048_576);
@@ -1199,15 +1220,19 @@ async function handleSocket(socket: WebSocket): Promise<void> {
   socket.onerror = () => { sockets.delete(socket); maybeAbortOrphaned(); };
 }
 
-/** Broadcast the request queue to every connected client. Wired once via
- *  subscribeQueue; fires on every status transition. */
-function broadcastQueue(requests: QueuedRequest[]): void {
-  const frame = JSON.stringify({ type: "queue", requests });
+/** Send one pre-serialized frame to every connected client. */
+function broadcastFrame(frame: string): void {
   for (const ws of sockets) {
     if (ws.readyState === WebSocket.OPEN) {
       try { ws.send(frame); } catch { /* socket closing */ }
     }
   }
+}
+
+/** Broadcast the request queue to every connected client. Wired once via
+ *  subscribeQueue; fires on every status transition. */
+function broadcastQueue(requests: QueuedRequest[]): void {
+  broadcastFrame(JSON.stringify({ type: "queue", requests }));
 }
 
 // Background execution: by default the server owns the agent run and keeps
@@ -1248,4 +1273,12 @@ startLlmProbe();     // periodically pings LLM_URL/models so the UI bubble refle
 await recentEntities.init();
 recentEntities.subscribe(broadcastRecentEntities);
 subscribeQueue(broadcastQueue);
+setObserverRuntime(observer);
+// A model swap or settings change rebuilds the chat session; the observer
+// reads the same models.json, so it has to be rebuilt too or it keeps running
+// on the model the user just switched away from.
+onAgentSessionReset(recreateObserverSession);
+observer.onObservation((o) => broadcastFrame(observationFrame(o)));
+observer.onStatus((st) => broadcastFrame(observerStatusFrame(st)));
+await observer.init();
 Deno.serve({ port: PORT }, handler);

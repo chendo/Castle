@@ -145,7 +145,7 @@ export async function setActiveModel(id: string): Promise<void> {
 }
 
 // deno-lint-ignore no-explicit-any
-function getLocalModel(): any {
+export function getLocalModel(): any {
   const registry = ModelRegistry.create(authStorage, `${AGENT_DIR}/models.json`);
   const err = registry.getError();
   if (err) throw new Error(`models.json error: ${err}`);
@@ -612,6 +612,57 @@ export function cancelRunning(): void {
   if (runningId) cancelRequest(runningId);
 }
 
+/** True when nothing is queued or running. Background work only enqueues when
+ *  this holds — a background pass that has to wait is better dropped, since by
+ *  the time it ran its evidence would be stale anyway. */
+export function isQueueIdle(): boolean {
+  return !running && queue.length === 0;
+}
+
+/**
+ * Abort an in-flight *internal* job so a user's prompt doesn't sit behind it.
+ * Called at the top of every user-facing enqueue. User jobs are never touched.
+ *
+ * This is what keeps the observer from costing the user latency: the worst
+ * case for a typed prompt is one abort round-trip, not a whole observer pass.
+ */
+export function preemptInternalJob(): void {
+  if (runningJob && runningJob.req === null) abortRunningJob();
+}
+
+/**
+ * Enqueue background work on the shared queue. `req: null` keeps it out of the
+ * UI's request list, matching the warmup turn.
+ *
+ * Everything goes through one queue because pi-agent-core throws if two turns
+ * overlap on one agent instance — and while the observer runs on its *own*
+ * instance (so it could technically run concurrently), we deliberately don't
+ * let it: two agents against one local GPU contend for VRAM and thrash the
+ * prompt cache. `abort` is supplied by the caller because the job's turn runs
+ * on the caller's session, not the chat one.
+ */
+export function submitInternalJob(run: () => Promise<void>, abort: () => void): void {
+  queue.push({ req: null, run, abort });
+  drainQueue();
+}
+
+// Hooks fired when the chat session is torn down. The observer registers here
+// rather than being imported by agent.ts, which would be a cycle: the observer
+// needs the queue, and the queue must not need the observer.
+const sessionResetHooks = new Set<() => Promise<void>>();
+
+export function onAgentSessionReset(fn: () => Promise<void>): () => void {
+  sessionResetHooks.add(fn);
+  return () => { sessionResetHooks.delete(fn); };
+}
+
+async function fireSessionResetHooks(): Promise<void> {
+  for (const fn of sessionResetHooks) {
+    try { await fn(); }
+    catch (err) { console.warn("[agent] session reset hook failed:", (err as Error).message); }
+  }
+}
+
 /**
  * Tear down the in-memory agent session, preserving the resume target so the
  * next getAgentSession() call rebuilds against the same JSONL file. Used by
@@ -619,6 +670,11 @@ export function cancelRunning(): void {
  * config must change but the conversation should continue.
  */
 export async function recreateAgentSession(): Promise<void> {
+  // A settings save must not race a background pass that is mid-turn on the
+  // old configuration, and every dependent session (the observer's) has to be
+  // rebuilt against the new settings too.
+  preemptInternalJob();
+  await fireSessionResetHooks();
   if (!sessionPromise) {
     currentSessionFile = undefined;
     return;
@@ -747,6 +803,8 @@ export async function deleteSession(path: string): Promise<boolean> {
 /** Enqueue a user prompt. Returns its request id immediately (the turn runs
  *  asynchronously); status transitions broadcast via subscribeQueue. */
 export function submitPrompt(text: string, ha: HAClient): string {
+  // A person is here now; don't make them wait behind a background pass.
+  preemptInternalJob();
   const req: QueuedRequest = {
     id: genRequestId(),
     text,
@@ -783,6 +841,7 @@ export function runConversationTurn(
   ha: HAClient,
   onDelta?: (delta: string) => void,
 ): Promise<string> {
+  preemptInternalJob();
   return new Promise<string>((resolve, reject) => {
     const req: QueuedRequest = {
       id: genRequestId(),
