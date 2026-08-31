@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
 
 - **Proactive observer (dry run).** A second, background agent reads Home Assistant's event stream and records what it notices — automations that fired without effect, entities that went unavailable, security-relevant events, and repeated manual actions worth automating. It has **no write tools**: `perform_action` carries the real name and schema of a service call but records the action instead of executing it, so the dry run measures the behaviour a live mode would actually have. Off by default; a new **Observer** tab lists findings, and a band above the chat transcript surfaces unread ones. Enable it under Settings → Observer.
   - Four tools only (`get_state`, `get_history`, `get_camera_snapshot`, `perform_action`) so the schema block stays small and passes stay fast. The observer can see *that* an automation fired and what did or did not change, but not its trace — "Ask about this" hands a finding to the chat agent, which can.
