@@ -17,11 +17,12 @@ deno_run() {
   fi
 }
 
-echo "[check] deno check..."
-deno_run deno check main.ts agent.ts catalog.ts ha-client.ts tools.ts
-
-echo "[check] deno lint..."
-deno_run deno lint
+# Delegates to the `check` task so the checked-file set lives in deno.json only.
+# This script used to carry its own five-file list, which silently drifted from
+# deno.json's (itself stale) list — between them, most of the tree went
+# unchecked for several releases.
+echo "[check] deno check + lint..."
+deno_run deno task check
 
 echo "[check] deno test (unit)..."
 deno_run deno task test:unit

@@ -1,15 +1,20 @@
 {
+  // setup.ts is an abandoned interactive .env wizard that has never parsed
+  // (unbalanced braces from line 60 on) and is imported by nothing, built by
+  // nothing, and documented nowhere. Excluded so the rest of the tree can be
+  // checked; it should be deleted or finished rather than excluded forever.
+  "exclude": ["setup.ts"],
   "tasks": {
     "start": "deno run --allow-all --unstable-node-globals main.ts",
     "test": "deno test --allow-all tests/",
     "test:unit": "deno test --allow-all tests/ --ignore=tests/integration/",
     "test:integration": "deno test --allow-all tests/integration/",
     "test:smoke": "deno test --allow-all tests/integration/smoke_test.ts",
-    "check": "deno check main.ts agent.ts catalog.ts ha-client.ts install-bridge.ts register-discovery.ts tool-usage.ts tools.ts umbrella.ts tasks.ts tasks-fire.ts && deno lint",
+    "check": "deno check *.ts && deno lint",
     "lint": "deno lint"
   },
   "lint": {
-    "include": ["main.ts", "agent.ts", "catalog.ts", "ha-client.ts", "install-bridge.ts", "register-discovery.ts", "tool-usage.ts", "tools.ts", "umbrella.ts", "tasks.ts", "tasks-fire.ts", "tests/**/*.ts"],
+    "include": ["*.ts", "tests/**/*.ts"],
     "rules": {
       "exclude": [
         "no-import-prefix",
