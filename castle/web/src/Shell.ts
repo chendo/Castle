@@ -396,15 +396,7 @@ function buildChatDock(chatPanel: ChatPanel, agent: WebSocketRemoteAgent): HTMLE
     display: flex; flex-direction: column;
     background: var(--background);
   `;
-  // Queue strip sits above the chat transcript: shows queued / running
-  // requests with cancel, and a follow-up input for steering while busy.
-  wrap.appendChild(buildQueueStrip(agent));
-  const panelEl = chatPanel as unknown as HTMLElement;
-  // The strip is a fixed-height sibling, so the panel must grow to fill the
-  // remaining column height (it was previously the sole child).
-  panelEl.style.flex = "1";
-  panelEl.style.minHeight = "0";
-  wrap.appendChild(panelEl);
+  wrap.appendChild(chatPanel as unknown as HTMLElement);
 
   // Composer buttons — mounted inside pi-web-ui's message-editor button row,
   // alongside the paperclip. The composer is `max-w-3xl mx-auto` so anchoring
@@ -425,23 +417,34 @@ function buildChatDock(chatPanel: ChatPanel, agent: WebSocketRemoteAgent): HTMLE
     svg: SETTINGS_GEAR_SVG,
     onClick: () => openSettingsDialog(agent),
   });
-  mountComposerButtons(chatPanel as unknown as HTMLElement, [newChat, buildVoiceButton(), settings]);
+  // Queue strip sits directly above the composer: shows queued / running
+  // requests with cancel, and a follow-up input for steering while busy.
+  mountIntoComposer(chatPanel as unknown as HTMLElement, {
+    aboveEditor: buildQueueStrip(agent),
+    buttons: [newChat, buildVoiceButton(), settings],
+  });
 
   return wrap;
 }
 
 /**
- * Inject Castle's own buttons into the chat composer's left button group, in
- * the given order at the front (before pi-web-ui's paperclip). Pi-web-ui
+ * Inject Castle's own UI into pi-web-ui's composer: `aboveEditor` as a sibling
+ * just before `<message-editor>` (inside its max-width column, so it lines up
+ * with the input), and `buttons` into the editor's left button group, in the
+ * given order at the front (before pi-web-ui's paperclip). Pi-web-ui
  * re-renders the editor on every keystroke and structural property change,
  * which clears any children we add — so a MutationObserver re-mounts them
  * whenever Lit replaces the group's contents. Mount is idempotent and O(n)
  * in the number of buttons.
  */
-function mountComposerButtons(chatPanel: HTMLElement, buttons: HTMLButtonElement[]): void {
+function mountIntoComposer(
+  chatPanel: HTMLElement,
+  { aboveEditor, buttons }: { aboveEditor: HTMLElement; buttons: HTMLButtonElement[] },
+): void {
   const tryMount = (): void => {
     const editor = chatPanel.querySelector("message-editor");
     if (!editor) return;
+    if (aboveEditor.nextElementSibling !== editor) editor.before(aboveEditor);
     const row = editor.querySelector(".justify-between");
     if (!row) return;
     const leftGroup = row.firstElementChild;

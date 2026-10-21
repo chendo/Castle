@@ -19,7 +19,7 @@ function preview(text: string, max = 60): string {
 }
 
 /**
- * Build the queue strip mounted at the top of the chat dock. Hidden whenever
+ * Build the queue strip mounted directly above the chat composer. Hidden whenever
  * nothing is queued or running. Shows the running turn with a Stop button, any
  * queued follow-ups with per-item cancel, and a small input to queue another
  * message while the agent is busy (the normal composer is disabled mid-stream).
@@ -28,8 +28,8 @@ export function buildQueueStrip(agent: WebSocketRemoteAgent): HTMLElement {
   const strip = document.createElement("div");
   strip.style.cssText = `
     display: none; flex-direction: column; gap: 6px;
-    padding: 8px 12px; flex-shrink: 0;
-    border-bottom: 1px solid var(--border);
+    padding: 8px 12px; margin-bottom: 6px;
+    border: 1px solid var(--border); border-radius: 12px;
     background: var(--card, var(--background));
     font-size: 13px;
   `;
