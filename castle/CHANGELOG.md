@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1
+
+- **Fix: camera snapshots were never shown to vision models served by llama.cpp / llmswarm.** Image-input detection only asked LM Studio's `/api/v0`, so every other backend was treated as text-only and `ha_get_camera_snapshot` withheld the image. Detection now tries `/v1/models` `architecture.input_modalities` (llmswarm / OpenRouter shape), then LM Studio `/api/v0`, then llama.cpp `/props` `modalities.vision`, taking the first real answer; non-JSON responses (e.g. a proxy's SPA fallback page) count as no answer.
+- **The request queue strip now sits directly above the chat input** instead of at the top of the chat, inside the composer's column.
+
 ## 0.4.0
 
 - **Castle can now be a Home Assistant Assist conversation agent.** The add-on bundles a `castle_conversation` custom integration and installs it into HA's config dir on boot (one HA restart to load, then Supervisor discovery auto-prompts setup — or add it manually with **Add Integration → Castle**). Pick **Castle** as the conversation agent under **Settings → Voice assistants** and voice satellites, the Assist dialog, and the companion app route through Castle's LLM. Replies stream into the Assist chat as they generate (chat-log API, needs HA 2025.x+), and Assist turns share the conversation with the chat panel. Backed by a new `POST /conversation` endpoint (JSON or SSE).
