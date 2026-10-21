@@ -11,6 +11,7 @@ import type { HAClient } from "./ha-client.ts";
 import { buildTools } from "./tools.ts";
 import { loadSettings, type ToolName } from "./settings.ts";
 import { DATA_DIR, SOURCE_DIR } from "./paths.ts";
+import { detectModelInput } from "./model-capabilities.ts";
 
 const AGENT_DIR = DATA_DIR;
 const CWD = SOURCE_DIR;
@@ -58,38 +59,6 @@ export async function listUpstreamModels(): Promise<Array<{ id: string }>> {
   if (!res.ok) throw new Error(`upstream /models returned ${res.status}`);
   const json = await res.json() as { data?: Array<{ id: string }> };
   return Array.isArray(json.data) ? json.data : [];
-}
-
-/**
- * Probe per-model capability metadata to figure out if image input is
- * supported. Some OpenAI-compat servers (LM Studio, vLLM with vision-info,
- * llama.cpp) expose this at /api/v0/models/<id>; everything else falls through
- * to text-only assumption. Side-effects: none — just returns the modalities.
- */
-async function detectModelInput(baseUrl: string, apiKey: string, modelId: string): Promise<string[]> {
-  const restBase = baseUrl.replace(/\/v1\/?$/, "") + "/api/v0";
-  const headers: Record<string, string> = {};
-  if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
-  try {
-    const res = await fetch(`${restBase}/models/${encodeURIComponent(modelId)}`, {
-      headers,
-      signal: AbortSignal.timeout(2000),
-    });
-    if (res.ok) {
-      const m = await res.json() as { type?: string; vision?: boolean };
-      if (m.vision === true || m.type === "vlm") return ["text", "image"];
-      return ["text"];
-    }
-    const listRes = await fetch(`${restBase}/models`, { headers, signal: AbortSignal.timeout(2000) });
-    if (!listRes.ok) throw new Error(`models list ${listRes.status}`);
-    const list = await listRes.json() as { data?: Array<{ id: string; type?: string; vision?: boolean }> };
-    const found = list.data?.find((m) => m.id === modelId);
-    if (found && (found.vision === true || found.type === "vlm")) return ["text", "image"];
-    return ["text"];
-  } catch (err) {
-    console.warn(`[castle] capability probe failed (${(err as Error).message}); assuming text-only`);
-    return ["text"];
-  }
 }
 
 /**
